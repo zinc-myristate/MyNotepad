@@ -290,10 +290,10 @@ function initQuill() {
     if (img) img.dataset.w = newW;
   }, { passive: false });
 
-  // 监听内容变化 → 立即自动保存
+  // 监听内容变化 → 防抖自动保存（500ms 合并连续输入，切换/失焦/Ctrl+S 时立即 flush）
   quill.on('text-change', () => {
     if (state.activeNoteId && !state.isLoading) {
-      saveCurrentNote();
+      debouncedSave();
       // 延迟同步贴纸覆盖层（Quill 可能重建了 DOM）
       if (typeof syncStickersToOverlay === 'function') {
         clearTimeout(_stickerSyncTimer);
@@ -305,7 +305,7 @@ function initQuill() {
   // 失焦时立即保存
   quill.root.addEventListener('blur', () => {
     if (state.activeNoteId && !state.isLoading) {
-      saveCurrentNote();
+      flushSave();
     }
   });
 
@@ -1002,6 +1002,11 @@ $('#btn-export').addEventListener('click', () => {
     alert('请先选择一篇笔记');
     return;
   }
+  const note = state.notes.find(n => n.id === state.activeNoteId);
+  if (note && note.has_password && !unlockedNotes[state.activeNoteId]) {
+    alert('请先解锁笔记再导出');
+    return;
+  }
   openPanel(exportPanel);
 });
 
@@ -1127,6 +1132,7 @@ function renderNoteList() {
       const hasPwd = await window.pywebview.api.note_has_password(note.id);
       if (hasPwd && !unlockedNotes[note.id]) {
         // 先弹出验证面板，验证成功后自动打开密码管理面板
+        await flushSave();  // 旧笔记未保存内容先落盘，防止解锁后误存到加密笔记
         pendingSelectNoteId = note.id;
         state.activeNoteId = note.id;
         passwordVerifyCallback = () => {
@@ -1192,7 +1198,7 @@ async function selectNote(noteId) {
   currentPreviewVersionId = null;
   editingMathNode = null;
   state._noteBgDataUri = null;
-  await saveCurrentNote();
+  await flushSave();
 
   // 加载新笔记（传递解锁状态）
   state.isLoading = true;
@@ -1298,6 +1304,7 @@ async function createNewNote() {
 async function saveCurrentNote() {
   if (!state.activeNoteId) return;
   if (state._saving) return;
+  if (state.quill && !state.quill.isEnabled()) return; // 加密未解锁时编辑器禁用，防止空内容覆盖
   const note = state.notes.find(n => n.id === state.activeNoteId);
   if (note && note.has_password && !unlockedNotes[state.activeNoteId]) return;
 
@@ -1326,6 +1333,19 @@ async function saveCurrentNote() {
   }
 }
 
+// 防抖自动保存：连续输入合并为一次写库；flushSave 在切换/失焦/锁定等时机立即落盘
+const debouncedSave = debounce(() => saveCurrentNote(), 500);
+async function flushSave() {
+  debouncedSave.cancel();
+  await saveCurrentNote();
+}
+
+// 窗口关闭前兜底保存（尽力而为）
+window.addEventListener('beforeunload', () => {
+  debouncedSave.cancel();
+  saveCurrentNote();
+});
+
 function confirmDeleteNote(noteId, title) {
   showConfirm(`确定要删除笔记「${escapeHtml(title || '未命名笔记')}」吗？\n\n此操作不可恢复，笔记中的图片和附件也会被删除。`, async () => {
     await deleteNoteById(noteId);
@@ -1335,6 +1355,7 @@ function confirmDeleteNote(noteId, title) {
 async function deleteNoteById(noteId) {
   try {
     const wasActive = state.activeNoteId === noteId;
+    if (wasActive) debouncedSave.cancel(); // 取消待保存任务，防止删除后迟到写库
 
     await window.pywebview.api.notes_delete(noteId);
     state.notes = state.notes.filter(n => n.id !== noteId);
@@ -1368,10 +1389,10 @@ async function deleteNoteById(noteId) {
   }
 }
 
-// 标题输入框事件 - 立即保存
+// 标题输入框事件 - 列表即时刷新 + 防抖持久化
 dom.titleInput.addEventListener('input', () => {
   if (state.activeNoteId) {
-    saveCurrentNote();
+    debouncedSave();
     const title = dom.titleInput.value.trim() || '未命名笔记';
     const noteIdx = state.notes.findIndex(n => n.id === state.activeNoteId);
     if (noteIdx >= 0) {
@@ -1423,7 +1444,7 @@ function showToast(msg, bgColor) {
 
 $('#btn-save').addEventListener('click', async () => {
   if (!state.activeNoteId) return;
-  await saveCurrentNote();
+  await flushSave();
   // 手动保存时自动创建历史版本
   const title = dom.titleInput.value.trim() || '未命名笔记';
   const content = state.quill ? JSON.stringify(state.quill.getContents()) : '';
@@ -1978,7 +1999,7 @@ document.addEventListener('keydown', async (e) => {
   // Ctrl+S 手动保存
   if (e.ctrlKey && e.key === 's') {
     e.preventDefault();
-    await saveCurrentNote();
+    await flushSave();
   }
   // ESC 取消语音临时文字
   if (e.key === 'Escape' && isVoiceRecording) {
@@ -2921,9 +2942,11 @@ $('#btn-lock').addEventListener('click', async () => {
   if (!state.activeNoteId) { alert('请先选择一篇笔记'); return; }
   const hasPwd = await window.pywebview.api.note_has_password(state.activeNoteId);
   if (hasPwd) {
-    // 已加密 → 锁定
-    delete unlockedNotes[state.activeNoteId];
-    await saveCurrentNote();
+    // 已加密 → 先落盘（此时后端仍解锁可加密写入），再清后端密钥缓存
+    const noteId = state.activeNoteId;
+    await flushSave();
+    await window.pywebview.api.note_lock(noteId);
+    delete unlockedNotes[noteId];
     state.activeNoteId = null;
     hideEditorUI();
     if (state.quill) state.quill.enable(true);
@@ -2967,9 +2990,11 @@ $('#btn-save-password').addEventListener('click', async () => {
   if (!p1) { alert('请输入密码'); return; }
   if (p1 !== p2) { alert('两次输入不一致'); return; }
   if (p1.length < 6) { alert('密码至少 6 位'); return; }
-  await window.pywebview.api.note_set_password(state.activeNoteId, p1);
+  await flushSave();  // 设密码前先落盘，加密以最新内容为准
+  const ok = await window.pywebview.api.note_set_password(state.activeNoteId, p1);
+  if (!ok) { alert('密码设置失败：请先解锁笔记后再修改密码'); return; }
   closePanel($('#password-panel'));
-  alert('密码设置成功！');
+  alert('密码设置成功！笔记内容已加密存储。\n\n请务必牢记密码：忘记密码将无法恢复笔记内容。');
   unlockedNotes[state.activeNoteId] = true;
   loadNotes().then(renderNoteList);
 });
@@ -2977,6 +3002,7 @@ $('#btn-save-password').addEventListener('click', async () => {
 $('#btn-remove-password').addEventListener('click', async () => {
   const p = $('#password-input1').value;
   if (!p) { alert('请先输入当前密码'); return; }
+  await flushSave();  // 先落盘，解密回写以最新内容为准
   const ok = await window.pywebview.api.note_remove_password(state.activeNoteId, p);
   if (ok) {
     closePanel($('#password-panel'));
@@ -3006,6 +3032,7 @@ async function verifyAndSelectNote(noteId) {
     await selectNote(noteId);
     return;
   }
+  await flushSave();  // 先把当前笔记未保存内容落盘（activeNoteId 此时仍指向旧笔记）
   pendingSelectNoteId = noteId;
   passwordVerifyCallback = null;  // 默认行为：解锁后加载笔记
   $('#password-verify-input').value = '';
@@ -3021,8 +3048,9 @@ $('#btn-verify-password').addEventListener('click', async () => {
     unlockedNotes[pendingSelectNoteId] = true;
     updateLockButton();
     closePanel($('#password-verify-panel'));
-    // 先保存当前笔记，再重置 activeNoteId
-    await saveCurrentNote();
+    // 不在此处保存：activeNoteId 可能已指向加密笔记，而编辑器内容并非它的
+    //（未保存的旧笔记内容已在打开面板前 flush），仅取消待保存任务后重新加载
+    debouncedSave.cancel();
     state.activeNoteId = null;
     await selectNote(pendingSelectNoteId);
     // 执行自定义回调（如果有）

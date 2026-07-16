@@ -582,7 +582,8 @@
     </div>
     <div class="panel-body">
       <input id="password-input1" class="search-input" type="password" placeholder="输入密码" style="width:100%;margin-bottom:8px;">
-      <input id="password-input2" class="search-input" type="password" placeholder="确认密码" style="width:100%;margin-bottom:14px;">
+      <input id="password-input2" class="search-input" type="password" placeholder="确认密码" style="width:100%;margin-bottom:8px;">
+      <p style="font-size:12px;color:var(--danger);margin-bottom:14px;">⚠ 笔记内容将使用此密码加密存储，忘记密码将无法恢复内容，请妥善保管。</p>
       <button id="btn-save-password" class="btn-new-note" style="width:100%;margin:0;">设置密码</button>
       <button id="btn-remove-password" class="btn-danger" style="width:100%;margin-top:8px;display:none;">移除密码</button>
     </div>
@@ -597,7 +598,7 @@
       <button class="btn-close-panel" data-panel="password-verify-panel"><svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round"><line x1="18" y1="6" x2="6" y2="18"/><line x1="6" y1="6" x2="18" y2="18"/></svg></button>
     </div>
     <div class="panel-body">
-      <p style="font-size:13px;color:var(--text-muted);margin-bottom:12px;">请输入密码以查看笔记内容</p>
+      <p style="font-size:13px;color:var(--text-muted);margin-bottom:12px;">笔记内容已加密，请输入密码解锁（忘记密码将无法恢复内容）</p>
       <input id="password-verify-input" class="search-input" type="password" placeholder="输入密码" style="width:100%;margin-bottom:14px;">
       <div style="display:flex;gap:8px;">
         <button id="btn-verify-password" class="btn-new-note" style="flex:1;margin:0;">解锁</button>

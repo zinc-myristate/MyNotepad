@@ -88,29 +88,10 @@ class AppApi:
 
     # 笔记操作（代理到 backend）
     def notes_list(self):
-        result = self.backend.notes_list()
-        # 代理层日志
-        try:
-            import os
-            exe_dir = os.path.dirname(os.path.abspath(__file__)) if not getattr(__import__('sys'), 'frozen', False) else os.path.dirname(__import__('sys').executable)
-            log_path = os.path.join(exe_dir, 'data', 'proxy.log')
-            os.makedirs(os.path.dirname(log_path), exist_ok=True)
-            with open(log_path, 'a', encoding='utf-8') as f:
-                f.write(f"PROXY notes_list called, result count={len(result)}\n")
-        except: pass
-        return result
+        return self.backend.notes_list()
     def notes_get(self, note_id, unlocked=False): return self.backend.notes_get(note_id, unlocked)
     def notes_create(self):
-        result = self.backend.notes_create()
-        try:
-            import os
-            exe_dir = os.path.dirname(os.path.abspath(__file__)) if not getattr(__import__('sys'), 'frozen', False) else os.path.dirname(__import__('sys').executable)
-            log_path = os.path.join(exe_dir, 'data', 'proxy.log')
-            os.makedirs(os.path.dirname(log_path), exist_ok=True)
-            with open(log_path, 'a', encoding='utf-8') as f:
-                f.write(f"PROXY notes_create called, id={result.get('id','?')[:8] if result else 'None'}\n")
-        except: pass
-        return result
+        return self.backend.notes_create()
     def notes_update(self, note_id, fields): return self.backend.notes_update(note_id, fields)
     def notes_delete(self, note_id): return self.backend.notes_delete(note_id)
 
@@ -211,8 +192,10 @@ class AppApi:
     # 密码
     def note_set_password(self, note_id, password): return self.backend.note_set_password(note_id, password)
     def note_verify_password(self, note_id, password): return self.backend.note_verify_password(note_id, password)
+    def note_change_password(self, note_id, old_password, new_password): return self.backend.note_change_password(note_id, old_password, new_password)
     def note_remove_password(self, note_id, password): return self.backend.note_remove_password(note_id, password)
     def note_has_password(self, note_id): return self.backend.note_has_password(note_id)
+    def note_lock(self, note_id): return self.backend.note_lock(note_id)
 
     # 提醒（兼容旧接口）
     def reminder_set(self, note_id, reminder_time): return self.backend.reminder_set(note_id, reminder_time)

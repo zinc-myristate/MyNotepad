@@ -9,7 +9,12 @@ import shutil
 import uuid
 import base64
 import tempfile
+import hashlib
+import hmac
+import threading
+import functools
 from datetime import datetime
+from cryptography.hazmat.primitives.ciphers.aead import AESGCM
 
 # 数据目录：优先存 exe 旁边（便携模式，拷到 U 盘/其他电脑数据一起走）
 _EXE_DIR = os.path.dirname(sys.executable) if getattr(sys, 'frozen', False) else os.path.dirname(os.path.abspath(__file__))
@@ -127,6 +132,8 @@ try: conn.execute("ALTER TABLE notes ADD COLUMN cover_type TEXT DEFAULT 'none'")
 except: pass
 try: conn.execute("ALTER TABLE notes ADD COLUMN cover_value TEXT DEFAULT ''")
 except: pass
+try: conn.execute("ALTER TABLE notes ADD COLUMN enc_dek TEXT")  # 内容加密：被密码包裹的 DEK，NULL=未启用
+except: pass
 # 标签表
 conn.executescript("""
     CREATE TABLE IF NOT EXISTS tags (
@@ -238,6 +245,57 @@ def _cleanup_all_scheduled_tasks():
 _migrate_old_reminders()
 _cleanup_all_scheduled_tasks()
 
+# ====== 内容加密（envelope 信封加密） ======
+# 每篇加密笔记有一个随机 DEK（数据密钥）加密正文和历史版本；
+# DEK 被「密码派生的 KEK」包裹后存库（notes.enc_dek）。
+# 改密码只需重新包裹 32 字节 DEK，内容零重加密。
+# 解锁状态在后端进程内存（_unlocked_deks），前端传来的 unlocked 标志不再作为安全依据。
+
+_db_lock = threading.RLock()   # 保护全局 conn 与解锁缓存（pywebview 每个 JS 调用运行在独立线程）
+_unlocked_deks = {}            # note_id -> DEK bytes（会话级，随进程消亡）
+
+PBKDF2_ITERATIONS = 600000     # OWASP 2023
+ENC_PREFIX = 'encv1:'          # 密文标记；明文是 Delta JSON（{ 开头）或空串，不会冲突
+
+def _derive_kek(password, salt, iterations=PBKDF2_ITERATIONS):
+    return hashlib.pbkdf2_hmac('sha256', password.encode(), salt, iterations)
+
+def _wrap_dek(dek, password):
+    """用密码包裹 DEK，返回存库格式 dekv1:<salt_hex>:<iters>:<b64(nonce+ct)>"""
+    kek_salt = os.urandom(32)
+    kek = _derive_kek(password, kek_salt)
+    nonce = os.urandom(12)
+    ct = AESGCM(kek).encrypt(nonce, dek, None)
+    return f"dekv1:{kek_salt.hex()}:{PBKDF2_ITERATIONS}:{base64.b64encode(nonce + ct).decode()}"
+
+def _unwrap_dek(enc_dek, password):
+    """解包 DEK；密码错误或格式损坏返回 None"""
+    try:
+        tag, salt_hex, iters, blob = enc_dek.split(':')
+        if tag != 'dekv1':
+            return None
+        kek = _derive_kek(password, bytes.fromhex(salt_hex), int(iters))
+        raw = base64.b64decode(blob)
+        return AESGCM(kek).decrypt(raw[:12], raw[12:], None)
+    except Exception:
+        return None
+
+def _encrypt_content(dek, plaintext, note_id):
+    """明文 -> encv1:<b64(nonce+ct)>；AAD 绑定 note_id，防止密文跨笔记移植"""
+    nonce = os.urandom(12)
+    ct = AESGCM(dek).encrypt(nonce, (plaintext or '').encode('utf-8'), note_id.encode('utf-8'))
+    return ENC_PREFIX + base64.b64encode(nonce + ct).decode()
+
+def _decrypt_content(dek, stored, note_id):
+    """encv1 密文 -> 明文；非密文原样返回（迁移期兼容）；解密失败返回 None"""
+    if not stored or not stored.startswith(ENC_PREFIX):
+        return stored or ''
+    try:
+        raw = base64.b64decode(stored[len(ENC_PREFIX):])
+        return AESGCM(dek).decrypt(raw[:12], raw[12:], note_id.encode('utf-8')).decode('utf-8')
+    except Exception:
+        return None
+
 # ====== 导出给前端的 API 类 ======
 class Api:
     # ----- 笔记 -----
@@ -248,28 +306,31 @@ class Api:
             "CASE WHEN password_hash IS NOT NULL AND password_hash != '' THEN 1 ELSE 0 END AS has_password "
             "FROM notes ORDER BY is_pinned DESC, updated_at DESC"
         ).fetchall()
-        result = [dict(r) for r in rows]
-        # 调试日志
-        try:
-            with open(os.path.join(DATA_DIR, 'debug.log'), 'a', encoding='utf-8') as _f:
-                _f.write(f"LOAD count={len(result)} db={DB_PATH}\n")
-        except: pass
-        return result
+        return [dict(r) for r in rows]
 
     def notes_get(self, note_id, unlocked=False):
-        """获取笔记详情。unlocked=False 时，加密笔记不返回内容。"""
+        """获取笔记详情。加密笔记仅当后端已解锁（DEK 在缓存）时返回明文内容。
+        unlocked 参数保留兼容旧前端调用，但不再作为安全依据。"""
         r = conn.execute("SELECT * FROM notes WHERE id = ?", (note_id,)).fetchone()
         if not r:
             return None
         note = dict(r)
         has_pwd = bool(note.get('password_hash'))
-        # 永远不向前端返回密码哈希
+        # 永远不向前端返回密码哈希和密钥材料
         note.pop('password_hash', None)
-        # 如果笔记有密码且未解锁，隐藏内容
-        if has_pwd and not unlocked:
-            note['content'] = ''
-            note['is_encrypted'] = True
-            note['title'] = note.get('title', '未命名笔记')  # 标题可以显示
+        note.pop('enc_dek', None)
+        note['has_password'] = has_pwd
+        if has_pwd:
+            dek = _unlocked_deks.get(note_id)
+            pt = _decrypt_content(dek, note['content'], note_id) if dek else None
+            if pt is None:
+                # 未解锁（或解密失败），隐藏内容
+                note['content'] = ''
+                note['is_encrypted'] = True
+                note['title'] = note.get('title', '未命名笔记')  # 标题可以显示
+            else:
+                note['content'] = pt
+                note['is_encrypted'] = False
         else:
             note['is_encrypted'] = False
         return note
@@ -289,18 +350,23 @@ class Api:
         updates = {k: v for k, v in fields.items() if k in allowed}
         if not updates:
             return None
+        # 加密笔记：内容写入必须已在后端解锁（不信任前端状态），解锁则加密后入库
+        if 'content' in updates:
+            row = conn.execute("SELECT password_hash FROM notes WHERE id = ?", (note_id,)).fetchone()
+            if row and row['password_hash']:
+                dek = _unlocked_deks.get(note_id)
+                if dek is None:
+                    updates.pop('content')  # 未解锁，拒绝写入内容
+                    if not updates:
+                        return None
+                else:
+                    updates['content'] = _encrypt_content(dek, updates['content'], note_id)
         updates["updated_at"] = datetime.now().strftime('%Y-%m-%d %H:%M:%S')
         sets = ", ".join(f"{k} = ?" for k in updates)
         vals = list(updates.values()) + [note_id]
         conn.execute(f"UPDATE notes SET {sets} WHERE id = ?", vals)
         conn.commit()
-        result = self.notes_get(note_id)
-        # 调试日志写入文件
-        try:
-            with open(os.path.join(DATA_DIR, 'debug.log'), 'a', encoding='utf-8') as _f:
-                _f.write(f"SAVE note={note_id[:8]} title={updates.get('title','')[:20]} content_len={len(updates.get('content',''))} db={DB_PATH} ok={result is not None}\n")
-        except: pass
-        return result
+        return self.notes_get(note_id)
 
     def notes_delete(self, note_id):
         # 删除附件文件夹
@@ -309,6 +375,7 @@ class Api:
             shutil.rmtree(note_attach, ignore_errors=True)
         conn.execute("DELETE FROM notes WHERE id = ?", (note_id,))
         conn.commit()
+        _unlocked_deks.pop(note_id, None)
         return True
 
     # ----- 附件 -----
@@ -493,33 +560,42 @@ class Api:
         return [dict(r) for r in rows]
 
     def versions_get(self, vid, unlocked=False):
-        """获取版本详情。如果父笔记已加密且未解锁，不返回内容。"""
+        """获取版本详情。父笔记加密时仅在后端已解锁后返回解密内容（unlocked 参数保留兼容，不作依据）。"""
         r = conn.execute("SELECT * FROM versions WHERE id = ?", (vid,)).fetchone()
         if not r:
             return None
         ver = dict(r)
         # 检查父笔记是否加密
         parent = conn.execute("SELECT password_hash FROM notes WHERE id = ?", (ver['note_id'],)).fetchone()
-        if parent and parent['password_hash'] and not unlocked:
-            ver['content'] = ''
-            ver['is_encrypted'] = True
+        if parent and parent['password_hash']:
+            dek = _unlocked_deks.get(ver['note_id'])
+            pt = _decrypt_content(dek, ver['content'], ver['note_id']) if dek else None
+            if pt is None:
+                ver['content'] = ''
+                ver['is_encrypted'] = True
+            else:
+                ver['content'] = pt
+                ver['is_encrypted'] = False
         else:
             ver['is_encrypted'] = False
         return ver
 
     def versions_restore(self, vid, unlocked=False):
-        """恢复到指定版本。如果父笔记加密且未解锁，拒绝操作。"""
-        ver = self.versions_get(vid, unlocked)
-        if not ver:
+        """恢复到指定版本。父笔记加密且后端未解锁时拒绝。"""
+        r = conn.execute("SELECT * FROM versions WHERE id = ?", (vid,)).fetchone()
+        if not r:
             return None
-        if ver.get('is_encrypted'):
+        ver = dict(r)
+        parent = conn.execute("SELECT password_hash FROM notes WHERE id = ?", (ver['note_id'],)).fetchone()
+        if parent and parent['password_hash'] and ver['note_id'] not in _unlocked_deks:
             return None  # 笔记已加密且未解锁，拒绝恢复
+        # 版本与正文共用同一 DEK 且 AAD 均为 note_id，密文可直接拷贝，无需解密重加密
         conn.execute(
             "UPDATE notes SET title = ?, content = ?, updated_at = datetime('now','localtime') WHERE id = ?",
             (ver['title'], ver['content'], ver['note_id'])
         )
         conn.commit()
-        return self.notes_get(ver['note_id'], unlocked)
+        return self.notes_get(ver['note_id'])
 
     def versions_delete(self, vid):
         """删除单个历史版本"""
@@ -534,17 +610,29 @@ class Api:
         return True
 
     def versions_create(self, note_id, title, content):
-        # 检查是否和最新版本相同
+        # 加密笔记：必须已在后端解锁，版本内容加密后入库
+        parent = conn.execute("SELECT password_hash FROM notes WHERE id = ?", (note_id,)).fetchone()
+        dek = None
+        if parent and parent['password_hash']:
+            dek = _unlocked_deks.get(note_id)
+            if dek is None:
+                return None  # 未解锁，不创建版本
+        # 检查是否和最新版本相同（密文含随机 nonce 不可直接比较，需解密后比较明文）
         last = conn.execute(
             "SELECT content FROM versions WHERE note_id = ? ORDER BY created_at DESC LIMIT 1",
             (note_id,)
         ).fetchone()
-        if last and last['content'] == content:
-            return None  # 内容没变，不创建版本
+        if last:
+            last_content = last['content']
+            if dek is not None:
+                last_content = _decrypt_content(dek, last_content, note_id)
+            if last_content == content:
+                return None  # 内容没变，不创建版本
+        store_content = _encrypt_content(dek, content, note_id) if dek is not None else content
         vid = str(uuid.uuid4())
         conn.execute(
             "INSERT INTO versions (id, note_id, title, content) VALUES (?, ?, ?, ?)",
-            (vid, note_id, title, content)
+            (vid, note_id, title, store_content)
         )
         # 清理旧版本（保留最新 50 个）
         conn.execute("""
@@ -556,59 +644,139 @@ class Api:
         conn.commit()
         return vid
 
-    # ----- 密码 (PBKDF2 + SHA-256 + 随机盐) -----
+    # ----- 密码 (PBKDF2 验证 + AES-GCM 内容加密) -----
     def _hash_password(self, password):
-        import hashlib, os
         salt = os.urandom(32)
-        key = hashlib.pbkdf2_hmac('sha256', password.encode(), salt, 600000)
-        return salt.hex() + ':' + key.hex()
+        key = hashlib.pbkdf2_hmac('sha256', password.encode(), salt, PBKDF2_ITERATIONS)
+        return f"pbkdf2v2:{salt.hex()}:{PBKDF2_ITERATIONS}:{key.hex()}"
 
     def _verify_hash(self, password, stored):
         try:
-            salt_hex, key_hex = stored.split(':')
-            salt = bytes.fromhex(salt_hex)
-            key = bytes.fromhex(key_hex)
-            import hashlib
-            # 先尝试当前迭代次数（600000），失败则回退旧值（200000）保持兼容
-            for iterations in (600000, 200000):
-                new_key = hashlib.pbkdf2_hmac('sha256', password.encode(), salt, iterations)
-                if new_key == key:
-                    return True
+            parts = stored.split(':')
+            if parts[0] == 'pbkdf2v2' and len(parts) == 4:
+                salt, iters, key = bytes.fromhex(parts[1]), int(parts[2]), bytes.fromhex(parts[3])
+                return hmac.compare_digest(hashlib.pbkdf2_hmac('sha256', password.encode(), salt, iters), key)
+            if len(parts) == 2:
+                # 旧 salt:key 格式（未存迭代数），依次尝试 600000 / 200000 保持兼容
+                salt, key = bytes.fromhex(parts[0]), bytes.fromhex(parts[1])
+                for iterations in (600000, 200000):
+                    if hmac.compare_digest(hashlib.pbkdf2_hmac('sha256', password.encode(), salt, iterations), key):
+                        return True
             return False
         except:
             return False
 
-    def note_set_password(self, note_id, password):
-        if not password or len(password) < 6:
-            return False
-        h = self._hash_password(password)
-        conn.execute("UPDATE notes SET password_hash = ? WHERE id = ?", (h, note_id))
+    def _encrypt_all_note_content(self, note_id, dek):
+        """用 DEK 加密笔记正文和全部历史版本（幂等：只处理明文行），单事务提交"""
+        row = conn.execute("SELECT content FROM notes WHERE id = ?", (note_id,)).fetchone()
+        if row and not (row['content'] or '').startswith(ENC_PREFIX):
+            conn.execute("UPDATE notes SET content = ? WHERE id = ?",
+                         (_encrypt_content(dek, row['content'], note_id), note_id))
+        for v in conn.execute("SELECT id, content FROM versions WHERE note_id = ?", (note_id,)).fetchall():
+            if not (v['content'] or '').startswith(ENC_PREFIX):
+                conn.execute("UPDATE versions SET content = ? WHERE id = ?",
+                             (_encrypt_content(dek, v['content'], note_id), v['id']))
+        conn.commit()
+
+    def _decrypt_all_note_content(self, note_id, dek):
+        """解密笔记正文和全部历史版本回明文；任一行解密失败返回 False（不提交）"""
+        row = conn.execute("SELECT content FROM notes WHERE id = ?", (note_id,)).fetchone()
+        if row and (row['content'] or '').startswith(ENC_PREFIX):
+            pt = _decrypt_content(dek, row['content'], note_id)
+            if pt is None:
+                return False
+            conn.execute("UPDATE notes SET content = ? WHERE id = ?", (pt, note_id))
+        for v in conn.execute("SELECT id, content FROM versions WHERE note_id = ?", (note_id,)).fetchall():
+            if (v['content'] or '').startswith(ENC_PREFIX):
+                pt = _decrypt_content(dek, v['content'], note_id)
+                if pt is None:
+                    conn.rollback()
+                    return False
+                conn.execute("UPDATE versions SET content = ? WHERE id = ?", (pt, v['id']))
         conn.commit()
         return True
 
-    def note_verify_password(self, note_id, password):
-        stored = conn.execute(
-            "SELECT password_hash FROM notes WHERE id = ?", (note_id,)
-        ).fetchone()
-        if not stored or not stored['password_hash']:
-            return True  # 没有密码的笔记直接通过
-        stored_hash = stored['password_hash']
-        # 兼容旧 SHA-256 格式（无冒号）
-        if ':' not in stored_hash:
-            import hashlib
-            if hashlib.sha256(password.encode()).hexdigest() == stored_hash:
-                # 自动升级为新格式
-                self.note_set_password(note_id, password)
-                return True
+    def note_set_password(self, note_id, password):
+        """设置密码并加密笔记内容（正文 + 全部历史版本）"""
+        if not password or len(password) < 6:
             return False
-        return self._verify_hash(password, stored_hash)
+        row = conn.execute("SELECT id, enc_dek FROM notes WHERE id = ?", (note_id,)).fetchone()
+        if not row:
+            return False
+        # 防御：已有加密内容但未解锁时，禁止直接覆盖密码（否则新 DEK 与旧密文错配，内容永久丢失）
+        if row['enc_dek'] and note_id not in _unlocked_deks:
+            return False
+        # 复用已解锁的 DEK（旧格式升级等路径），否则生成新 DEK
+        dek = _unlocked_deks.get(note_id) or os.urandom(32)
+        conn.execute("UPDATE notes SET password_hash = ?, enc_dek = ? WHERE id = ?",
+                     (self._hash_password(password), _wrap_dek(dek, password), note_id))
+        self._encrypt_all_note_content(note_id, dek)  # 内部 commit
+        _unlocked_deks[note_id] = dek  # 设完保持解锁
+        return True
+
+    def note_verify_password(self, note_id, password):
+        """验证密码；成功时解包 DEK 存入后端缓存（= 解锁）。存量明文密码笔记在此懒迁移为密文。"""
+        row = conn.execute(
+            "SELECT password_hash, enc_dek FROM notes WHERE id = ?", (note_id,)
+        ).fetchone()
+        if not row or not row['password_hash']:
+            return True  # 没有密码的笔记直接通过
+        stored_hash = row['password_hash']
+        # 验证（兼容旧裸 SHA-256 无冒号格式）
+        if ':' not in stored_hash:
+            if hashlib.sha256(password.encode()).hexdigest() != stored_hash:
+                return False
+            needs_rehash = True
+        else:
+            if not self._verify_hash(password, stored_hash):
+                return False
+            needs_rehash = not stored_hash.startswith('pbkdf2v2:')
+        # 取 DEK：解包已有 enc_dek；或为存量明文笔记生成 DEK 并迁移内容为密文
+        if row['enc_dek']:
+            dek = _unwrap_dek(row['enc_dek'], password)
+            if dek is None:
+                return False  # enc_dek 损坏（理论上不应发生）
+        else:
+            dek = os.urandom(32)
+            conn.execute("UPDATE notes SET enc_dek = ? WHERE id = ?", (_wrap_dek(dek, password), note_id))
+            self._encrypt_all_note_content(note_id, dek)  # 幂等，崩溃后下次解锁补齐
+        if needs_rehash:
+            conn.execute("UPDATE notes SET password_hash = ? WHERE id = ?",
+                         (self._hash_password(password), note_id))
+            conn.commit()
+        _unlocked_deks[note_id] = dek
+        return True
+
+    def note_change_password(self, note_id, old_password, new_password):
+        """改密码：重新包裹同一个 DEK，内容零重加密"""
+        if not new_password or len(new_password) < 6:
+            return False
+        if not self.note_verify_password(note_id, old_password):
+            return False
+        dek = _unlocked_deks.get(note_id)
+        if dek is None:
+            return False
+        conn.execute("UPDATE notes SET password_hash = ?, enc_dek = ? WHERE id = ?",
+                     (self._hash_password(new_password), _wrap_dek(dek, new_password), note_id))
+        conn.commit()
+        return True
 
     def note_remove_password(self, note_id, password):
-        if self.note_verify_password(note_id, password):
-            conn.execute("UPDATE notes SET password_hash = NULL WHERE id = ?", (note_id,))
-            conn.commit()
-            return True
-        return False
+        """移除密码并把内容解密回明文"""
+        if not self.note_verify_password(note_id, password):
+            return False
+        dek = _unlocked_deks.get(note_id)
+        if dek is not None and not self._decrypt_all_note_content(note_id, dek):
+            return False  # 解密失败，保守不动
+        conn.execute("UPDATE notes SET password_hash = NULL, enc_dek = NULL WHERE id = ?", (note_id,))
+        conn.commit()
+        _unlocked_deks.pop(note_id, None)
+        return True
+
+    def note_lock(self, note_id):
+        """锁定笔记：清除后端解锁缓存"""
+        _unlocked_deks.pop(note_id, None)
+        return True
 
     def note_has_password(self, note_id):
         stored = conn.execute(
@@ -1111,6 +1279,21 @@ def _format_size(size):
     if size < 1024: return f"{size} B"
     elif size < 1024*1024: return f"{size/1024:.1f} KB"
     else: return f"{size/(1024*1024):.1f} MB"
+
+
+# ====== 线程安全 ======
+# pywebview 的每个 JS API 调用运行在独立线程，全局 conn 与 _unlocked_deks 需要串行化保护。
+# 统一给 Api 的公开方法加 RLock（可重入：方法间存在互调，如 notes_update→notes_get）。
+def _locked(fn):
+    @functools.wraps(fn)
+    def wrapper(*args, **kwargs):
+        with _db_lock:
+            return fn(*args, **kwargs)
+    return wrapper
+
+for _name, _attr in list(vars(Api).items()):
+    if not _name.startswith('_') and callable(_attr):
+        setattr(Api, _name, _locked(_attr))
 
 
 api = Api()

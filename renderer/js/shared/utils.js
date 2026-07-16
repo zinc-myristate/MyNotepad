@@ -15,11 +15,13 @@ function formatFileSize(bytes) {
   return parseFloat((bytes / Math.pow(k, i)).toFixed(1)) + ' ' + sizes[i];
 }
 
-// 防抖函数
+// 防抖函数（返回的函数带 .cancel() 可取消待执行任务）
 function debounce(fn, delay) {
   let timer;
-  return function (...args) {
+  const wrapped = function (...args) {
     clearTimeout(timer);
     timer = setTimeout(() => fn.apply(this, args), delay);
   };
+  wrapped.cancel = () => clearTimeout(timer);
+  return wrapped;
 }
