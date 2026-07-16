@@ -6,7 +6,7 @@ a = Analysis(
     pathex=[],
     binaries=[],
     datas=[('renderer', 'renderer'), ('resources', 'resources')],
-    hiddenimports=['backend', 'docx', 'openpyxl', 'PIL',
+    hiddenimports=['backend', 'docx', 'openpyxl', 'PIL', 'cryptography',
                    'pycparser.yacctab', 'pycparser.lextab'],
     hookspath=[],
     hooksconfig={},
