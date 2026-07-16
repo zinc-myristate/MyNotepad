@@ -1,0 +1,7 @@
+data/
+dist/
+build/
+data_backup*/
+__pycache__/
+*.pyc
+debug.log
