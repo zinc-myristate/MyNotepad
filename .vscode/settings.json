@@ -1,5 +1,6 @@
 {
     "editor.unusualLineTerminators": "ignore",
+    "css.lint.propertyIgnoredDueToDisplay": "ignore",
     "[xml]": {
         "editor.formatOnSave": false,
         "editor.insertSpaces": true,
