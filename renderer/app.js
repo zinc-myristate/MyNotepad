@@ -39,6 +39,7 @@ const state = {
   notes: [],
   activeNoteId: null,
   currentContent: '',       // 当前笔记的 HTML 内容（用于比较是否变化）
+  currentTitle: '',         // 当前笔记已落库的标题（保存去重基线，独立于 state.notes 的即时 UI 更新）
   quill: null,
   isLoading: false,
   isSaving: false,
@@ -1257,6 +1258,7 @@ async function selectNote(noteId) {
     if (note.is_encrypted) {
       state.activeNoteId = note.id;
       state.currentContent = '';
+      state.currentTitle = note.title || '';
       dom.titleInput.value = note.title || '';
       dom.titleInput.classList.remove('hidden');
       dom.titleInput.readOnly = true;  // 加密未解锁时禁止编辑标题
@@ -1280,6 +1282,7 @@ async function selectNote(noteId) {
 
     state.activeNoteId = note.id;
     state.currentContent = note.content || '';
+    state.currentTitle = note.title || '';
 
     // 显示编辑器，隐藏空提示
     showEditorUI();
@@ -1361,11 +1364,14 @@ async function saveCurrentNote() {
 
     const title = dom.titleInput.value.trim() || '未命名笔记';
     const content = state.quill ? JSON.stringify(state.quill.getContents()) : '';
-    const currentNote = state.notes.find(n => n.id === state.activeNoteId);
-    if (currentNote && title === currentNote.title && content === state.currentContent) return;
+    // 去重基线用 currentTitle/currentContent，不能用 state.notes（标题输入处理器为刷新列表
+    // 已提前更新 state.notes[].title，拿它比较会误判"无变化"导致纯标题修改永不落库）
+    if (title === state.currentTitle && content === state.currentContent) return;
 
-    state.currentContent = content;
     await window.pywebview.api.notes_update(state.activeNoteId, { title, content });
+    // 保存成功后才更新基线：失败时基线不动，下次自动重试
+    state.currentTitle = title;
+    state.currentContent = content;
     const noteIdx = state.notes.findIndex(n => n.id === state.activeNoteId);
     if (noteIdx >= 0) {
       state.notes[noteIdx].title = title;
@@ -1410,6 +1416,7 @@ async function deleteNoteById(noteId) {
       // 先保存再清除状态
       state.activeNoteId = null;
       state.currentContent = '';
+      state.currentTitle = '';
 
       if (state.quill) {
         state.quill.setContents([]);
@@ -2318,6 +2325,7 @@ $('#btn-restore-version').addEventListener('click', async () => {
     }
     dom.titleInput.value = note.title || '';
     state.currentContent = note.content || '';
+    state.currentTitle = note.title || '';
   }
   closePanel($('#version-preview-panel'));
   alert('已恢复到所选版本');
