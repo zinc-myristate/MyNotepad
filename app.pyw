@@ -78,6 +78,117 @@ def show_error_dialog(message, title="错误"):
     tkinter.messagebox.showerror(title, message)
     return True
 
+# ====== 图标图像处理（智能裁切 + Win11 风格大圆角） ======
+ICON_SIZE = 512
+DEFAULT_ICON_RADIUS_PCT = 15  # 圆角半径 = 边长 ×15%，参照 Win11 应用图标
+
+def _icon_temp_dir():
+    import tempfile
+    d = os.path.join(tempfile.gettempdir(), "mynotepad_icons")
+    os.makedirs(d, exist_ok=True)
+    return d
+
+def _validate_icon_temp(temp_path):
+    """临时文件路径白名单校验：必须是 mynotepad_icons 目录内的 PNG，防任意路径读/删"""
+    try:
+        real = os.path.realpath(temp_path)
+        if os.path.dirname(real) != os.path.realpath(_icon_temp_dir()):
+            return None
+        if not real.lower().endswith('.png') or not os.path.isfile(real):
+            return None
+        return real
+    except Exception:
+        return None
+
+def _smart_square_crop(img):
+    """自适应正方形裁切：OpenCV 谱残差显著性 + 人脸加权定位主体；cv2 不可用时降级为居中裁切"""
+    from PIL import Image
+    w, h = img.size
+    size = min(w, h)
+    center_box = ((w - size) // 2, (h - size) // 2, (w - size) // 2 + size, (h - size) // 2 + size)
+    if w == h:
+        return img
+    try:
+        import cv2
+        import numpy as np
+    except Exception:
+        return img.crop(center_box)
+    try:
+        # 降采样加速：长边缩到 ≤512 再分析
+        scale = max(w, h) / 512 if max(w, h) > 512 else 1
+        sw, sh = max(1, round(w / scale)), max(1, round(h / scale))
+        small = np.asarray(img.convert("RGB").resize((sw, sh), Image.BILINEAR))
+        bgr = cv2.cvtColor(small, cv2.COLOR_RGB2BGR)
+        # 谱残差显著性图
+        ok, salmap = cv2.saliency.StaticSaliencySpectralResidual_create().computeSaliency(bgr)
+        if not ok or salmap is None or float(salmap.sum()) < 1e-6:
+            return img.crop(center_box)
+        salmap = salmap.astype(np.float64)
+        # 人脸加权（可选增强：XML 缺失或检测失败时静默跳过）
+        try:
+            cascade_xml = os.path.join(BASE_DIR, "resources", "haarcascade_frontalface_default.xml")
+            if os.path.isfile(cascade_xml):
+                cascade = cv2.CascadeClassifier(cascade_xml)
+                if not cascade.empty():
+                    gray = cv2.cvtColor(bgr, cv2.COLOR_BGR2GRAY)
+                    faces = cascade.detectMultiScale(gray, scaleFactor=1.1, minNeighbors=5, minSize=(24, 24))
+                    for (x, y, fw, fh) in faces:
+                        salmap[y:y+fh, x:x+fw] += float(salmap.max()) * 2.0  # 人脸权重压过背景纹理
+        except Exception:
+            pass
+        # 积分图 + 沿长轴滑窗，取显著性积分最大的正方形窗口
+        integ = cv2.integral(salmap)
+        win = min(sw, sh)
+        travel = max(sw, sh) - win
+        step = max(1, travel // 64)
+
+        def window_score(off):
+            x1, y1 = (off, 0) if sw > sh else (0, off)
+            x2, y2 = x1 + win, y1 + win
+            return integ[y2, x2] - integ[y1, x2] - integ[y2, x1] + integ[y1, x1]
+
+        best_off, best_score = 0, float('-inf')
+        for off in range(0, travel + 1, step):
+            s = window_score(off)
+            if s > best_score:
+                best_off, best_score = off, s
+        # 纯色/低对比图退化保护：与居中窗口得分差 <2% 时保持居中
+        center_score = window_score(travel // 2)
+        if best_score - center_score < 0.02 * max(center_score, 1e-6):
+            best_off = travel // 2
+        # 映射回原图坐标
+        long_side = max(w, h)
+        orig_off = min(max(0, round(best_off * (long_side / max(sw, sh)))), long_side - size)
+        box = (orig_off, 0, orig_off + size, size) if w > h else (0, orig_off, size, orig_off + size)
+        return img.crop(box)
+    except Exception:
+        return img.crop(center_box)
+
+def _apply_rounded_corners(img, radius_pct):
+    """RGBA 正方形图做大圆角：4× 超采样蒙版抗锯齿，圆角外完全透明，保留原图自身 alpha"""
+    from PIL import Image, ImageDraw, ImageChops
+    radius_pct = max(0.0, min(50.0, float(radius_pct)))
+    side = img.size[0]
+    radius_px = round(side * radius_pct / 100)
+    if radius_px <= 0:
+        return img.copy()
+    ss = 4  # 超采样倍数：大图画圆角再缩回，边缘平滑无锯齿
+    big = Image.new("L", (side * ss, side * ss), 0)
+    ImageDraw.Draw(big).rounded_rectangle([0, 0, side * ss - 1, side * ss - 1], radius=radius_px * ss, fill=255)
+    mask = big.resize((side, side), Image.LANCZOS)
+    out = img.copy()
+    out.putalpha(ImageChops.multiply(img.getchannel("A"), mask))
+    return out
+
+def _icon_preview_b64(img):
+    """生成 128×128 预览 base64 dataURL"""
+    from PIL import Image
+    import io, base64 as b64
+    buf = io.BytesIO()
+    img.resize((128, 128), Image.LANCZOS).save(buf, "PNG")
+    return "data:image/png;base64," + b64.b64encode(buf.getvalue()).decode("utf-8")
+
+
 # ====== 导入后端 API ======
 from backend import api as backend_api
 
@@ -244,7 +355,7 @@ class AppApi:
         return True  # 前端通过 window.print() 处理
 
     def pick_and_preview_icon(self):
-        """第一步：选择图片并生成预览，保存到临时位置，不修改正式图标"""
+        """第一步：选择图片，智能裁切为 512×512 基准方图并生成默认圆角预览，不修改正式图标"""
         path = tkinter.filedialog.askopenfilename(
             title="选择新图标（推荐 512×512 正方形，PNG/JPG，≤10MB）",
             filetypes=[("图片文件", "*.png *.jpg *.jpeg *.bmp")]
@@ -258,34 +369,38 @@ class AppApi:
         except:
             return {"success": False, "error": "无法读取文件"}
         try:
-            from PIL import Image, ImageDraw
-            import io, base64 as b64, uuid, tempfile, shutil
+            from PIL import Image
+            import uuid
             Image.MAX_IMAGE_PIXELS = 100_000_000
             img = Image.open(path).convert("RGBA")
             w, h = img.size
-            size = min(w, h)
-            left = (w - size) // 2
-            top = (h - size) // 2
-            img = img.crop((left, top, left + size, top + size))
-            img = img.resize((512, 512), Image.LANCZOS)
-            # RGB 白底合成（去掉 alpha，确保 Windows 图标兼容）
-            rgb_img = Image.new("RGB", (512, 512), (255, 255, 255))
-            rgb_img.paste(img, (0, 0), img)
-            # 保存到临时文件
-            temp_dir = os.path.join(tempfile.gettempdir(), "mynotepad_icons")
-            os.makedirs(temp_dir, exist_ok=True)
-            temp_path = os.path.join(temp_dir, str(uuid.uuid4())[:8] + ".png")
-            rgb_img.save(temp_path, "PNG")
-            # 生成预览
-            buf = io.BytesIO()
-            rgb_img.resize((128, 128), Image.LANCZOS).save(buf, "PNG")
-            preview_b64 = b64.b64encode(buf.getvalue()).decode("utf-8")
+            # 自适应裁切：显著性识别主体（cv2 缺失时降级居中）
+            img = _smart_square_crop(img)
+            base = img.resize((ICON_SIZE, ICON_SIZE), Image.LANCZOS)
+            # 保存 RGBA 基准方图（不含圆角，供滑杆实时重渲染；不覆盖用户原图）
+            temp_path = os.path.join(_icon_temp_dir(), str(uuid.uuid4())[:8] + ".png")
+            base.save(temp_path, "PNG")
+            # 默认圆角预览
+            preview = _icon_preview_b64(_apply_rounded_corners(base, DEFAULT_ICON_RADIUS_PCT))
             return {
                 "success": True,
-                "preview": "data:image/png;base64," + preview_b64,
+                "preview": preview,
                 "tempPath": temp_path,
-                "origSize": f"{w}×{h}"
+                "origSize": f"{w}×{h}",
+                "radiusPct": DEFAULT_ICON_RADIUS_PCT
             }
+        except Exception as e:
+            return {"success": False, "error": str(e)}
+
+    def update_icon_preview(self, temp_path, radius_pct):
+        """滑杆实时调节：按新圆角半径重渲染预览"""
+        real = _validate_icon_temp(temp_path)
+        if not real:
+            return {"success": False, "error": "无效的临时文件"}
+        try:
+            from PIL import Image
+            base = Image.open(real).convert("RGBA")
+            return {"success": True, "preview": _icon_preview_b64(_apply_rounded_corners(base, radius_pct))}
         except Exception as e:
             return {"success": False, "error": str(e)}
 
@@ -339,8 +454,11 @@ class AppApi:
         except:
             return False
 
-    def confirm_icon(self, temp_path):
-        """第二步：确认更换，复制文件并更新快捷方式"""
+    def confirm_icon(self, temp_path, radius_pct=DEFAULT_ICON_RADIUS_PCT):
+        """第二步：确认更换，按选定圆角生成正式图标（带 Alpha 透明 PNG/ICO）并更新快捷方式"""
+        real = _validate_icon_temp(temp_path)
+        if not real:
+            return {"success": False, "error": "无效的临时文件"}
         try:
             from PIL import Image
             import shutil
@@ -351,15 +469,16 @@ class AppApi:
             os.makedirs(resources_dir, exist_ok=True)
             icon_path = os.path.join(resources_dir, "icon.png")
             ico_path = os.path.join(resources_dir, "icon.ico")
-            # 直接复制 PNG（保留原始质量）
-            shutil.copy2(temp_path, icon_path)
-            # 从 PNG 生成 ICO（仅 256×256，PIL 用 PNG 编码无损）
-            img = Image.open(temp_path).resize((256, 256), Image.LANCZOS)
-            img.save(ico_path, "ICO", sizes=[(256, 256)])
+            base = Image.open(real).convert("RGBA")
+            rounded = _apply_rounded_corners(base, radius_pct)
+            # 512×512 带 Alpha PNG（圆角外完全透明）
+            rounded.save(icon_path, "PNG")
+            # ICO 256×256：Pillow 用 PNG 编码，alpha 完整保留
+            rounded.resize((256, 256), Image.LANCZOS).save(ico_path, "ICO", sizes=[(256, 256)])
             # 更新桌面快捷方式（ICO 格式最可靠）
             sc_ok = self._update_shortcut(ico_path)
             # 清理临时文件
-            try: os.remove(temp_path)
+            try: os.remove(real)
             except: pass
             # 尝试更新任务栏图标
             tb_ok = self._update_taskbar_icon(ico_path)
@@ -373,8 +492,9 @@ class AppApi:
     def cancel_icon(self, temp_path):
         """取消更换，删除临时文件"""
         try:
-            if temp_path and os.path.exists(temp_path):
-                os.remove(temp_path)
+            real = _validate_icon_temp(temp_path) if temp_path else None
+            if real:
+                os.remove(real)
             return {"success": True}
         except Exception as e:
             return {"success": False, "error": str(e)}

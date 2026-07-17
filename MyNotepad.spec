@@ -7,6 +7,7 @@ a = Analysis(
     binaries=[],
     datas=[('renderer', 'renderer'), ('resources', 'resources')],
     hiddenimports=['backend', 'docx', 'openpyxl', 'PIL', 'cryptography',
+                   'cv2', 'numpy',
                    'pycparser.yacctab', 'pycparser.lextab'],
     hookspath=[],
     hooksconfig={},

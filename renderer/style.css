@@ -1221,6 +1221,14 @@ body.adaptive-bg .panel-dialog {
   cursor: ew-resize;
   border-radius: 3px;
 }
+
+/* 图标预览：棋盘格底展示真实 Alpha 透明（圆角外区域） */
+.icon-preview-checker {
+  display: inline-block;
+  line-height: 0;
+  border: 2px solid var(--border-color);
+  background: conic-gradient(#e0e0e0 0 25%, #fff 0 50%, #e0e0e0 0 75%, #fff 0) 0 0 / 16px 16px;
+}
 .bg-pos-controls {
   display: flex; align-items: center; gap: 4px;
   font-size: var(--font-size-sm); font-weight: 500;

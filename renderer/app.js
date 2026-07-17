@@ -1856,8 +1856,8 @@ $('#btn-clear-note-bg').addEventListener('click', async () => {
   $('input[name="note-bg-type"][value="global"]').checked = true;
 });
 
-// ====== 背景面板滚轮调节（透明度 + 缩放） ======
-['#global-bg-opacity','#global-bg-zoom','#note-bg-opacity','#note-bg-zoom'].forEach(sel => {
+// ====== 背景面板滚轮调节（透明度 + 缩放 + 图标圆角） ======
+['#global-bg-opacity','#global-bg-zoom','#note-bg-opacity','#note-bg-zoom','#icon-radius'].forEach(sel => {
   const el = $(sel);
   if (!el) return;
   el.addEventListener('wheel', (e) => {
@@ -1879,6 +1879,7 @@ dom.btnBackground.addEventListener('click', () => {
 // 更换图标 — 真·预览确认两步走
 let _iconTempPath = null;
 let _iconChanging = false;
+let _iconRadius = 15;  // 圆角半径百分比（Win11 风格默认 15%）
 
 function _showIconMsg(msg, isError) {
   const el = $('#icon-result-msg');
@@ -1887,6 +1888,24 @@ function _showIconMsg(msg, isError) {
     el.style.color = isError ? 'var(--danger)' : 'var(--accent)';
   }
 }
+
+// 圆角滑杆：防抖调后端重渲染预览（捕获 tempPath 防迟到回调覆盖）
+const _debouncedRadiusUpdate = debounce(async () => {
+  const tp = _iconTempPath;
+  if (!tp) return;
+  try {
+    const r = await window.pywebview.api.update_icon_preview(tp, _iconRadius);
+    if (r && r.success && _iconTempPath === tp) {
+      $('#icon-preview-img').src = r.preview;
+    }
+  } catch (e) { /* 预览更新失败不阻断流程 */ }
+}, 150);
+
+$('#icon-radius').addEventListener('input', () => {
+  _iconRadius = parseInt($('#icon-radius').value, 10);
+  $('#icon-radius-val').textContent = _iconRadius + '%';
+  _debouncedRadiusUpdate();
+});
 
 dom.btnChangeIcon.addEventListener('click', async () => {
   if (_iconChanging) return;
@@ -1897,6 +1916,9 @@ dom.btnChangeIcon.addEventListener('click', async () => {
     if (!result) return;
     if (result.success) {
       _iconTempPath = result.tempPath;
+      _iconRadius = (typeof result.radiusPct === 'number') ? result.radiusPct : 15;
+      $('#icon-radius').value = _iconRadius;
+      $('#icon-radius-val').textContent = _iconRadius + '%';
       $('#icon-preview-img').src = result.preview;
       const sizeEl = $('#icon-preview-size');
       if (sizeEl && result.origSize) sizeEl.textContent = '原图：' + result.origSize + ' → 512×512';
@@ -1910,14 +1932,16 @@ dom.btnChangeIcon.addEventListener('click', async () => {
 
 $('#btn-icon-confirm').addEventListener('click', async () => {
   if (!_iconTempPath) return;
+  _debouncedRadiusUpdate.cancel();
   _showIconMsg('保存中…', false);
-  const result = await window.pywebview.api.confirm_icon(_iconTempPath);
+  const result = await window.pywebview.api.confirm_icon(_iconTempPath, _iconRadius);
   _iconTempPath = null;
   _showIconMsg(result && result.success ? (result.msg || '已更新') : (result.error || '失败'), !result || !result.success);
   setTimeout(() => closePanel($('#icon-preview-panel')), 1500);
 });
 
 $('#btn-icon-cancel').addEventListener('click', async () => {
+  _debouncedRadiusUpdate.cancel();
   if (_iconTempPath) {
     await window.pywebview.api.cancel_icon(_iconTempPath);
     _iconTempPath = null;
@@ -1926,6 +1950,7 @@ $('#btn-icon-cancel').addEventListener('click', async () => {
 });
 
 $('#btn-icon-restore').addEventListener('click', async () => {
+  _debouncedRadiusUpdate.cancel();
   _showIconMsg('恢复中…', false);
   const result = await window.pywebview.api.restore_default_icon();
   if (result && result.success) {

@@ -841,8 +841,13 @@
     </div>
     <div class="panel-body">
       <p style="color:var(--text-secondary);font-size:var(--font-size-sm);margin-bottom:12px;">推荐 512×512 正方形图片，PNG/JPG，≤10MB</p>
-      <img id="icon-preview-img" src="" style="width:128px;height:128px;border-radius:16px;border:2px solid var(--border-color);object-fit:cover;" alt="预览">
+      <span class="icon-preview-checker"><img id="icon-preview-img" src="" style="width:128px;height:128px;display:block;" alt="预览"></span>
       <p id="icon-preview-size" style="color:var(--text-muted);font-size:var(--font-size-xs);margin-top:8px;"></p>
+      <div class="opacity-slider" style="margin-top:12px;">
+        <span>圆角</span>
+        <input type="range" id="icon-radius" min="0" max="50" value="15" step="1">
+        <span id="icon-radius-val" style="min-width:36px;text-align:right;">15%</span>
+      </div>
       <p id="icon-result-msg" style="color:var(--accent);font-size:var(--font-size-sm);margin-top:8px;min-height:20px;"></p>
       <div style="display:flex;gap:10px;margin-top:16px;justify-content:center;">
         <button id="btn-icon-restore" class="btn-solid-secondary">恢复默认</button>
