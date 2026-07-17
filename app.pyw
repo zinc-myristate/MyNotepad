@@ -554,7 +554,7 @@ def _on_loaded():
     if hwnd:
         pid = ctypes.c_ulong()
         user32.GetWindowThreadProcessId(hwnd, ctypes.byref(pid))
-        kernel32.AllowSetForegroundWindow(pid.value)
+        user32.AllowSetForegroundWindow(pid.value)
         user32.ShowWindow(hwnd, 9)
         user32.SetWindowPos(hwnd, -1, 0, 0, 0, 0, 0x0002 | 0x0001)
         user32.BringWindowToTop(hwnd)

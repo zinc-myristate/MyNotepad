@@ -181,6 +181,35 @@ function initQuill() {
     }
   });
 
+  // 表格删除增强：Quill 默认在单元格开头吃掉 Backspace（空 handler 保护结构），
+  // 导致内容删完后行骨架（标题行）永远删不掉。改为：整行为空时 Backspace 删该行，
+  // 删到只剩一行时删除整个表格。
+  const _bsBindings = quill.keyboard.bindings['Backspace'] || [];
+  const _tblNoop = _bsBindings.find(b => b.offset === 0 && Array.isArray(b.format) && b.format.includes('table'));
+  if (_tblNoop) {
+    _tblNoop.handler = function (range) {
+      const [cell] = quill.getLine(range.index);
+      if (!cell || cell.statics.blotName !== 'table') return false;
+      const row = cell.parent;                    // table-row
+      const body = row && row.parent;             // table-body
+      const table = body && body.parent;          // table-container
+      if (!row || !body || !table) return false;
+      // 整行是否为空（每个单元格只剩自身换行符，length === 1）
+      let rowEmpty = true;
+      row.children.forEach(c => { if (c.length() > 1) rowEmpty = false; });
+      if (!rowEmpty) return false;                // 行内还有内容：维持默认保护，不动
+      const offset = table.offset(quill.scroll);
+      if (body.children.length <= 1) {
+        table.remove();                           // 最后一行 → 删除整个表格
+      } else {
+        row.remove();                             // 删除当前空行
+      }
+      quill.update(Quill.sources.USER);           // 走 user 变更，触发自动保存
+      quill.setSelection(Math.max(0, offset - 1), 0, Quill.sources.SILENT);
+      return false;
+    };
+  }
+
   // 列表 Word 模式：空列表项 Enter → 缩进降级或退出
   quill.keyboard.addBinding({
     key: 'Enter',
@@ -982,11 +1011,28 @@ $('#btn-insert-table-confirm').addEventListener('click', () => {
   state.quill.setSelection(range.index + html.length);
 });
 
-// 删除当前表格
+// 删除当前表格（优先删光标所在的表格，找不到再回退第一个）
 $('#btn-delete-table').addEventListener('click', () => {
-  const table = state.quill.root.querySelector('table');
-  if (table) {
-    table.remove();
+  if (!state.quill) return;
+  let tableBlot = null;
+  const range = state.quill.getSelection(true);
+  if (range) {
+    let [node] = state.quill.getLine(range.index);
+    while (node && node !== state.quill.scroll) {
+      if (node.statics && node.statics.blotName === 'table-container') { tableBlot = node; break; }
+      node = node.parent;
+    }
+  }
+  if (!tableBlot) {
+    // 光标不在表格内：回退取文档中第一个表格
+    const el = state.quill.root.querySelector('table');
+    if (el && Quill.find(el)) tableBlot = Quill.find(el);
+  }
+  if (tableBlot) {
+    const offset = tableBlot.offset(state.quill.scroll);
+    tableBlot.remove();
+    state.quill.update(Quill.sources.USER);  // 走 user 变更，触发自动保存
+    state.quill.setSelection(Math.max(0, offset - 1), 0, Quill.sources.SILENT);
     closePanel($('#table-picker'));
   } else {
     alert('未找到表格');
