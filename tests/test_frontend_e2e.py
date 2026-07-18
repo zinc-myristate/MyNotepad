@@ -60,3 +60,29 @@ def test_title_only_edit_persists(tmp_path, monkeypatch):
     result = _run_window(ns, actions)
     assert 'error' not in result, result
     assert result['db_title'] == test_title
+
+
+def test_search_filters_note_list(tmp_path, monkeypatch):
+    """搜索框驱动后端 notes_search：正文命中显示、未命中隐藏"""
+    ns = load_app_partial(monkeypatch, tmp_path)
+    import backend
+    a = backend.api.notes_create()['id']
+    backend.api.notes_update(a, {'title': '苹果笔记', 'content': '{"ops":[{"insert":"这里讲水果种植技术\\n"}]}'})
+    b = backend.api.notes_create()['id']
+    backend.api.notes_update(b, {'title': '汽车笔记', 'content': '{"ops":[{"insert":"这里讲发动机保养\\n"}]}'})
+
+    def actions(window, result):
+        window.evaluate_js(
+            "dom.searchInput.value = '水果种植';"
+            "dom.searchInput.dispatchEvent(new Event('input', {bubbles:true}));")
+        time.sleep(1.5)  # > 200ms 搜索防抖 + 桥接往返
+        result['hidden'] = window.evaluate_js(
+            "JSON.stringify([...dom.noteList.querySelectorAll('.note-item')]"
+            ".map(el => [el.dataset.noteId, el.classList.contains('hidden-by-search')]))")
+
+    result = _run_window(ns, actions)
+    assert 'error' not in result, result
+    import json
+    hidden = dict(json.loads(result['hidden']))
+    assert hidden[a] is False, '正文命中的笔记不应被隐藏'
+    assert hidden[b] is True, '未命中的笔记应被隐藏'

@@ -133,8 +133,11 @@ $('#btn-move-notebook')?.addEventListener('click', async () => {
 });
 
 // ====== 搜索过滤 ======
+// 后端 FTS5 全文搜索（标题+正文明文提取索引；加密笔记只搜标题；<3 字符自动 LIKE 回退）
+let _searchSeq = 0;  // 请求序号：丢弃迟到的乱序响应
+
 async function filterNotesBySearch(query) {
-  const q = query.trim().toLowerCase();
+  const q = query.trim();
   if (!q) {
     // 无搜索词：显示全部
     dom.noteList.querySelectorAll('.note-item').forEach(el => el.classList.remove('hidden-by-search'));
@@ -143,24 +146,36 @@ async function filterNotesBySearch(query) {
   }
   dom.btnSearchClear.style.display = 'flex';
 
-  // 前端搜索：匹配标题，或加载内容进行匹配
-  const items = dom.noteList.querySelectorAll('.note-item');
-  for (const item of items) {
-    const noteId = item.dataset.noteId;
-    const note = state.notes.find(n => n.id === noteId);
-    if (!note) continue;
-
-    let matched = note.title.toLowerCase().includes(q);
-    // 如果标题没匹配，检查正文（从数据库加载）
-    if (!matched && note.content) {
-      matched = note.content.toLowerCase().includes(q);
-    }
-    item.classList.toggle('hidden-by-search', !matched);
+  const seq = ++_searchSeq;
+  let matched;
+  try {
+    const result = await window.pywebview.api.notes_search(q);
+    if (seq !== _searchSeq) return;  // 已有更新的查询，丢弃本次结果
+    matched = new Set((result && result.ids) || []);
+  } catch (e) {
+    if (seq !== _searchSeq) return;
+    // 后端不可达时回退旧的前端标题匹配
+    const lower = q.toLowerCase();
+    matched = new Set(state.notes.filter(n => (n.title || '').toLowerCase().includes(lower)).map(n => n.id));
   }
+  dom.noteList.querySelectorAll('.note-item').forEach(item => {
+    item.classList.toggle('hidden-by-search', !matched.has(item.dataset.noteId));
+  });
 }
 
-dom.searchInput.addEventListener('input', () => filterNotesBySearch(dom.searchInput.value));
+const _debouncedSearch = debounce(() => filterNotesBySearch(dom.searchInput.value), 200);
+dom.searchInput.addEventListener('input', () => {
+  const q = dom.searchInput.value.trim();
+  if (!q) {
+    // 清空立即恢复全部（不等防抖）
+    _debouncedSearch.cancel();
+    filterNotesBySearch('');
+    return;
+  }
+  _debouncedSearch();
+});
 dom.btnSearchClear.addEventListener('click', () => {
+  _debouncedSearch.cancel();
   dom.searchInput.value = '';
   filterNotesBySearch('');
   dom.searchInput.focus();
