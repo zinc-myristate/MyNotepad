@@ -17,17 +17,19 @@ from datetime import datetime
 from cryptography.hazmat.primitives.ciphers.aead import AESGCM
 
 # 数据目录：优先存 exe 旁边（便携模式，拷到 U 盘/其他电脑数据一起走）
+# MYNOTEPAD_DATA_DIR 环境变量可覆盖（测试用临时目录隔离，避免碰真实数据）
 _EXE_DIR = os.path.dirname(sys.executable) if getattr(sys, 'frozen', False) else os.path.dirname(os.path.abspath(__file__))
-DATA_DIR = os.path.join(_EXE_DIR, "data")
+_ENV_DATA_DIR = os.environ.get('MYNOTEPAD_DATA_DIR')
+DATA_DIR = _ENV_DATA_DIR or os.path.join(_EXE_DIR, "data")
 
 # 文件大小限制
 MAX_IMAGE_SIZE = 50 * 1024 * 1024    # 图片最大 50MB
 MAX_ATTACH_SIZE = 200 * 1024 * 1024  # 附件最大 200MB
 MAX_ICON_SIZE = 10 * 1024 * 1024     # 图标图片最大 10MB
 
-# 如果 AppData 里有旧数据，迁移过来
+# 如果 AppData 里有旧数据，迁移过来（测试环境变量覆盖数据目录时禁止迁移）
 _OLD_APP_DATA = os.path.join(os.environ.get('APPDATA', os.path.expanduser('~')), 'MyNotepad')
-if os.path.exists(_OLD_APP_DATA) and _OLD_APP_DATA != DATA_DIR:
+if not _ENV_DATA_DIR and os.path.exists(_OLD_APP_DATA) and _OLD_APP_DATA != DATA_DIR:
     import shutil as _shutil
     try:
         _old_db_path = os.path.join(_OLD_APP_DATA, 'notes.db')
@@ -243,7 +245,8 @@ def _cleanup_all_scheduled_tasks():
         pass
 
 _migrate_old_reminders()
-_cleanup_all_scheduled_tasks()
+if not _ENV_DATA_DIR:  # 测试环境不碰系统计划任务
+    _cleanup_all_scheduled_tasks()
 
 # ====== 内容加密（envelope 信封加密） ======
 # 每篇加密笔记有一个随机 DEK（数据密钥）加密正文和历史版本；
