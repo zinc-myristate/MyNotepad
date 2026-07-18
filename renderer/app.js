@@ -82,6 +82,24 @@ const dom = {
   confirmMessage: $('#confirm-message'),
 };
 
+// ====== 前端错误上报（只传 message+stack，绝不传笔记内容） ======
+let _errorReportCount = 0;
+function reportError(message, stack, source) {
+  try {
+    if (_errorReportCount >= 20) return;  // 会话内限 20 条，防报错风暴打穿桥接
+    if (!window.pywebview || !window.pywebview.api || !window.pywebview.api.log_error) return;
+    _errorReportCount++;
+    window.pywebview.api.log_error(String(message || ''), String(stack || ''), String(source || 'js'));
+  } catch (e) { /* 上报失败静默 */ }
+}
+window.onerror = (msg, src, line, col, err) => {
+  reportError(msg, (err && err.stack) || (src + ':' + line + ':' + col), 'window.onerror');
+};
+window.addEventListener('unhandledrejection', (e) => {
+  const r = e.reason;
+  reportError((r && r.message) || String(r), (r && r.stack) || '', 'unhandledrejection');
+});
+
 // ====== 面板管理 ======
 
 function openPanel(panel) {
@@ -1380,6 +1398,7 @@ async function saveCurrentNote() {
     updateNoteListItem(state.activeNoteId);
   } catch (err) {
     console.error('保存笔记失败:', err.message || err);
+    reportError('保存笔记失败: ' + (err.message || err), err && err.stack, 'saveCurrentNote');
   } finally {
     state._saving = false;
   }
@@ -1438,6 +1457,7 @@ async function deleteNoteById(noteId) {
     updateNotebookCount();
   } catch (err) {
     console.error('删除笔记失败:', err);
+    reportError('删除笔记失败: ' + (err.message || err), err && err.stack, 'deleteNoteById');
     alert('删除笔记失败：' + err.message);
   }
 }

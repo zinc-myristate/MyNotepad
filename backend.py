@@ -63,6 +63,10 @@ for _f in ['notes.db-wal', 'notes.db-shm']:
 os.makedirs(DATA_DIR, exist_ok=True)
 os.makedirs(ATTACH_DIR, exist_ok=True)
 
+# 崩溃兜底日志（进程级异常钩子，app.pyw import backend 即生效）
+import applog
+applog.init(DATA_DIR)
+
 # ====== 数据库初始化 ======
 conn = sqlite3.connect(DB_PATH, check_same_thread=False)
 conn.row_factory = sqlite3.Row
@@ -786,6 +790,17 @@ class Api:
             "SELECT password_hash FROM notes WHERE id = ?", (note_id,)
         ).fetchone()
         return bool(stored and stored['password_hash'])
+
+    # ----- 前端错误上报 -----
+    def log_error(self, message, stack='', source='js'):
+        """前端 window.onerror/unhandledrejection 上报（只记消息+栈，不含笔记内容）"""
+        try:
+            msg = str(message)[:2048]
+            stk = str(stack)[:8192]
+            applog.get_logger().error("[js:%s] %s\n%s", str(source)[:64], msg, stk)
+        except Exception:
+            pass
+        return True
 
     # ----- 提醒 -----
     def reminder_set(self, note_id, reminder_time):

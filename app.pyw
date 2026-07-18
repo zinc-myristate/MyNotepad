@@ -308,6 +308,9 @@ class AppApi:
     def note_has_password(self, note_id): return self.backend.note_has_password(note_id)
     def note_lock(self, note_id): return self.backend.note_lock(note_id)
 
+    # 前端错误上报
+    def log_error(self, message, stack='', source='js'): return self.backend.log_error(message, stack, source)
+
     # 提醒（兼容旧接口）
     def reminder_set(self, note_id, reminder_time): return self.backend.reminder_set(note_id, reminder_time)
     def reminder_cancel(self, note_id): return self.backend.reminder_cancel(note_id)
