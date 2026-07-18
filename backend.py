@@ -11,6 +11,7 @@ import base64
 import tempfile
 import hashlib
 import hmac
+import json
 import threading
 import functools
 from datetime import datetime
@@ -349,6 +350,86 @@ def backup_database():
         applog.get_logger().exception("数据库备份失败")
         return None
 
+# ====== FTS5 全文搜索（trigram，中文可用） ======
+def _probe_fts5():
+    """探测当前 sqlite3 是否支持 FTS5 + trigram（打包后的 DLL 可能不同，运行时判定）"""
+    try:
+        c = sqlite3.connect(':memory:')
+        c.execute("CREATE VIRTUAL TABLE t USING fts5(x, tokenize='trigram')")
+        c.close()
+        return True
+    except Exception:
+        return False
+
+FTS_AVAILABLE = _probe_fts5()
+FTS_VERSION = '1'   # 索引结构版本：变更时改此值触发全量重建
+
+def _delta_to_text(content):
+    """Quill Delta JSON → 纯文本（搜索索引用）；解析失败回退原串；截断 100KB"""
+    if not content:
+        return ''
+    try:
+        data = json.loads(content)
+        ops = data.get('ops', []) if isinstance(data, dict) else data
+        parts = []
+        for op in ops:
+            ins = op.get('insert') if isinstance(op, dict) else None
+            if isinstance(ins, str):
+                parts.append(ins)   # 跳过图片等 embed dict
+        text = ''.join(parts)
+    except Exception:
+        text = content
+    return text[:100_000]
+
+def _fts_sync(note_id, title, plain_content):
+    """重写单条 FTS 行。plain_content=None（加密笔记）时 body 恒空——索引绝不落加密明文。"""
+    if not FTS_AVAILABLE:
+        return
+    try:
+        conn.execute("DELETE FROM notes_fts WHERE note_id = ?", (note_id,))
+        body = _delta_to_text(plain_content) if plain_content is not None else ''
+        conn.execute("INSERT INTO notes_fts (note_id, title, body) VALUES (?, ?, ?)",
+                     (note_id, title or '', body))
+    except Exception:
+        applog.get_logger().exception("FTS 同步失败")
+
+def _fts_sync_from_row(note_id):
+    """从 notes 表当前行重建 FTS 行（加密笔记 body 空，明文笔记提取正文）"""
+    row = conn.execute(
+        "SELECT title, content, password_hash FROM notes WHERE id = ?", (note_id,)
+    ).fetchone()
+    if not row:
+        return
+    _fts_sync(note_id, row['title'], None if row['password_hash'] else row['content'])
+
+def _fts_delete(note_id):
+    if not FTS_AVAILABLE:
+        return
+    try:
+        conn.execute("DELETE FROM notes_fts WHERE note_id = ?", (note_id,))
+    except Exception:
+        pass
+
+# 建表 + 版本门控全量回填
+if FTS_AVAILABLE:
+    try:
+        conn.execute(
+            "CREATE VIRTUAL TABLE IF NOT EXISTS notes_fts "
+            "USING fts5(note_id UNINDEXED, title, body, tokenize='trigram')")
+        _ver = conn.execute("SELECT value FROM settings WHERE key='fts_version'").fetchone()
+        if not _ver or _ver['value'] != FTS_VERSION:
+            conn.execute("DELETE FROM notes_fts")
+            for _r in conn.execute("SELECT id, title, content, password_hash FROM notes").fetchall():
+                _body = '' if _r['password_hash'] else _delta_to_text(_r['content'])
+                conn.execute("INSERT INTO notes_fts (note_id, title, body) VALUES (?, ?, ?)",
+                             (_r['id'], _r['title'] or '', _body))
+            conn.execute("INSERT OR REPLACE INTO settings (key, value) VALUES ('fts_version', ?)",
+                         (FTS_VERSION,))
+        conn.commit()
+    except Exception:
+        applog.get_logger().exception("FTS 初始化失败，降级为 LIKE 搜索")
+        FTS_AVAILABLE = False
+
 # ====== 导出给前端的 API 类 ======
 class Api:
     # ----- 笔记 -----
@@ -395,6 +476,7 @@ class Api:
             "INSERT INTO notes (id, title, content, sort_order) VALUES (?, '未命名笔记', '', ?)",
             (nid, max_order + 1)
         )
+        _fts_sync(nid, '未命名笔记', '')
         conn.commit()
         return self.notes_get(nid)
 
@@ -403,6 +485,7 @@ class Api:
         updates = {k: v for k, v in fields.items() if k in allowed}
         if not updates:
             return None
+        fts_needs = 'title' in updates or 'content' in updates  # 在加密剥除前判定
         # 加密笔记：内容写入必须已在后端解锁（不信任前端状态），解锁则加密后入库
         if 'content' in updates:
             row = conn.execute("SELECT password_hash FROM notes WHERE id = ?", (note_id,)).fetchone()
@@ -418,6 +501,8 @@ class Api:
         sets = ", ".join(f"{k} = ?" for k in updates)
         vals = list(updates.values()) + [note_id]
         conn.execute(f"UPDATE notes SET {sets} WHERE id = ?", vals)
+        if fts_needs:
+            _fts_sync_from_row(note_id)  # 从库中当前行重建（加密笔记 body 恒空）
         conn.commit()
         return self.notes_get(note_id)
 
@@ -427,9 +512,39 @@ class Api:
         if os.path.exists(note_attach):
             shutil.rmtree(note_attach, ignore_errors=True)
         conn.execute("DELETE FROM notes WHERE id = ?", (note_id,))
+        _fts_delete(note_id)
         conn.commit()
         _unlocked_deks.pop(note_id, None)
         return True
+
+    def notes_search(self, query):
+        """全文搜索：≥3 字符且 FTS5 可用走 trigram；否则 LIKE 回退（标题 + 明文笔记正文）。
+        加密笔记任何情况下只搜标题。返回 {'ids': [...], 'title_hits': [...]}"""
+        q = (query or '').strip()
+        if not q:
+            return {'ids': [], 'title_hits': []}
+        if FTS_AVAILABLE and len(q) >= 3:
+            try:
+                phrase = '"' + q.replace('"', '""') + '"'
+                title_ids = [r['note_id'] for r in conn.execute(
+                    "SELECT note_id FROM notes_fts WHERE notes_fts MATCH ?",
+                    ('title:' + phrase,)).fetchall()]
+                all_ids = [r['note_id'] for r in conn.execute(
+                    "SELECT note_id FROM notes_fts WHERE notes_fts MATCH ?",
+                    (phrase,)).fetchall()]
+                return {'ids': all_ids, 'title_hits': title_ids}
+            except Exception:
+                applog.get_logger().exception("FTS 查询失败，回退 LIKE")
+        # LIKE 回退：<3 字符（中文双字常态）/ FTS 不可用 / FTS 查询异常
+        esc = q.replace('\\', '\\\\').replace('%', '\\%').replace('_', '\\_')
+        like = f'%{esc}%'
+        rows = conn.execute(
+            "SELECT id, (title LIKE ? ESCAPE '\\') AS th FROM notes "
+            "WHERE title LIKE ? ESCAPE '\\' "
+            "   OR (COALESCE(password_hash, '') = '' AND content LIKE ? ESCAPE '\\')",
+            (like, like, like)).fetchall()
+        return {'ids': [r['id'] for r in rows],
+                'title_hits': [r['id'] for r in rows if r['th']]}
 
     # ----- 附件 -----
     def attachments_list(self, note_id):
@@ -647,6 +762,7 @@ class Api:
             "UPDATE notes SET title = ?, content = ?, updated_at = datetime('now','localtime') WHERE id = ?",
             (ver['title'], ver['content'], ver['note_id'])
         )
+        _fts_sync_from_row(ver['note_id'])
         conn.commit()
         return self.notes_get(ver['note_id'])
 
@@ -764,6 +880,8 @@ class Api:
         conn.execute("UPDATE notes SET password_hash = ?, enc_dek = ? WHERE id = ?",
                      (self._hash_password(password), _wrap_dek(dek, password), note_id))
         self._encrypt_all_note_content(note_id, dek)  # 内部 commit
+        _fts_sync_from_row(note_id)  # 加密后 body 清空（索引绝不留明文正文）
+        conn.commit()
         _unlocked_deks[note_id] = dek  # 设完保持解锁
         return True
 
@@ -822,6 +940,7 @@ class Api:
         if dek is not None and not self._decrypt_all_note_content(note_id, dek):
             return False  # 解密失败，保守不动
         conn.execute("UPDATE notes SET password_hash = NULL, enc_dek = NULL WHERE id = ?", (note_id,))
+        _fts_sync_from_row(note_id)  # 回明文后正文重新入索引
         conn.commit()
         _unlocked_deks.pop(note_id, None)
         return True

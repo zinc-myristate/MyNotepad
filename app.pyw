@@ -210,6 +210,7 @@ class AppApi:
         return self.backend.notes_create()
     def notes_update(self, note_id, fields): return self.backend.notes_update(note_id, fields)
     def notes_delete(self, note_id): return self.backend.notes_delete(note_id)
+    def notes_search(self, query): return self.backend.notes_search(query)
 
     # 附件操作
     def attachments_list(self, note_id): return self.backend.attachments_list(note_id)
