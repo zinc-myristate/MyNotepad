@@ -9,14 +9,8 @@ async function loadNotes(retryCount = 0) {
       }
       return [];
     }
-    state.notes = await window.pywebview.api.notes_list();
-    // 防御：确保 is_pinned/is_favorite 字段存在且为数字（防止序列化变成字符串 "0"）
-    state.notes = state.notes.map(n => ({ ...n, is_pinned: Number(n.is_pinned) || 0, is_favorite: Number(n.is_favorite) || 0 }));
-    // 客户端排序双保险：置顶优先，同组按更新时间倒序
-    state.notes.sort((a, b) => {
-      if (a.is_pinned !== b.is_pinned) return b.is_pinned - a.is_pinned;
-      return (b.updated_at || '').localeCompare(a.updated_at || '');
-    });
+    // 归一化 is_pinned/is_favorite + 客户端排序双保险，统一走 store
+    notesStore.setNotes(await window.pywebview.api.notes_list(), { normalize: true, sort: true });
     renderNoteList();
     return state.notes;
   } catch (err) {
@@ -284,11 +278,7 @@ async function saveCurrentNote() {
     // 保存成功后才更新基线：失败时基线不动，下次自动重试
     state.currentTitle = title;
     state.currentContent = content;
-    const noteIdx = state.notes.findIndex(n => n.id === state.activeNoteId);
-    if (noteIdx >= 0) {
-      state.notes[noteIdx].title = title;
-      state.notes[noteIdx].content = content;
-    }
+    notesStore.updateFields(state.activeNoteId, { title, content });
     updateNoteListItem(state.activeNoteId);
   } catch (err) {
     console.error('保存笔记失败:', err.message || err);
@@ -323,7 +313,7 @@ async function deleteNoteById(noteId) {
     if (wasActive) debouncedSave.cancel(); // 取消待保存任务，防止删除后迟到写库
 
     await window.pywebview.api.notes_delete(noteId);
-    state.notes = state.notes.filter(n => n.id !== noteId);
+    notesStore.remove(noteId);
 
     if (wasActive) {
       // 先保存再清除状态
@@ -361,9 +351,7 @@ dom.titleInput.addEventListener('input', () => {
   if (state.activeNoteId) {
     debouncedSave();
     const title = dom.titleInput.value.trim() || '未命名笔记';
-    const noteIdx = state.notes.findIndex(n => n.id === state.activeNoteId);
-    if (noteIdx >= 0) {
-      state.notes[noteIdx].title = title;
+    if (notesStore.updateFields(state.activeNoteId, { title })) {
       updateNoteListItem(state.activeNoteId);
     }
   }

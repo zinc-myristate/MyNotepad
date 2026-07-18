@@ -76,8 +76,8 @@ async function loadNotebookBar() {
 }
 
 async function filterByNotebook(nbId) {
-  state.notes = await window.pywebview.api.notes_list();
-  state.notes = state.notes.filter(n => n.notebook_id === nbId);
+  const all = await window.pywebview.api.notes_list();
+  notesStore.setNotes(all.filter(n => n.notebook_id === nbId));
   renderNoteList();
   loadNotebookBar();
   if (state.notes.length > 0) {
@@ -88,7 +88,7 @@ async function filterByNotebook(nbId) {
 }
 
 async function loadAllNotes() {
-  state.notes = await window.pywebview.api.notes_list();
+  notesStore.setNotes(await window.pywebview.api.notes_list());
   renderNoteList();
   loadNotebookBar();
   if (state.notes.length > 0 && !state.activeNoteId) {

@@ -69,10 +69,10 @@ async function loadTagFilter() {
     chip.addEventListener('click', async () => {
       if (currentTagFilter === tag.id) {
         currentTagFilter = null;
-        state.notes = await window.pywebview.api.notes_list();
+        notesStore.setNotes(await window.pywebview.api.notes_list());
       } else {
         currentTagFilter = tag.id;
-        state.notes = await window.pywebview.api.notes_by_tag(tag.id);
+        notesStore.setNotes(await window.pywebview.api.notes_by_tag(tag.id));
       }
       renderNoteList();
       loadTagFilter();
@@ -83,7 +83,7 @@ async function loadTagFilter() {
 
 $('#btn-clear-tag-filter').addEventListener('click', async () => {
   currentTagFilter = null;
-  state.notes = await window.pywebview.api.notes_list();
+  notesStore.setNotes(await window.pywebview.api.notes_list());
   renderNoteList();
   loadTagFilter();
 });

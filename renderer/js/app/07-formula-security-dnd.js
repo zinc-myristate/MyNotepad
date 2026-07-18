@@ -312,9 +312,8 @@ dom.noteList.addEventListener('drop', async (e) => {
   const dstIndex = [...dom.noteList.children].indexOf(item);
   if (dragSrcIndex === dstIndex) return;
 
-  // 重新排列 state.notes
-  const moved = state.notes.splice(dragSrcIndex, 1)[0];
-  state.notes.splice(dstIndex, 0, moved);
+  // 重新排列 state.notes（统一走 store）
+  notesStore.move(dragSrcIndex, dstIndex);
 
   // 更新所有笔记的 sort_order
   for (let i = 0; i < state.notes.length; i++) {

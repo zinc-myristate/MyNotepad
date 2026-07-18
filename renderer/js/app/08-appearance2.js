@@ -157,7 +157,7 @@ async function onCalendarDateClick(dateStr) {
     await saveCurrentNote();
     const note = await window.pywebview.api.notes_create();
     if (note) {
-      state.notes.unshift(note);
+      notesStore.unshift(note);
       renderNoteList();
       updateNotebookCount();
       await selectNote(note.id);
