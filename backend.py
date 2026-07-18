@@ -303,6 +303,52 @@ def _decrypt_content(dek, stored, note_id):
     except Exception:
         return None
 
+# ====== 数据库定期备份 ======
+BACKUP_DIR = os.path.join(DATA_DIR, "backups")
+
+def backup_database():
+    """启动时调用（app.pyw 后台线程）：距最新备份 >24h 才备份，保留最近 7 份。
+
+    用 sqlite3 backup API 而非文件复制：DELETE journal 模式写入瞬间有 -journal
+    残留，直接 copy 可能撕裂；backup API 页级一致且遇写入自动重启。
+    返回备份文件路径；未到期或失败返回 None。
+    """
+    try:
+        if not os.path.exists(DB_PATH):
+            return None
+        os.makedirs(BACKUP_DIR, exist_ok=True)
+        existing = sorted(
+            f for f in os.listdir(BACKUP_DIR)
+            if f.startswith('notes-') and f.endswith('.db')
+        )
+        if existing:
+            latest = os.path.join(BACKUP_DIR, existing[-1])
+            if (datetime.now().timestamp() - os.path.getmtime(latest)) < 24 * 3600:
+                return None  # 24h 内已有备份
+        dest = os.path.join(BACKUP_DIR, datetime.now().strftime('notes-%Y%m%d-%H%M%S.db'))
+        src = sqlite3.connect(DB_PATH)
+        dst = sqlite3.connect(dest)
+        try:
+            with dst:
+                src.backup(dst)
+        finally:
+            src.close()
+            dst.close()
+        # 滚动保留最近 7 份（文件名含时间戳，字典序即时间序）
+        all_backups = sorted(
+            f for f in os.listdir(BACKUP_DIR)
+            if f.startswith('notes-') and f.endswith('.db')
+        )
+        for old in all_backups[:-7]:
+            try:
+                os.remove(os.path.join(BACKUP_DIR, old))
+            except OSError:
+                pass
+        return dest
+    except Exception:
+        applog.get_logger().exception("数据库备份失败")
+        return None
+
 # ====== 导出给前端的 API 类 ======
 class Api:
     # ----- 笔记 -----

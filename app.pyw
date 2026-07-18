@@ -191,6 +191,11 @@ def _icon_preview_b64(img):
 
 # ====== 导入后端 API ======
 from backend import api as backend_api
+import backend as _backend_mod
+
+# 数据库定期备份（后台线程，24h 判定 + 滚动 7 份，不拖慢启动）
+import threading as _threading
+_threading.Thread(target=_backend_mod.backup_database, daemon=True).start()
 
 # 扩展 API，添加文件对话框功能
 class AppApi:
