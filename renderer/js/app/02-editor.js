@@ -151,6 +151,7 @@ function initQuill() {
   // 监听内容变化 → 防抖自动保存（500ms 合并连续输入，切换/失焦/Ctrl+S 时立即 flush）
   quill.on('text-change', () => {
     if (state.activeNoteId && !state.isLoading) {
+      setSaveDot('dirty');
       debouncedSave();
       // 延迟同步贴纸覆盖层（Quill 可能重建了 DOM）
       if (typeof syncStickersToOverlay === 'function') {

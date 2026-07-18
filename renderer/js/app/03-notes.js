@@ -165,6 +165,7 @@ async function selectNote(noteId) {
       state.activeNoteId = note.id;
       state.currentContent = '';
       state.currentTitle = note.title || '';
+      setSaveDot('saved');  // 加密锁定态不闪
       dom.titleInput.value = note.title || '';
       dom.titleInput.classList.remove('hidden');
       dom.titleInput.readOnly = true;  // 加密未解锁时禁止编辑标题
@@ -189,6 +190,7 @@ async function selectNote(noteId) {
     state.activeNoteId = note.id;
     state.currentContent = note.content || '';
     state.currentTitle = note.title || '';
+    setSaveDot('saved');
 
     // 显示编辑器，隐藏空提示
     showEditorUI();
@@ -256,6 +258,15 @@ async function createNewNote() {
   }
 }
 
+// ====== 保存状态小圆点（灰=已保存 / 主题色呼吸=未保存或保存中 / 红=保存失败） ======
+function setSaveDot(s) {
+  const d = document.getElementById('save-dot');
+  if (!d) return;
+  d.classList.toggle('dirty', s === 'dirty');
+  d.classList.toggle('error', s === 'error');
+  d.title = { saved: '已保存', dirty: '有未保存修改…', error: '保存失败（已记录日志）' }[s] || '';
+}
+
 async function saveCurrentNote() {
   if (!state.activeNoteId) return;
   if (state._saving) return;
@@ -272,7 +283,10 @@ async function saveCurrentNote() {
     const content = state.quill ? JSON.stringify(state.quill.getContents()) : '';
     // 去重基线用 currentTitle/currentContent，不能用 state.notes（标题输入处理器为刷新列表
     // 已提前更新 state.notes[].title，拿它比较会误判"无变化"导致纯标题修改永不落库）
-    if (title === state.currentTitle && content === state.currentContent) return;
+    if (title === state.currentTitle && content === state.currentContent) {
+      setSaveDot('saved');  // 改动被撤销回原状
+      return;
+    }
 
     await window.pywebview.api.notes_update(state.activeNoteId, { title, content });
     // 保存成功后才更新基线：失败时基线不动，下次自动重试
@@ -280,9 +294,11 @@ async function saveCurrentNote() {
     state.currentContent = content;
     notesStore.updateFields(state.activeNoteId, { title, content });
     updateNoteListItem(state.activeNoteId);
+    setSaveDot('saved');
   } catch (err) {
     console.error('保存笔记失败:', err.message || err);
     reportError('保存笔记失败: ' + (err.message || err), err && err.stack, 'saveCurrentNote');
+    setSaveDot('error');
   } finally {
     state._saving = false;
   }
@@ -320,6 +336,7 @@ async function deleteNoteById(noteId) {
       state.activeNoteId = null;
       state.currentContent = '';
       state.currentTitle = '';
+      setSaveDot('saved');
 
       if (state.quill) {
         state.quill.setContents([]);
@@ -349,6 +366,7 @@ async function deleteNoteById(noteId) {
 // 标题输入框事件 - 列表即时刷新 + 防抖持久化
 dom.titleInput.addEventListener('input', () => {
   if (state.activeNoteId) {
+    setSaveDot('dirty');
     debouncedSave();
     const title = dom.titleInput.value.trim() || '未命名笔记';
     if (notesStore.updateFields(state.activeNoteId, { title })) {

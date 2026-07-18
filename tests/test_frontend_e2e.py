@@ -51,7 +51,12 @@ def test_title_only_edit_persists(tmp_path, monkeypatch):
         window.evaluate_js(
             "dom.titleInput.value = %r;"
             "dom.titleInput.dispatchEvent(new Event('input', {bubbles:true}));" % test_title)
+        result['dot_dirty'] = window.evaluate_js(
+            "document.getElementById('save-dot').classList.contains('dirty')")
         time.sleep(2)  # > 500ms 防抖
+        result['dot_saved'] = window.evaluate_js(
+            "!document.getElementById('save-dot').classList.contains('dirty')"
+            " && !document.getElementById('save-dot').classList.contains('error')")
         conn = sqlite3.connect('file:' + str(tmp_path / 'notes.db') + '?mode=ro', uri=True)
         result['db_title'] = conn.execute(
             "SELECT title FROM notes WHERE id=?", (nid,)).fetchone()[0]
@@ -60,6 +65,8 @@ def test_title_only_edit_persists(tmp_path, monkeypatch):
     result = _run_window(ns, actions)
     assert 'error' not in result, result
     assert result['db_title'] == test_title
+    assert result['dot_dirty'] is True, '输入后圆点应为未保存态'
+    assert result['dot_saved'] is True, '防抖保存后圆点应回到已保存态'
 
 
 def test_search_filters_note_list(tmp_path, monkeypatch):

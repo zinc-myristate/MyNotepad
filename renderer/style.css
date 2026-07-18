@@ -1229,6 +1229,28 @@ body.adaptive-bg .panel-dialog {
   border: 2px solid var(--border-color);
   background: conic-gradient(#e0e0e0 0 25%, #fff 0 50%, #e0e0e0 0 75%, #fff 0) 0 0 / 16px 16px;
 }
+
+/* 保存状态小圆点：灰=已保存，主题色呼吸=未保存/保存中，红=保存失败 */
+.save-dot {
+  width: 8px;
+  height: 8px;
+  border-radius: 50%;
+  flex: none;
+  background: var(--text-muted, #999);
+  transition: background 0.2s;
+}
+.save-dot.dirty {
+  background: var(--accent);
+  animation: saveDotBreathe 1.2s ease-in-out infinite;
+}
+.save-dot.error {
+  background: #E53E3E;
+  animation: none;
+}
+@keyframes saveDotBreathe {
+  0%, 100% { opacity: 0.35; }
+  50% { opacity: 1; }
+}
 .bg-pos-controls {
   display: flex; align-items: center; gap: 4px;
   font-size: var(--font-size-sm); font-weight: 500;
