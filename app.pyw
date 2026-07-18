@@ -536,6 +536,58 @@ class AppApi:
 
 api = AppApi(backend_api)
 
+# 关窗兜底处理器工厂（app.pyw 底部与 E2E 测试共用）。
+# 注意死锁陷阱：closing 事件在 UI 线程同步执行，而 evaluate_js 的 JS 回调也需要
+# UI 线程——在 closing 里直接 evaluate_js 会互等死锁。
+# 采用「取消-冲洗-再关」：首次 closing 返回 False 取消关闭，后台线程 flush
+# （此时 UI 线程已空闲，evaluate_js 正常），完成后 destroy 触发第二次 closing 放行。
+# 3 秒看门狗兜底：flush 卡死也强制关窗，绝不让窗口关不掉。
+def make_closing_handler(target_window, backend):
+    state = {'phase': 'idle', 'watchdog': None}  # idle -> flushing -> done
+
+    def _force_close():
+        if state['phase'] == 'done':
+            return  # 幂等：flush 与看门狗只有一方真正执行关闭
+        state['phase'] = 'done'
+        if state['watchdog'] is not None:
+            state['watchdog'].cancel()  # 必须取消：迟到的 Timer 会按 uid 误杀后续新窗口
+        try:
+            target_window.destroy()
+        except Exception:
+            pass
+
+    def _flush_and_close():
+        try:
+            raw = target_window.evaluate_js(
+                "typeof window.__getUnsavedSnapshot === 'function' ? window.__getUnsavedSnapshot() : null")
+            if raw:
+                data = json.loads(raw) if isinstance(raw, str) else raw
+                if data and data.get('noteId'):
+                    backend.notes_update(data['noteId'],
+                        {'title': data.get('title', ''), 'content': data.get('content', '')})
+        except Exception:
+            try:
+                import applog
+                applog.get_logger().exception("关窗兜底保存失败")
+            except Exception:
+                pass
+        finally:
+            _force_close()
+
+    def _on_closing():
+        if state['phase'] == 'done':
+            return None  # 第二次（destroy 触发）：放行
+        if state['phase'] == 'flushing':
+            return False  # flush 期间用户重复点关闭：仍拦截
+        state['phase'] = 'flushing'
+        import threading
+        threading.Thread(target=_flush_and_close, daemon=True).start()
+        watchdog = threading.Timer(3.0, _force_close)  # 看门狗：flush 卡死也强制关
+        state['watchdog'] = watchdog
+        watchdog.start()
+        return False  # 取消本次关闭，flush 完成后代码再关
+    return _on_closing
+
 # ====== 创建窗口 ======
 html_path = os.path.join(BASE_DIR, "renderer", "index.html")
 
@@ -573,6 +625,9 @@ def _on_loaded():
         user32.SetWindowPos(hwnd, -2, 0, 0, 0, 0, 0x0002 | 0x0001)
 
 window.events.loaded += _on_loaded
+
+# 关窗兜底：不等防抖的最后输入由 closing 同步落库
+window.events.closing += make_closing_handler(window, backend_api)
 
 # 启动
 if os.path.exists(icon_path):

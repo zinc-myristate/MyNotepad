@@ -12,12 +12,14 @@ pytestmark = pytest.mark.e2e
 
 
 def _run_window(ns, js_actions, wait_before=7, wait_after=2):
-    """启动无头窗口，执行 js_actions(window, result) 后销毁。"""
+    """启动无头窗口，执行 js_actions(window, result) 后销毁。挂载与生产一致的 closing 兜底。"""
     import webview
     result = {}
     window = webview.create_window(
         "E2E测试", PROJECT_ROOT + r'\renderer\index.html',
         js_api=ns['api'], width=900, height=600)
+    import backend
+    window.events.closing += ns['make_closing_handler'](window, backend.api)
 
     def runner():
         try:
@@ -67,6 +69,29 @@ def test_title_only_edit_persists(tmp_path, monkeypatch):
     assert result['db_title'] == test_title
     assert result['dot_dirty'] is True, '输入后圆点应为未保存态'
     assert result['dot_saved'] is True, '防抖保存后圆点应回到已保存态'
+
+
+def test_closing_flush_saves_last_edits(tmp_path, monkeypatch):
+    """关窗兜底：输入后不等 500ms 防抖立即关窗，closing 事件同步落库不丢输入"""
+    ns = load_app_partial(monkeypatch, tmp_path)
+    import backend
+    nid = backend.api.notes_create()['id']
+    test_title = '关窗兜底验证_' + str(int(time.time()))
+
+    def actions(window, result):
+        active = window.evaluate_js("state.activeNoteId")
+        assert active == nid, f'前端未自动选中预置笔记: {active}'
+        window.evaluate_js(
+            "dom.titleInput.value = %r;"
+            "dom.titleInput.dispatchEvent(new Event('input', {bubbles:true}));" % test_title)
+        # 不 sleep：立即销毁（防抖 500ms 定时器不会触发，全靠 closing 兜底）
+
+    result = _run_window(ns, actions, wait_after=0)
+    assert 'error' not in result, result
+    conn = sqlite3.connect('file:' + str(tmp_path / 'notes.db') + '?mode=ro', uri=True)
+    saved_title = conn.execute("SELECT title FROM notes WHERE id=?", (nid,)).fetchone()[0]
+    conn.close()
+    assert saved_title == test_title, '关窗前最后的输入应由 closing 兜底落库'
 
 
 def test_search_filters_note_list(tmp_path, monkeypatch):

@@ -317,6 +317,25 @@ window.addEventListener('beforeunload', () => {
   saveCurrentNote();
 });
 
+// 关窗兜底（主通道）：pywebview closing 事件里 Python 侧同步调用本函数取未存快照，
+// 直接落库后放行关闭（不走 JS→Python 异步桥，避免关窗竞态丢最后 500ms 输入）。
+// 必须保持同步、镜像 saveCurrentNote 的全部守卫。
+window.__getUnsavedSnapshot = function () {
+  try {
+    if (!state.activeNoteId || !state.quill) return null;
+    if (!state.quill.isEnabled()) return null;                      // 加密锁定态
+    const note = state.notes.find(n => n.id === state.activeNoteId);
+    if (note && note.has_password && !unlockedNotes[state.activeNoteId]) return null;
+    if (typeof syncStickersToQuill === 'function') syncStickersToQuill();
+    const title = dom.titleInput.value.trim() || '未命名笔记';
+    const content = JSON.stringify(state.quill.getContents());
+    if (title === state.currentTitle && content === state.currentContent) return null; // 无未存改动
+    return JSON.stringify({ noteId: state.activeNoteId, title: title, content: content });
+  } catch (e) {
+    return null;
+  }
+};
+
 function confirmDeleteNote(noteId, title) {
   showConfirm(`确定要删除笔记「${escapeHtml(title || '未命名笔记')}」吗？\n\n此操作不可恢复，笔记中的图片和附件也会被删除。`, async () => {
     await deleteNoteById(noteId);
