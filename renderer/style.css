@@ -560,15 +560,16 @@ html, body {
   opacity: 1;
 }
 
-/* 侧边栏底部 */
+/* 侧边栏底部（6 个按钮：3 列 × 2 行网格，单行放不下会溢出到笔记区） */
 .sidebar-footer {
   padding: 12px 12px;
   display: flex;
+  flex-wrap: wrap;
   gap: 8px;
   border-top: 1px solid var(--border-light);
 }
 .btn-sidebar-footer {
-  flex: 1;
+  flex: 1 1 calc(33.333% - 6px);
   display: flex;
   align-items: center;
   justify-content: center;
