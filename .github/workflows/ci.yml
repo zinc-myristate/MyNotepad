@@ -1,0 +1,62 @@
+name: CI
+
+on: [push, pull_request]
+
+jobs:
+  test:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.14'
+      - name: Cache pip
+        uses: actions/cache@v4
+        with:
+          path: ~\AppData\Local\pip\Cache
+          key: pip-${{ runner.os }}-${{ hashFiles('requirements.txt') }}
+          restore-keys: pip-${{ runner.os }}-
+      - name: Install dependencies
+        run: python -m pip install -r requirements.txt
+      - name: Run unit tests
+        run: python -m pytest
+
+  # 无头 webview 窗口在 CI 可能 flaky（依赖桌面会话/WebView2 时序），结果仅参考不阻塞
+  e2e:
+    runs-on: windows-latest
+    needs: test
+    continue-on-error: true
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.14'
+      - name: Install dependencies
+        run: python -m pip install -r requirements.txt
+      - name: Run headless E2E tests
+        run: python -m pytest -m e2e
+
+  # 打包冒烟：仅主分支，构建 exe 并启动 5 秒验证
+  package:
+    runs-on: windows-latest
+    needs: test
+    if: github.ref == 'refs/heads/master'
+    continue-on-error: true
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.14'
+      - name: Install dependencies
+        run: python -m pip install -r requirements.txt pyinstaller
+      - name: Build
+        run: pyinstaller MyNotepad.spec
+      - name: Smoke test
+        shell: pwsh
+        run: |
+          $env:MYNOTEPAD_DATA_DIR = "$env:RUNNER_TEMP\smoke"
+          $p = Start-Process -FilePath "dist\MyNotepad\MyNotepad.exe" -PassThru
+          Start-Sleep -Seconds 5
+          if ($p.HasExited) { Write-Error "应用启动后 5 秒内退出（exit code: $($p.ExitCode)）"; exit 1 }
+          Stop-Process -Id $p.Id
+          Write-Host "冒烟通过：应用运行 5 秒无崩溃"

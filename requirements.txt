@@ -1,0 +1,11 @@
+# 运行依赖（打包：还需 pyinstaller）
+pywebview
+cryptography
+Pillow
+python-docx
+openpyxl
+opencv-contrib-python
+numpy
+
+# 测试依赖
+pytest

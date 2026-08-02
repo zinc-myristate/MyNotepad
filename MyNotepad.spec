@@ -28,6 +28,7 @@ exe = EXE(
     bootloader_ignore_signals=False,
     strip=False,
     upx=True,
+    upx_exclude=['cryptography', 'libcrypto', 'libssl', 'opencv', 'numpy'],
     console=False,
     disable_windowed_traceback=True,
     argv_emulation=False,
@@ -35,6 +36,7 @@ exe = EXE(
     codesign_identity=None,
     entitlements_file=None,
     icon=['resources\\icon.ico'],
+    version='build_resources/version_info.txt',
 )
 coll = COLLECT(
     exe,
