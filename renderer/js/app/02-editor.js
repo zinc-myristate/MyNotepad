@@ -245,7 +245,7 @@ function initQuill() {
 
 async function handleImageFile(file) {
   if (!state.activeNoteId) {
-    alert('请先选择或新建一篇笔记');
+    showToast('请先选择或新建一篇笔记', { type: 'warn' });
     return;
   }
 
@@ -265,7 +265,7 @@ async function handleImageFile(file) {
     }
   } catch (err) {
     console.error('插入图片失败:', err);
-    alert('插入图片失败：' + err.message);
+    showToast('插入图片失败：' + (err.message || err), { type: 'error' });
   }
 }
 
@@ -273,17 +273,14 @@ async function insertImageFromPath(sourcePath) {
   const result = await window.pywebview.api.file_copy_to_note(sourcePath, state.activeNoteId, 'image');
   if (!result) return;
 
-  // 在 Quill 中插入图片
+  // 在 Quill 中插入图片：只存引用（id/filename/storedPath），正文不再内嵌 base64
+  //（渲染由 NoteImageBlot 异步 read_file_base64 完成）
   const range = state.quill.getSelection(true);
-  // pywebview: 用 base64 显示图片
-  let fileUrl;
-  try {
-    fileUrl = await window.pywebview.api.read_file_base64(result.storedPath);
-    if (!fileUrl) fileUrl = `file:///${result.storedPath.replace(/\\/g, '/')}`;
-  } catch {
-    fileUrl = `file:///${result.storedPath.replace(/\\/g, '/')}`;
-  }
-  state.quill.insertEmbed(range.index, 'image', fileUrl);
+  state.quill.insertEmbed(range.index, 'image', {
+    id: result.id,
+    filename: result.filename,
+    storedPath: result.storedPath
+  });
   state.quill.setSelection(range.index + 1);
 }
 
@@ -291,7 +288,7 @@ async function insertImageFromPath(sourcePath) {
 
 async function handleAttachmentFile(file) {
   if (!state.activeNoteId) {
-    alert('请先选择或新建一篇笔记');
+    showToast('请先选择或新建一篇笔记', { type: 'warn' });
     return;
   }
 
@@ -302,7 +299,7 @@ async function handleAttachmentFile(file) {
     }
   } catch (err) {
     console.error('插入附件失败:', err);
-    alert('插入附件失败：' + err.message);
+    showToast('插入附件失败：' + (err.message || err), { type: 'error' });
   }
 }
 
@@ -328,7 +325,7 @@ async function insertAttachmentFromPath(sourcePath, originalName) {
 
 $('#btn-insert-image').addEventListener('click', async () => {
   if (!state.activeNoteId) {
-    alert('请先选择或新建一篇笔记');
+    showToast('请先选择或新建一篇笔记', { type: 'warn' });
     return;
   }
   const filePath = await window.pywebview.api.pick_image();
@@ -339,7 +336,7 @@ $('#btn-insert-image').addEventListener('click', async () => {
 
 $('#btn-insert-attachment').addEventListener('click', async () => {
   if (!state.activeNoteId) {
-    alert('请先选择或新建一篇笔记');
+    showToast('请先选择或新建一篇笔记', { type: 'warn' });
     return;
   }
   const filePath = await window.pywebview.api.pick_attachment();
@@ -492,7 +489,7 @@ function confirmVoiceTemp() {
 
 function startVoiceRecording() {
   if (!state.activeNoteId) {
-    alert('请先选择或新建一篇笔记');
+    showToast('请先选择或新建一篇笔记', { type: 'warn' });
     return;
   }
 
@@ -500,7 +497,10 @@ function startVoiceRecording() {
   voiceRecognition = createVoiceRecognition();
 
   if (!voiceRecognition) {
-    alert('您的系统不支持语音识别功能\n\n需要 Windows 10/11 系统，\n并确保已安装中文语音包。');
+    showInfoDialog({
+      title: '语音识别不可用',
+      message: '您的系统不支持语音识别功能。\n\n需要 Windows 10/11 系统，并确保已安装中文语音包。'
+    });
     return;
   }
 
@@ -510,7 +510,7 @@ function startVoiceRecording() {
     console.error('启动语音识别失败:', err);
     voiceRecognition = null;
     resetVoiceUI();
-    alert('启动语音识别失败，请检查麦克风权限');
+    showToast('启动语音识别失败，请检查麦克风权限', { type: 'error' });
   }
 }
 
@@ -663,7 +663,7 @@ $('#btn-link-save').addEventListener('click', () => {
   const text = $('#link-text-input').value.trim();
   if (!url) return;
   // 安全校验：禁止 javascript: / data: 等危险协议
-  if (/^(javascript|data|vbscript):/i.test(url)) { alert('不允许的链接协议'); return; }
+  if (/^(javascript|data|vbscript):/i.test(url)) { showToast('不允许的链接协议', { type: 'warn' }); return; }
   if (_linkRange.length > 0) {
     state.quill.format('link', url);
   } else if (text) {
@@ -735,7 +735,7 @@ function showEmojiGrid(emojis) {
 }
 
 $('#btn-emoji').addEventListener('click', () => {
-  if (!state.activeNoteId) { alert('请先选择一篇笔记'); return; }
+  if (!state.activeNoteId) { showToast('请先选择一篇笔记', { type: 'warn' }); return; }
   buildEmojiPanel();
   openPanel(emojiPanel);
 });
@@ -814,7 +814,7 @@ $('#tbl-cols-minus').addEventListener('click', () => {
 
 $('#btn-table').addEventListener('click', () => {
   if (!state.activeNoteId) {
-    alert('请先选择或新建一篇笔记');
+    showToast('请先选择或新建一篇笔记', { type: 'warn' });
     return;
   }
   updateTablePreview();
@@ -865,26 +865,32 @@ $('#btn-delete-table').addEventListener('click', () => {
     state.quill.setSelection(Math.max(0, offset - 1), 0, Quill.sources.SILENT);
     closePanel($('#table-picker'));
   } else {
-    alert('未找到表格');
+    showToast('未找到表格', { type: 'warn' });
   }
 });
 
-// ====== 导出笔记 ======
 // ====== 导出笔记 ======
 
 const exportPanel = $('#export-panel');
 $('#btn-export').addEventListener('click', () => {
-  if (!state.activeNoteId) {
-    alert('请先选择一篇笔记');
-    return;
-  }
-  const note = state.notes.find(n => n.id === state.activeNoteId);
-  if (note && note.has_password && !unlockedNotes[state.activeNoteId]) {
-    alert('请先解锁笔记再导出');
-    return;
-  }
+  // 无笔记也允许打开面板（「备份全部数据」zip 导出不依赖当前笔记）
   openPanel(exportPanel);
 });
+
+// 导出前把外置图片引用解析回 data URI（占位图/file:// 直通会导致导出文件破图；html/docx/xlsx 共用）
+async function resolveExportImages(htmlContent) {
+  const tmp = document.createElement('div');
+  tmp.innerHTML = htmlContent;
+  for (const img of [...tmp.querySelectorAll('img')]) {
+    const path = img.getAttribute('data-stored-path');
+    const src = img.getAttribute('src') || '';
+    if (path && !src.startsWith('data:image')) {
+      const uri = await window.pywebview.api.read_file_base64(path);
+      if (uri) img.setAttribute('src', uri);
+    }
+  }
+  return tmp.innerHTML;
+}
 
 // 导出选项点击
 $$('.export-option').forEach(btn => {
@@ -892,25 +898,43 @@ $$('.export-option').forEach(btn => {
     const format = btn.dataset.format;
     closePanel(exportPanel);
 
-    if (!state.activeNoteId) return;
+    // 全库备份 zip：不依赖当前笔记
+    if (format === 'zip') {
+      try {
+        const p = await window.pywebview.api.export_all();
+        if (p) showToast('备份包已导出', { type: 'success' });
+      } catch (err) {
+        showToast('导出失败：' + (err.message || err), { type: 'error' });
+      }
+      return;
+    }
+
+    if (!state.activeNoteId) {
+      showToast('请先选择一篇笔记', { type: 'warn' });
+      return;
+    }
+    const note = state.notes.find(n => n.id === state.activeNoteId);
+    if (note && note.has_password && !unlockedNotes[state.activeNoteId]) {
+      showToast('请先解锁笔记再导出', { type: 'warn' });
+      return;
+    }
 
     const title = dom.titleInput.value.trim() || '未命名笔记';
-    const htmlContent = state.quill ? state.quill.root.innerHTML : '';
+    const htmlContent = state.quill ? await resolveExportImages(state.quill.root.innerHTML) : '';
 
     if (format === 'pdf') {
-      alert('即将打开系统打印对话框。\n\n请在打印设置中选择"另存为 PDF"作为打印机，然后点击保存即可导出为 PDF 文件。');
-      setTimeout(() => window.print(), 300);
+      showInfoDialog({
+        title: '导出 PDF',
+        message: '即将打开系统打印对话框。\n\n请在打印设置中选择"另存为 PDF"作为打印机，然后点击保存即可导出为 PDF 文件。'
+      }).then(() => window.print());
       return;
     }
 
     try {
-      const result = await window.pywebview.api.export_note(title, htmlContent, format);
-      if (result) {
-        // 导出成功
-      }
+      await window.pywebview.api.export_note(title, htmlContent, format);
     } catch (err) {
       console.error('导出失败:', err);
-      alert('导出失败：' + (err.message || err.toString()));
+      showToast('导出失败：' + (err.message || err), { type: 'error' });
     }
   });
 });

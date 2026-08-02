@@ -196,7 +196,7 @@ $('#cal-today').addEventListener('click', () => {
 // 装饰分割线 Blot 已在 js/quill/quill-deco.js 中注册
 
 $('#btn-divider').addEventListener('click', () => {
-  if (!state.activeNoteId) { alert('请先选择一篇笔记'); return; }
+  if (!state.activeNoteId) { showToast('请先选择一篇笔记', { type: 'warn' }); return; }
   buildDividerPanel();
   openPanel($('#divider-panel'));
 });
@@ -221,7 +221,7 @@ $$('.sticker-cat-btn').forEach(btn => {
 });
 
 $('#btn-sticker').addEventListener('click', () => {
-  if (!state.activeNoteId) { alert('请先选择一篇笔记'); return; }
+  if (!state.activeNoteId) { showToast('请先选择一篇笔记', { type: 'warn' }); return; }
   stickerCat = 'date';
   $$('.sticker-cat-btn').forEach(b => b.classList.toggle('active', b.dataset.stickerCat === 'date'));
   buildStickerGrid();
@@ -272,7 +272,7 @@ function loadPaperForNote(note) {
 }
 
 $('#btn-paper').addEventListener('click', () => {
-  if (!state.activeNoteId) { alert('请先选择一篇笔记'); return; }
+  if (!state.activeNoteId) { showToast('请先选择一篇笔记', { type: 'warn' }); return; }
   buildPaperPanel();
   openPanel($('#paper-panel'));
 });

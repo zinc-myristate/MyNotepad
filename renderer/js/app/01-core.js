@@ -110,12 +110,12 @@ function closePanel(panel) {
 }
 // 所有面板 ID 列表（新增面板只需在此添加）
 const ALL_PANEL_IDS = [
-  'theme-panel','background-panel','confirm-dialog','export-panel','table-picker',
+  'theme-panel','background-panel','confirm-dialog','input-dialog','move-notebook-panel','export-panel','table-picker',
   'emoji-panel','tag-picker-panel','tag-manager-panel','version-panel',
-  'version-preview-panel','reminder-panel','reminder-list-panel',
+  'version-preview-panel','reminder-panel','reminder-list-panel','trash-panel',
   'password-panel','password-verify-panel',
   'math-panel','calendar-panel','divider-panel','sticker-panel','paper-panel',
-  'link-panel','icon-preview-panel','chem-struct-panel',
+  'link-panel','icon-preview-panel',
 ];
 
 function closeAllPanels() {
@@ -146,27 +146,125 @@ $$('.panel-overlay').forEach(overlay => {
   });
 });
 
-// ====== 确认对话框 ======
-let confirmCallback = null;
+// ====== 统一对话框系统（Promise 化，替代原生 confirm/alert/prompt） ======
+// 单例 resolver：新对话框顶掉旧对话框（旧 resolve false/null，绝不悬挂）
 
-function showConfirm(message, callback) {
-  dom.confirmMessage.textContent = message;
-  confirmCallback = callback;
-  openPanel(dom.confirmDialog);
+let _confirmResolver = null;   // confirm-dialog / info-dialog 共用
+let _inputResolver = null;     // input-dialog
+let saveIndicatorTimer = null; // showToast / showSaveToast 共用（03-notes.js 不再声明）
+
+function _resolveConfirm(v) {
+  const r = _confirmResolver;
+  _confirmResolver = null;
+  closePanel($('#confirm-dialog'));
+  if (r) r(v);
+}
+function _resolveInput(v) {
+  const r = _inputResolver;
+  _inputResolver = null;
+  closePanel($('#input-dialog'));
+  if (r) r(v);
 }
 
-$('#btn-confirm-cancel').addEventListener('click', () => {
-  closePanel(dom.confirmDialog);
-  confirmCallback = null;
+/** 通用确认：resolve(true)=确认 / resolve(false)=取消。danger 控制按钮危险样式 */
+function showConfirmAsync({ title = '确认', message = '', okText = '确定', danger = false } = {}) {
+  return new Promise((resolve) => {
+    closeAllPanels();
+    if (_confirmResolver) _confirmResolver(false);
+    $('#confirm-dialog-title').textContent = title;
+    $('#confirm-message').textContent = message;
+    const ok = $('#btn-confirm-ok');
+    const cancel = $('#btn-confirm-cancel');
+    ok.textContent = okText;
+    ok.classList.toggle('btn-danger', danger);
+    ok.classList.toggle('btn-solid-secondary', !danger);
+    cancel.style.display = '';
+    _confirmResolver = resolve;
+    openPanel($('#confirm-dialog'));
+    setTimeout(() => ok.focus(), 50);
+  });
+}
+
+/** 长文本提示（替代多行 alert）：与确认同框，隐藏取消按钮，任意方式关闭即 resolve */
+function showInfoDialog({ title = '提示', message = '' } = {}) {
+  return new Promise((resolve) => {
+    closeAllPanels();
+    if (_confirmResolver) _confirmResolver(false);
+    $('#confirm-dialog-title').textContent = title;
+    $('#confirm-message').textContent = message;
+    const ok = $('#btn-confirm-ok');
+    const cancel = $('#btn-confirm-cancel');
+    ok.textContent = '知道了';
+    ok.classList.remove('btn-danger');
+    ok.classList.add('btn-solid-secondary');
+    cancel.style.display = 'none';
+    _confirmResolver = () => resolve();  // 任意关闭方式（ok/遮罩/Esc/关闭钮）都 resolve
+    openPanel($('#confirm-dialog'));
+    setTimeout(() => ok.focus(), 50);
+  });
+}
+
+/** 通用输入：resolve(字符串)=确认 / resolve(null)=取消 */
+function showInputDialog({ title = '输入', message = '', defaultValue = '', placeholder = '', okText = '确定' } = {}) {
+  return new Promise((resolve) => {
+    closeAllPanels();
+    if (_inputResolver) _inputResolver(null);
+    $('#input-dialog-title').textContent = title;
+    $('#input-dialog-message').textContent = message;
+    const input = $('#input-dialog-input');
+    input.value = defaultValue;
+    input.placeholder = placeholder || '';
+    _inputResolver = resolve;
+    openPanel($('#input-dialog'));
+    setTimeout(() => { input.focus(); input.select(); }, 50);
+  });
+}
+
+// 确认框按钮
+$('#btn-confirm-ok').addEventListener('click', () => _resolveConfirm(true));
+$('#btn-confirm-cancel').addEventListener('click', () => _resolveConfirm(false));
+// 确认框遮罩点击 = 取消（通用 overlay 处理器只负责关闭面板，这里补 resolver）
+$('#confirm-dialog').addEventListener('click', (e) => {
+  if (e.target === $('#confirm-dialog')) _resolveConfirm(false);
+});
+// 输入框按钮 + 关闭钮 + 遮罩 = 取消
+$('#btn-input-ok').addEventListener('click', () => _resolveInput($('#input-dialog-input').value));
+$('#btn-input-cancel').addEventListener('click', () => _resolveInput(null));
+document.querySelector('#input-dialog .btn-close-panel').addEventListener('click', () => _resolveInput(null));
+$('#input-dialog').addEventListener('click', (e) => {
+  if (e.target === $('#input-dialog')) _resolveInput(null);
+});
+// 输入框 Enter = 确认
+$('#input-dialog-input').addEventListener('keydown', (e) => {
+  if (e.key === 'Enter') { e.preventDefault(); _resolveInput($('#input-dialog-input').value); }
+});
+// Esc = 取消当前对话框
+document.addEventListener('keydown', (e) => {
+  if (e.key !== 'Escape') return;
+  if (_confirmResolver) _resolveConfirm(false);
+  else if (_inputResolver) _resolveInput(null);
 });
 
-$('#btn-confirm-ok').addEventListener('click', () => {
-  closePanel(dom.confirmDialog);
-  if (confirmCallback) {
-    confirmCallback();
-    confirmCallback = null;
+// ====== 统一 Toast 提示（替代一次性 alert；单元素模式，与现状一致） ======
+function showToast(msg, { type = 'info', duration = 2500 } = {}) {
+  let toast = document.getElementById('save-toast');
+  if (!toast) {
+    toast = document.createElement('div');
+    toast.id = 'save-toast';
+    toast.style.cssText = 'position:fixed;bottom:30px;left:50%;transform:translateX(-50%);padding:10px 24px;color:#fff;border-radius:20px;font-size:14px;font-weight:600;z-index:9999;box-shadow:0 4px 16px rgba(0,0,0,0.3);transition:all 0.3s ease;opacity:0;pointer-events:none;';
+    document.body.appendChild(toast);
   }
-});
+  const colors = { info: '#4A5568', success: '#38A169', warn: '#D69E2E', error: '#E53E3E' };
+  toast.style.background = colors[type] || colors.info;
+  toast.textContent = msg;
+  toast.style.opacity = '1';
+  toast.style.transform = 'translateX(-50%) translateY(-10px)';
+  if (saveIndicatorTimer) clearTimeout(saveIndicatorTimer);
+  saveIndicatorTimer = setTimeout(() => {
+    toast.style.opacity = '0';
+    toast.style.transform = 'translateX(-50%) translateY(0)';
+  }, duration);
+}
 
 // ====== 编辑器 UI 显隐 ======
 function showEditorUI() {

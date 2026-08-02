@@ -1,5 +1,6 @@
 # -*- coding: utf-8 -*-
 """无头 pywebview 端到端：驱动真实前端验证保存链路（需要显示环境，默认跳过）"""
+import json
 import sqlite3
 import threading
 import time
@@ -118,3 +119,90 @@ def test_search_filters_note_list(tmp_path, monkeypatch):
     hidden = dict(json.loads(result['hidden']))
     assert hidden[a] is False, '正文命中的笔记不应被隐藏'
     assert hidden[b] is True, '未命中的笔记应被隐藏'
+
+
+def test_image_dict_embed_renders_and_persists(tmp_path, monkeypatch):
+    """图片外置：dict 引用进 Delta → 异步渲染出 data URI → 位置 dataset 落库（图片外置核心链路）"""
+    ns = load_app_partial(monkeypatch, tmp_path)
+    import backend
+    import base64
+    nid = backend.api.notes_create()['id']
+    # Python 侧落盘一张 1x1 PNG（与生产插入路径一致）
+    png = base64.b64decode(
+        'iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mP8z8BQDwAEhQGAhKmMIQAAAABJRU5ErkJggg==')
+    src = tmp_path / 'img.png'
+    src.write_bytes(png)
+    info = backend.api.file_copy_to_note(str(src), nid, 'image')
+    assert info and info['storedPath']
+
+    def actions(window, result):
+        # 以 dict 形式插入（NoteImageBlot 覆盖内置 image blot 后的新格式）。
+        # 注意：必须构造 JS 对象字面量，不能塞 JSON 字符串（否则走 legacy string 路径）
+        js_obj = "{id: %r, filename: %r, storedPath: %r}" % (
+            info['id'], info['filename'], info['storedPath'])
+        window.evaluate_js("state.quill.insertEmbed(0, 'image', %s);" % js_obj)
+        result['ops_value'] = window.evaluate_js(
+            "JSON.stringify(state.quill.getContents().ops[0].insert.image)")
+        time.sleep(1.5)  # 异步 read_file_base64 渲染
+        result['img_src'] = window.evaluate_js(
+            "state.quill.root.querySelector('img').src")
+        # 模拟 .img-resizable 写位置 → value() 收进 Delta → 保存落库
+        window.evaluate_js(
+            "var im = state.quill.root.querySelector('img'); im.dataset.x = '10'; im.dataset.w = '320';")
+        window.evaluate_js("debouncedSave()")
+        time.sleep(2)  # > 500ms 防抖
+        conn = sqlite3.connect('file:' + str(tmp_path / 'notes.db') + '?mode=ro', uri=True)
+        result['db_content'] = conn.execute("SELECT content FROM notes WHERE id=?", (nid,)).fetchone()[0]
+        conn.close()
+
+    result = _run_window(ns, actions)
+    assert 'error' not in result, result
+    assert '"storedPath"' in result['ops_value'], 'Delta 应为 dict 引用'
+    assert result['img_src'].startswith('data:image/'), '异步渲染应产出 data URI'
+    assert '"x":10' in result['db_content'] and '"storedPath"' in result['db_content'], \
+        '位置与引用应落库（位置持久化修复点）'
+
+
+def test_pin_button_delegation(tmp_path, monkeypatch):
+    """列表事件委托：容器级监听路由 data-pin-id 点击（原每行 5 个监听器已移除）"""
+    ns = load_app_partial(monkeypatch, tmp_path)
+    import backend
+    a = backend.api.notes_create()['id']
+    b = backend.api.notes_create()['id']
+
+    def actions(window, result):
+        result['items'] = window.evaluate_js("dom.noteList.querySelectorAll('.note-item').length")
+        window.evaluate_js("document.querySelector('[data-pin-id=\"%s\"]').click()" % b)
+        time.sleep(1.5)
+        conn = sqlite3.connect('file:' + str(tmp_path / 'notes.db') + '?mode=ro', uri=True)
+        result['pinned'] = conn.execute("SELECT is_pinned FROM notes WHERE id=?", (b,)).fetchone()[0]
+        conn.close()
+
+    result = _run_window(ns, actions)
+    assert 'error' not in result, result
+    assert result['items'] == 2
+    assert result['pinned'] == 1, '委托后的置顶按钮点击应生效'
+
+
+def test_confirm_async_dialog(tmp_path, monkeypatch):
+    """showConfirmAsync：确认按钮 resolve(true)、取消按钮 resolve(false)"""
+    ns = load_app_partial(monkeypatch, tmp_path)
+    import backend
+    backend.api.notes_create()
+
+    def actions(window, result):
+        window.evaluate_js(
+            "window.__cv = 'pending'; showConfirmAsync({message:'t1'}).then(v => { window.__cv = v; });"
+            "setTimeout(() => document.getElementById('btn-confirm-ok').click(), 300);")
+        time.sleep(1.5)
+        result['ok_path'] = window.evaluate_js("window.__cv")
+        window.evaluate_js(
+            "window.__cv = 'pending'; showConfirmAsync({message:'t2'}).then(v => { window.__cv = v; });"
+            "setTimeout(() => document.getElementById('btn-confirm-cancel').click(), 300);")
+        time.sleep(1.5)
+        result['cancel_path'] = window.evaluate_js("window.__cv")
+
+    result = _run_window(ns, actions)
+    assert 'error' not in result, result
+    assert result['ok_path'] is True, '确认按钮应 resolve(true)'
+    assert result['cancel_path'] is False, '取消按钮应 resolve(false)'

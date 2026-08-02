@@ -49,7 +49,7 @@ async function loadNotebookBar() {
       const delBtn = item.querySelector('.notebook-delete-btn');
       if (delBtn) delBtn.addEventListener('click', async (e) => {
         e.stopPropagation();
-        if (!confirm(`确定删除笔记本「${nb.name}」？其中的笔记将移回未分类。`)) return;
+        if (!(await showConfirmAsync({ title: '删除笔记本', message: `确定删除笔记本「${nb.name}」？其中的笔记将移回未分类。`, okText: '删除', danger: true }))) return;
         await window.pywebview.api.notebooks_delete(nb.id);
         currentNotebookId = null;
         await loadAllNotes();
@@ -110,26 +110,39 @@ document.addEventListener('click', (e) => {
 });
 
 $('#btn-new-notebook-sidebar').addEventListener('click', async () => {
-  const name = prompt('请输入笔记本名称：', '新笔记本');
-  if (!name) return;
-  await window.pywebview.api.notebooks_create(name);
+  const name = await showInputDialog({
+    title: '新建笔记本',
+    message: '请输入笔记本名称：',
+    defaultValue: '新笔记本',
+    okText: '创建'
+  });
+  if (!name || !name.trim()) return;
+  await window.pywebview.api.notebooks_create(name.trim());
   loadNotebookBar();
 });
 
-// 笔记移动到笔记本（在标签栏加按钮）
+// 笔记移动到笔记本：列表面板选择（替代原「输序号」prompt）
 $('#btn-move-notebook')?.addEventListener('click', async () => {
-  if (!state.activeNoteId) return;
+  if (!state.activeNoteId) { showToast('请先选择一篇笔记', { type: 'warn' }); return; }
   const notebooks = await window.pywebview.api.notebooks_list();
-  const names = notebooks.map(n => n.name + (n.id === currentNotebookId ? ' (当前)' : ''));
-  names.unshift('无 (全部笔记)');
-  const choice = prompt('移动到笔记本：\n' + names.map((n,i) => `${i}. ${n}`).join('\n') + '\n\n输入序号：', '0');
-  if (choice === null) return;
-  const idx = parseInt(choice);
-  if (isNaN(idx) || idx < 0 || idx > notebooks.length) return;
-  const targetId = idx === 0 ? null : notebooks[idx-1].id;
-  await window.pywebview.api.notes_update(state.activeNoteId, { notebook_id: targetId || '' });
-  loadNotes().then(renderNoteList);
-  loadNotebookBar();
+  const list = $('#move-notebook-list');
+  list.innerHTML = '';
+  const mk = (label, targetId, isCurrent) => {
+    const btn = document.createElement('button');
+    btn.className = 'tag-picker-chip' + (isCurrent ? ' selected' : '');
+    btn.style.cssText = 'display:block;width:100%;text-align:left;margin-bottom:6px;';
+    btn.textContent = label;
+    btn.addEventListener('click', async () => {
+      closePanel($('#move-notebook-panel'));
+      await window.pywebview.api.notes_update(state.activeNoteId, { notebook_id: targetId || '' });
+      loadNotes().then(renderNoteList);
+      loadNotebookBar();
+    });
+    list.appendChild(btn);
+  };
+  mk('无（全部笔记）', '', currentNotebookId === null);
+  notebooks.forEach(nb => mk(nb.name + (nb.id === currentNotebookId ? '（当前）' : ''), nb.id, nb.id === currentNotebookId));
+  openPanel($('#move-notebook-panel'));
 });
 
 // ====== 搜索过滤 ======

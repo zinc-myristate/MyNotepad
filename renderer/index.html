@@ -85,6 +85,9 @@
       <button id="btn-calendar" class="btn-sidebar-footer" title="手帐日历">
         <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><rect x="3" y="4" width="18" height="18" rx="2"/><line x1="16" y1="2" x2="16" y2="6"/><line x1="8" y1="2" x2="8" y2="6"/><line x1="3" y1="10" x2="21" y2="10"/></svg> 日历
       </button>
+      <button id="btn-trash" class="btn-sidebar-footer" title="回收站">
+        <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><polyline points="3 6 5 6 21 6"/><path d="M19 6v14a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2V6m3 0V4a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v2"/></svg> 回收站
+      </button>
     </div>
   </aside>
 
@@ -456,6 +459,13 @@
             <span class="export-desc">通过系统打印另存为 PDF</span>
           </div>
         </button>
+        <button class="export-option" data-format="zip">
+          <span class="export-icon"><svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round"><path d="M21 8v13H3V8"/><path d="M1 3h22v5H1z"/><line x1="10" y1="12" x2="14" y2="12"/></svg></span>
+          <div class="export-info">
+            <span class="export-name">备份全部数据 ZIP</span>
+            <span class="export-desc">导出全部笔记数据库、附件与背景图</span>
+          </div>
+        </button>
       </div>
     </div>
   </div>
@@ -571,6 +581,23 @@
   </div>
 </div>
 
+<!-- ====== 回收站面板 ====== -->
+<div id="trash-panel" class="panel-overlay" style="display:none;">
+  <div class="panel-dialog panel-dialog-wide">
+    <div class="panel-header">
+      <h3>回收站</h3>
+      <button class="btn-close-panel" data-panel="trash-panel"><svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round"><line x1="18" y1="6" x2="6" y2="18"/><line x1="6" y1="6" x2="18" y2="18"/></svg></button>
+    </div>
+    <div class="panel-body">
+      <div style="display:flex;gap:8px;margin-bottom:10px;align-items:center;">
+        <span style="font-size:12px;color:var(--text-muted);flex:1;">删除 30 天后自动彻底清除</span>
+        <button id="btn-trash-purge-all" class="btn-danger">清空回收站</button>
+      </div>
+      <div id="trash-list-items"></div>
+    </div>
+  </div>
+</div>
+
 <!-- ====== Toast 通知容器 ====== -->
 <div id="toast-container" class="toast-container"></div>
 
@@ -655,66 +682,6 @@
       <textarea id="math-input" class="math-input" placeholder="输入公式… 如：\frac{a}{b}、\sqrt{x}、x^{2}、\sum" style="margin-top:10px;"></textarea>
       <div id="math-preview" class="math-preview"></div>
       <button id="btn-insert-math" class="btn-new-note" style="width:100%;margin-top:8px;">插入公式</button>
-    </div>
-  </div>
-</div>
-
-<!-- ====== 化学结构面板 ====== -->
-<div id="chem-struct-panel" class="panel-overlay" style="display:none;">
-  <div class="panel-dialog panel-dialog-wide">
-    <div class="panel-header">
-      <h3>化学结构式</h3>
-      <button class="btn-close-panel" data-panel="chem-struct-panel"><svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round"><line x1="18" y1="6" x2="6" y2="18"/><line x1="6" y1="6" x2="18" y2="18"/></svg></button>
-    </div>
-    <div class="panel-body">
-      <div class="math-cat-tabs">
-        <button class="chem-tab active" data-chem="templates"><svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><rect x="3" y="3" width="18" height="18" rx="2"/><line x1="3" y1="9" x2="21" y2="9"/></svg> 常用模板</button>
-        <button class="chem-tab" data-chem="smiles"><svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><polyline points="4 7 4 4 20 4 20 7"/><line x1="9" y1="20" x2="15" y2="20"/><line x1="12" y1="4" x2="12" y2="20"/></svg> SMILES 输入</button>
-      </div>
-      <!-- 模板 -->
-      <div id="chem-tab-templates" class="chem-tab-content">
-        <div class="math-hint-section"><span class="math-hint-label">链状烃</span>
-          <span class="math-hint chem-template" data-smiles="CC">乙烷</span>
-          <span class="math-hint chem-template" data-smiles="C=C">乙烯</span>
-          <span class="math-hint chem-template" data-smiles="C#C">乙炔</span>
-          <span class="math-hint chem-template" data-smiles="CCC">丙烷</span>
-          <span class="math-hint chem-template" data-smiles="CC=C">丙烯</span>
-          <span class="math-hint chem-template" data-smiles="C=CC=C">丁二烯</span>
-        </div>
-        <div class="math-hint-section"><span class="math-hint-label">环状结构</span>
-          <span class="math-hint chem-template" data-smiles="C1CCCCC1">环己烷</span>
-          <span class="math-hint chem-template" data-smiles="C1=CCCCC1">环己烯</span>
-          <span class="math-hint chem-template" data-smiles="C1=CC=CC=C1">苯环</span>
-          <span class="math-hint chem-template" data-smiles="C1=CC=CC=C1C">甲苯</span>
-          <span class="math-hint chem-template" data-smiles="C1=CC=C(C=C1)O">苯酚</span>
-          <span class="math-hint chem-template" data-smiles="C1=CC=C(C=C1)N">苯胺</span>
-          <span class="math-hint chem-template" data-smiles="C1=CC=CC=C1C=O">苯甲醛</span>
-          <span class="math-hint chem-template" data-smiles="C1=CC=C(C=C1)C(=O)O">苯甲酸</span>
-        </div>
-        <div class="math-hint-section"><span class="math-hint-label">常见有机物</span>
-          <span class="math-hint chem-template" data-smiles="CCO">乙醇</span>
-          <span class="math-hint chem-template" data-smiles="CC(=O)O">乙酸</span>
-          <span class="math-hint chem-template" data-smiles="CC(=O)OC">乙酸甲酯</span>
-          <span class="math-hint chem-template" data-smiles="CN">甲胺</span>
-          <span class="math-hint chem-template" data-smiles="O=CC=O">乙二醛</span>
-          <span class="math-hint chem-template" data-smiles="C1=CC=C2C(=C1)C=CC=C2">萘</span>
-          <span class="math-hint chem-template" data-smiles="C1=CC=C2C(=C1)C(=O)C3=CC=CC=C3C2=O">蒽醌</span>
-        </div>
-        <div class="math-hint-section"><span class="math-hint-label">官能团</span>
-          <span class="math-hint chem-template" data-smiles="CO">羟基</span>
-          <span class="math-hint chem-template" data-smiles="C=O">羰基</span>
-          <span class="math-hint chem-template" data-smiles="C(=O)O">羧基</span>
-          <span class="math-hint chem-template" data-smiles="CN">氨基</span>
-          <span class="math-hint chem-template" data-smiles="C#N">氰基</span>
-          <span class="math-hint chem-template" data-smiles="CN(=O)=O">硝基</span>
-        </div>
-      </div>
-      <!-- SMILES 输入 -->
-      <div id="chem-tab-smiles" class="chem-tab-content" style="display:none;">
-        <textarea id="smiles-input" class="math-input" placeholder="输入 SMILES 表达式，例如：&#10;苯环: C1=CC=CC=C1&#10;乙醇: CCO&#10;乙酸: CC(=O)O&#10;环己烷: C1CCCCC1"></textarea>
-        <div id="chem-preview" class="math-preview" style="min-height:150px;"></div>
-      </div>
-      <button id="btn-insert-chem" class="btn-new-note" style="width:100%;margin-top:10px;">插入结构式</button>
     </div>
   </div>
 </div>
@@ -820,15 +787,46 @@
 <div id="confirm-dialog" class="panel-overlay" style="display:none;">
   <div class="panel-dialog panel-dialog-small">
     <div class="panel-header">
-      <h3>确认删除</h3>
+      <h3 id="confirm-dialog-title">确认</h3>
       <button class="btn-close-panel" data-panel="confirm-dialog"><svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round"><line x1="18" y1="6" x2="6" y2="18"/><line x1="6" y1="6" x2="18" y2="18"/></svg></button>
     </div>
     <div class="panel-body">
       <p id="confirm-message" class="confirm-message"></p>
       <div class="confirm-buttons">
         <button id="btn-confirm-cancel" class="btn-secondary">取消</button>
-        <button id="btn-confirm-ok" class="btn-danger">确认删除</button>
+        <button id="btn-confirm-ok" class="btn-danger">确定</button>
       </div>
+    </div>
+  </div>
+</div>
+
+<!-- ====== 通用输入对话框 ====== -->
+<div id="input-dialog" class="panel-overlay" style="display:none;">
+  <div class="panel-dialog panel-dialog-small">
+    <div class="panel-header">
+      <h3 id="input-dialog-title">输入</h3>
+      <button class="btn-close-panel" data-panel="input-dialog"><svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round"><line x1="18" y1="6" x2="6" y2="18"/><line x1="6" y1="6" x2="18" y2="18"/></svg></button>
+    </div>
+    <div class="panel-body">
+      <p id="input-dialog-message" class="confirm-message"></p>
+      <input id="input-dialog-input" type="text" class="search-input" style="width:100%;margin-bottom:14px;">
+      <div class="confirm-buttons">
+        <button id="btn-input-cancel" class="btn-secondary">取消</button>
+        <button id="btn-input-ok" class="btn-new-note">确定</button>
+      </div>
+    </div>
+  </div>
+</div>
+
+<!-- ====== 移动到笔记本面板 ====== -->
+<div id="move-notebook-panel" class="panel-overlay" style="display:none;">
+  <div class="panel-dialog panel-dialog-small">
+    <div class="panel-header">
+      <h3>移动到笔记本</h3>
+      <button class="btn-close-panel" data-panel="move-notebook-panel"><svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round"><line x1="18" y1="6" x2="6" y2="18"/><line x1="6" y1="6" x2="18" y2="18"/></svg></button>
+    </div>
+    <div class="panel-body">
+      <div id="move-notebook-list" class="tag-picker-list"></div>
     </div>
   </div>
 </div>
@@ -875,6 +873,7 @@
 <script src="js/app/07-formula-security-dnd.js"></script>
 <script src="js/app/08-appearance2.js"></script>
 <script src="js/app/09-boot.js"></script>
+<script src="js/app/10-trash.js"></script>
 <script src="js/quill/quill-deco.js"></script>
 </body>
 </html>

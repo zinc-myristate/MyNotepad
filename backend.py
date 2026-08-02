@@ -141,6 +141,11 @@ try: conn.execute("ALTER TABLE notes ADD COLUMN cover_value TEXT DEFAULT ''")
 except: pass
 try: conn.execute("ALTER TABLE notes ADD COLUMN enc_dek TEXT")  # 内容加密：被密码包裹的 DEK，NULL=未启用
 except: pass
+try: conn.execute("ALTER TABLE notes ADD COLUMN deleted_at TEXT")  # 回收站：软删除时间，NULL=正常
+except: pass
+# 索引必须在 ALTER 之后单独建（不能合并进 executescript 的 CREATE TABLE 流程）
+try: conn.execute("CREATE INDEX IF NOT EXISTS idx_notes_deleted ON notes(deleted_at)")
+except: pass
 # 标签表
 conn.executescript("""
     CREATE TABLE IF NOT EXISTS tags (
@@ -350,6 +355,18 @@ def backup_database():
         applog.get_logger().exception("数据库备份失败")
         return None
 
+def check_integrity(db_path=DB_PATH):
+    """独立连接跑 PRAGMA integrity_check；损坏返回 False。启动自检用，绝不进模块级执行。"""
+    try:
+        c = sqlite3.connect(db_path)
+        try:
+            return c.execute("PRAGMA integrity_check").fetchone()[0] == 'ok'
+        finally:
+            c.close()
+    except Exception:
+        return False
+
+
 # ====== FTS5 全文搜索（trigram，中文可用） ======
 def _probe_fts5():
     """探测当前 sqlite3 是否支持 FTS5 + trigram（打包后的 DLL 可能不同，运行时判定）"""
@@ -419,7 +436,9 @@ if FTS_AVAILABLE:
         _ver = conn.execute("SELECT value FROM settings WHERE key='fts_version'").fetchone()
         if not _ver or _ver['value'] != FTS_VERSION:
             conn.execute("DELETE FROM notes_fts")
-            for _r in conn.execute("SELECT id, title, content, password_hash FROM notes").fetchall():
+            # 双保险：软删笔记的 FTS 行先清掉（防止版本号变更时残留）
+            conn.execute("DELETE FROM notes_fts WHERE note_id IN (SELECT id FROM notes WHERE deleted_at IS NOT NULL)")
+            for _r in conn.execute("SELECT id, title, content, password_hash FROM notes WHERE deleted_at IS NULL").fetchall():
                 _body = '' if _r['password_hash'] else _delta_to_text(_r['content'])
                 conn.execute("INSERT INTO notes_fts (note_id, title, body) VALUES (?, ?, ?)",
                              (_r['id'], _r['title'] or '', _body))
@@ -429,6 +448,147 @@ if FTS_AVAILABLE:
     except Exception:
         applog.get_logger().exception("FTS 初始化失败，降级为 LIKE 搜索")
         FTS_AVAILABLE = False
+
+# ====== 图片外置迁移（base64 内嵌 → attachments 引用） ======
+# 幂等三重保障：LIKE 预筛（已 dict 化行不命中）+ 确定性 sha 文件名 + 失败保原串下次重试；
+# 写库前先做 premig- 快照（不参与 notes-* 滚动保留），一键回滚凭据。
+# 加密笔记 content 是 encv1: 密文，LIKE 天然不命中自动跳过（文档化：加密笔记图片暂不外置）。
+
+def _snapshot_db(prefix):
+    """sqlite backup API 快照，命名 <prefix><ts>.db（不参与 7 份滚动保留）"""
+    try:
+        os.makedirs(BACKUP_DIR, exist_ok=True)
+        dest = os.path.join(BACKUP_DIR, f"{prefix}{datetime.now():%Y%m%d-%H%M%S}.db")
+        src = sqlite3.connect(DB_PATH)
+        dst = sqlite3.connect(dest)
+        try:
+            with dst:
+                src.backup(dst)
+        finally:
+            src.close()
+            dst.close()
+        return dest
+    except Exception:
+        applog.get_logger().exception("迁移快照失败")
+        return None
+
+
+def _externalize_image(note_id, data_uri):
+    """data URI → attachments 文件 + 行。幂等：确定性文件名（sha256 前 12 位），存在即跳过。
+    返回 (aid, fname, dest) 或 None（失败保留原串，下次重试）"""
+    try:
+        header, b64 = data_uri.split(',', 1)
+        mime = header[len('data:'):-len(';base64')]
+        ext_map = {'image/png': '.png', 'image/jpeg': '.jpg', 'image/gif': '.gif',
+                   'image/webp': '.webp', 'image/bmp': '.bmp', 'image/svg+xml': '.svg'}
+        ext = ext_map.get(mime, '.png')
+        raw = base64.b64decode(b64)
+        if not raw:
+            return None
+        fname = f"img_{hashlib.sha256(raw).hexdigest()[:12]}{ext}"
+        note_dir = os.path.join(ATTACH_DIR, note_id)
+        dest = os.path.join(note_dir, fname)
+        if not os.path.isfile(dest):
+            os.makedirs(note_dir, exist_ok=True)
+            with open(dest, 'wb') as f:
+                f.write(raw)
+        row = conn.execute("SELECT id FROM attachments WHERE note_id=? AND filename=?",
+                           (note_id, fname)).fetchone()
+        if row:
+            aid = row['id']
+        else:
+            aid = str(uuid.uuid4())
+            conn.execute(
+                "INSERT INTO attachments (id, note_id, filename, original_name, file_size, mime_type, type) "
+                "VALUES (?,?,?,?,?,?, 'image')",
+                (aid, note_id, fname, fname, len(raw), mime))
+        return aid, fname, dest
+    except Exception:
+        applog.get_logger().exception("图片外置失败")
+        return None
+
+
+def migrate_images():
+    """存量 Delta 图片外置（notes + versions）。返回迁移行数；无变更返回 0（不产生快照）。"""
+    with _db_lock:
+        targets = []
+        for tbl in ('notes', 'versions'):
+            try:
+                if tbl == 'notes':
+                    rows = conn.execute(
+                        "SELECT id, content FROM notes WHERE content LIKE '%data:image%'").fetchall()
+                else:
+                    # versions 行需要同时取 note_id（附件归属笔记而非版本）
+                    rows = conn.execute(
+                        "SELECT id, note_id, content FROM versions WHERE content LIKE '%data:image%'").fetchall()
+            except Exception:
+                continue
+            for row in rows:
+                try:
+                    delta = json.loads(row['content'])
+                except Exception:
+                    continue  # HTML/旧格式：跳过
+                if not isinstance(delta, dict) or not isinstance(delta.get('ops'), list):
+                    continue
+                note_id = row['note_id'] if tbl == 'versions' else row['id']
+                new_ops, changed = [], False
+                for op in delta['ops']:
+                    ins = op.get('insert')
+                    v = ins.get('image') if isinstance(ins, dict) else None
+                    if isinstance(v, str) and v.startswith('data:image'):
+                        r = _externalize_image(note_id, v)
+                        if r is None:
+                            new_ops.append(op)  # 失败保底：保留原串，下次重试
+                            continue
+                        aid, fname, dest = r
+                        new_ops.append({'insert': {'image': {'id': aid, 'filename': fname, 'storedPath': dest}}})
+                        changed = True
+                    else:
+                        new_ops.append(op)
+                if changed:
+                    targets.append((tbl, row['id'], json.dumps({'ops': new_ops}, ensure_ascii=False)))
+        if not targets:
+            return 0
+        # 快照先于写库：迁移不可逆，给一键回滚凭据
+        _snapshot_db('premig-')
+        for tbl, row_id, content in targets:
+            conn.execute(f"UPDATE {tbl} SET content=? WHERE id=?", (content, row_id))
+        conn.commit()
+        return len(targets)
+
+
+def _purge_note_files(note_id):
+    """彻底删除前的磁盘清理：专属背景图副本 + 附件目录（与笔记同生死的文件）"""
+    row = conn.execute("SELECT bg_value FROM notes WHERE id = ?", (note_id,)).fetchone()
+    if row and row['bg_value']:
+        try:
+            bg_dir = os.path.realpath(os.path.join(DATA_DIR, 'backgrounds'))
+            real = os.path.realpath(row['bg_value'])
+            if os.path.dirname(real) == bg_dir and os.path.isfile(real):
+                os.remove(real)
+        except OSError:
+            pass
+    note_attach = os.path.join(ATTACH_DIR, note_id)
+    if os.path.exists(note_attach):
+        shutil.rmtree(note_attach, ignore_errors=True)
+
+
+def purge_expired_trash(days=30):
+    """回收站超期清理：deleted_at 超过 days 天的笔记彻底删除（启动后台线程调用，带锁）"""
+    with _db_lock:
+        n = 0
+        for r in conn.execute(
+                "SELECT id FROM notes WHERE deleted_at IS NOT NULL AND "
+                "deleted_at < datetime('now','localtime', ?)", (f'-{days} days',)).fetchall():
+            _purge_note_files(r['id'])
+            conn.execute("DELETE FROM notes WHERE id = ?", (r['id'],))
+            _fts_delete(r['id'])
+            _unlocked_deks.pop(r['id'], None)
+            n += 1
+        if n:
+            conn.commit()
+        return n
+
 
 def _parse_remind_at(s):
     """解析提醒时间；容错旧数据缺秒格式，解析失败返回 None（调用方自行兜底）"""
@@ -455,14 +615,15 @@ class Api:
             "SELECT id, title, bg_type, bg_value, bg_opacity, is_pinned, is_favorite, "
             "sort_order, created_at, updated_at, "
             "CASE WHEN password_hash IS NOT NULL AND password_hash != '' THEN 1 ELSE 0 END AS has_password "
-            "FROM notes ORDER BY is_pinned DESC, sort_order DESC, updated_at DESC"
+            "FROM notes WHERE deleted_at IS NULL "
+            "ORDER BY is_pinned DESC, sort_order DESC, updated_at DESC"
         ).fetchall()
         return [dict(r) for r in rows]
 
     def notes_get(self, note_id, unlocked=False):
         """获取笔记详情。加密笔记仅当后端已解锁（DEK 在缓存）时返回明文内容。
-        unlocked 参数保留兼容旧前端调用，但不再作为安全依据。"""
-        r = conn.execute("SELECT * FROM notes WHERE id = ?", (note_id,)).fetchone()
+        unlocked 参数保留兼容旧前端调用，但不再作为安全依据。回收站中的笔记返回 None。"""
+        r = conn.execute("SELECT * FROM notes WHERE id = ? AND deleted_at IS NULL", (note_id,)).fetchone()
         if not r:
             return None
         note = dict(r)
@@ -499,6 +660,9 @@ class Api:
 
     def notes_update(self, note_id, fields):
         allowed = {'title', 'content', 'bg_type', 'bg_value', 'bg_opacity', 'bg_zoom', 'bg_pos_x', 'bg_pos_y', 'sort_order', 'is_pinned', 'is_favorite', 'paper_style', 'paper_color', 'cover_type', 'cover_value', 'notebook_id'}
+        # 回收站中的笔记不可更新
+        if not conn.execute("SELECT 1 FROM notes WHERE id = ? AND deleted_at IS NULL", (note_id,)).fetchone():
+            return None
         updates = {k: v for k, v in fields.items() if k in allowed}
         if not updates:
             return None
@@ -526,25 +690,48 @@ class Api:
         return self.notes_get(note_id)
 
     def notes_delete(self, note_id):
-        # 清理该笔记专属的背景图副本（data/backgrounds/ 内的 uuid 文件，每次选图独立复制，可安全删除）
-        row = conn.execute("SELECT bg_value FROM notes WHERE id = ?", (note_id,)).fetchone()
-        if row and row['bg_value']:
-            try:
-                bg_dir = os.path.realpath(os.path.join(DATA_DIR, 'backgrounds'))
-                real = os.path.realpath(row['bg_value'])
-                if os.path.dirname(real) == bg_dir and os.path.isfile(real):
-                    os.remove(real)
-            except OSError:
-                pass
-        # 删除附件文件夹
-        note_attach = os.path.join(ATTACH_DIR, note_id)
-        if os.path.exists(note_attach):
-            shutil.rmtree(note_attach, ignore_errors=True)
+        """软删除：只置 deleted_at（移入回收站），不删文件不 rmtree，FK 子表全部保留。
+        回收站「彻底删除」走 notes_purge；30 天超期由 purge_expired_trash 兜底。"""
+        if not conn.execute("SELECT 1 FROM notes WHERE id = ? AND deleted_at IS NULL", (note_id,)).fetchone():
+            return False
+        conn.execute("UPDATE notes SET deleted_at = datetime('now','localtime') WHERE id = ?", (note_id,))
+        _fts_delete(note_id)  # 移出搜索索引
+        conn.commit()
+        _unlocked_deks.pop(note_id, None)
+        return True
+
+    def notes_trash_list(self):
+        """回收站列表：标题 + 删除时间，按删除时间倒序"""
+        return [dict(r) for r in conn.execute(
+            "SELECT id, title, deleted_at FROM notes WHERE deleted_at IS NOT NULL "
+            "ORDER BY deleted_at DESC").fetchall()]
+
+    def notes_restore(self, note_id):
+        """恢复：清 deleted_at + 重建搜索索引"""
+        if not conn.execute("SELECT 1 FROM notes WHERE id = ? AND deleted_at IS NOT NULL", (note_id,)).fetchone():
+            return False
+        conn.execute("UPDATE notes SET deleted_at = NULL WHERE id = ?", (note_id,))
+        _fts_sync_from_row(note_id)
+        conn.commit()
+        return True
+
+    def notes_purge(self, note_id):
+        """彻底删除：清文件 + DELETE 行级联（FK 清 attachments/reminders/versions/note_tags）"""
+        if not conn.execute("SELECT 1 FROM notes WHERE id = ? AND deleted_at IS NOT NULL", (note_id,)).fetchone():
+            return False
+        _purge_note_files(note_id)
         conn.execute("DELETE FROM notes WHERE id = ?", (note_id,))
         _fts_delete(note_id)
         conn.commit()
         _unlocked_deks.pop(note_id, None)
         return True
+
+    def notes_purge_all(self):
+        """清空回收站"""
+        ids = [r['id'] for r in conn.execute("SELECT id FROM notes WHERE deleted_at IS NOT NULL").fetchall()]
+        for nid in ids:
+            self.notes_purge(nid)
+        return len(ids)
 
     def notes_search(self, query):
         """全文搜索：≥3 字符且 FTS5 可用走 trigram；否则 LIKE 回退（标题 + 明文笔记正文）。
@@ -569,8 +756,8 @@ class Api:
         like = f'%{esc}%'
         rows = conn.execute(
             "SELECT id, (title LIKE ? ESCAPE '\\') AS th FROM notes "
-            "WHERE title LIKE ? ESCAPE '\\' "
-            "   OR (COALESCE(password_hash, '') = '' AND content LIKE ? ESCAPE '\\')",
+            "WHERE deleted_at IS NULL AND (title LIKE ? ESCAPE '\\' "
+            "   OR (COALESCE(password_hash, '') = '' AND content LIKE ? ESCAPE '\\'))",
             (like, like, like)).fetchall()
         return {'ids': [r['id'] for r in rows],
                 'title_hits': [r['id'] for r in rows if r['th']]}
@@ -715,7 +902,8 @@ class Api:
             "n.sort_order, n.created_at, n.updated_at, "
             "CASE WHEN n.password_hash IS NOT NULL AND n.password_hash != '' THEN 1 ELSE 0 END AS has_password "
             "FROM notes n JOIN note_tags nt ON n.id = nt.note_id "
-            "WHERE nt.tag_id = ? ORDER BY n.is_pinned DESC, n.sort_order DESC, n.updated_at DESC",
+            "WHERE nt.tag_id = ? AND n.deleted_at IS NULL "
+            "ORDER BY n.is_pinned DESC, n.sort_order DESC, n.updated_at DESC",
             (tag_id,)
         ).fetchall()
         return [dict(r) for r in rows]
@@ -1052,22 +1240,25 @@ class Api:
         """列出提醒（可选按笔记筛选，仅返回未完成的）"""
         if note_id:
             rows = conn.execute(
-                "SELECT * FROM reminders WHERE note_id = ? AND is_completed = 0 "
-                "ORDER BY remind_at ASC",
+                "SELECT r.* FROM reminders r INNER JOIN notes n ON r.note_id = n.id "
+                "WHERE r.note_id = ? AND r.is_completed = 0 AND n.deleted_at IS NULL "
+                "ORDER BY r.remind_at ASC",
                 (note_id,)
             ).fetchall()
         else:
             rows = conn.execute(
-                "SELECT * FROM reminders WHERE is_completed = 0 "
-                "ORDER BY remind_at ASC"
+                "SELECT r.* FROM reminders r INNER JOIN notes n ON r.note_id = n.id "
+                "WHERE r.is_completed = 0 AND n.deleted_at IS NULL "
+                "ORDER BY r.remind_at ASC"
             ).fetchall()
         return [dict(r) for r in rows]
 
     def reminder_list_all(self):
         """列出所有提醒（包括已完成的，用于管理面板）"""
+        # 决策：软删笔记的提醒不显示（行保留，恢复笔记后自动重现）
         rows = conn.execute(
             "SELECT r.*, n.title as note_title FROM reminders r "
-            "LEFT JOIN notes n ON r.note_id = n.id "
+            "INNER JOIN notes n ON r.note_id = n.id AND n.deleted_at IS NULL "
             "ORDER BY r.is_completed ASC, r.remind_at ASC"
         ).fetchall()
         return [dict(r) for r in rows]
@@ -1075,14 +1266,16 @@ class Api:
     def reminder_check(self):
         """检查到期的提醒：只返回 24h 内的（防启动时补弹一堆过期提醒）。
         过期 >24h 的重复提醒自动推进到未来首次触发；一次性提醒标记完成（管理面板仍可见）。"""
+        # INNER JOIN notes + deleted 过滤：软删笔记的提醒不再触发（恢复笔记后提醒自动重现）
         due = conn.execute(
-            "SELECT * FROM reminders "
-            "WHERE remind_at <= datetime('now','localtime') AND is_completed = 0 "
-            "AND remind_at > datetime('now','localtime', '-1 day')"
+            "SELECT r.* FROM reminders r INNER JOIN notes n ON r.note_id = n.id "
+            "WHERE n.deleted_at IS NULL AND r.remind_at <= datetime('now','localtime') "
+            "AND r.is_completed = 0 AND r.remind_at > datetime('now','localtime', '-1 day')"
         ).fetchall()
         stale = conn.execute(
-            "SELECT * FROM reminders "
-            "WHERE remind_at <= datetime('now','localtime', '-1 day') AND is_completed = 0"
+            "SELECT r.* FROM reminders r INNER JOIN notes n ON r.note_id = n.id "
+            "WHERE n.deleted_at IS NULL AND r.remind_at <= datetime('now','localtime', '-1 day') "
+            "AND r.is_completed = 0"
         ).fetchall()
         for r in stale:
             if r['repeat_type'] != 'none':
@@ -1176,6 +1369,38 @@ class Api:
         return self.reminder_get(reminder_id)
 
     # ----- 导出笔记 -----
+    def export_all_to_zip(self, save_path):
+        """一键全库导出：sqlite backup API 快照 notes.db + attachments/ + backgrounds/ 归档为 zip。
+        snapshot 页级一致（遇写入自动重启），归档内容与备份包同构，可直接替换 data/ 目录恢复。"""
+        try:
+            import zipfile
+            tmp = tempfile.mkdtemp(prefix='mynotepad_export_')
+            try:
+                snap = os.path.join(tmp, 'notes.db')
+                src = sqlite3.connect(DB_PATH)
+                dst = sqlite3.connect(snap)
+                try:
+                    with dst:
+                        src.backup(dst)
+                finally:
+                    src.close()
+                    dst.close()
+                with zipfile.ZipFile(save_path, 'w', zipfile.ZIP_DEFLATED) as zf:
+                    zf.write(snap, 'notes.db')
+                    for base, arc in ((ATTACH_DIR, 'attachments'),
+                                      (os.path.join(DATA_DIR, 'backgrounds'), 'backgrounds')):
+                        if os.path.isdir(base):
+                            for root, _, files in os.walk(base):
+                                for fn in files:
+                                    fp = os.path.join(root, fn)
+                                    zf.write(fp, os.path.join(arc, os.path.relpath(fp, base)).replace('\\', '/'))
+                return True
+            finally:
+                shutil.rmtree(tmp, ignore_errors=True)
+        except Exception:
+            applog.get_logger().exception("全库导出失败")
+            return False
+
     def export_note(self, title, html_content, format_type, save_path):
         """导出笔记为指定格式"""
         if format_type == 'html':

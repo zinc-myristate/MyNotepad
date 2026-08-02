@@ -193,9 +193,32 @@ def _icon_preview_b64(img):
 from backend import api as backend_api
 import backend as _backend_mod
 
-# 数据库定期备份（后台线程，24h 判定 + 滚动 7 份，不拖慢启动）
+# 启动自检：数据库完整性检查失败立即退出（窗口未创建，退出干净），提示从备份恢复
+if not _backend_mod.check_integrity():
+    show_error_dialog("数据库完整性检查失败，为避免数据损坏，程序将退出。\n可尝试从 data/backups/ 恢复最近备份。")
+    sys.exit(1)
+
+# 图片外置迁移（幂等，失败不阻塞启动；premig- 快照先于写库，可一键回滚）
+try:
+    _migrated = _backend_mod.migrate_images()
+    if _migrated:
+        print(f"图片外置迁移完成：{_migrated} 行（快照见 data/backups/premig-*）")
+except Exception:
+    import applog
+    applog.get_logger().exception("图片外置迁移失败")
+
+# 启动后台线程：先清理回收站超期笔记（30 天），再定期备份（24h 判定 + 滚动 7 份，不拖慢启动）
 import threading as _threading
-_threading.Thread(target=_backend_mod.backup_database, daemon=True).start()
+
+def _startup_maintenance():
+    try:
+        _backend_mod.purge_expired_trash()
+    except Exception:
+        import applog
+        applog.get_logger().exception("回收站超期清理失败")
+    _backend_mod.backup_database()
+
+_threading.Thread(target=_startup_maintenance, daemon=True).start()
 
 # 扩展 API，添加文件对话框功能
 class AppApi:
@@ -210,6 +233,10 @@ class AppApi:
         return self.backend.notes_create()
     def notes_update(self, note_id, fields): return self.backend.notes_update(note_id, fields)
     def notes_delete(self, note_id): return self.backend.notes_delete(note_id)
+    def notes_trash_list(self): return self.backend.notes_trash_list()
+    def notes_restore(self, note_id): return self.backend.notes_restore(note_id)
+    def notes_purge(self, note_id): return self.backend.notes_purge(note_id)
+    def notes_purge_all(self): return self.backend.notes_purge_all()
     def notes_search(self, query): return self.backend.notes_search(query)
 
     # 附件操作
@@ -362,6 +389,22 @@ class AppApi:
     def print_to_pdf(self):
         """触发前端打印（用户可在打印对话框中选择另存为 PDF)"""
         return True  # 前端通过 window.print() 处理
+
+    # 一键全库导出（zip：notes.db + attachments + backgrounds）
+    def export_all(self):
+        import tkinter.filedialog
+        from datetime import datetime
+        save_path = tkinter.filedialog.asksaveasfilename(
+            title="导出全部数据为备份包",
+            defaultextension='.zip',
+            filetypes=[('ZIP 压缩包', '*.zip')],
+            initialfile=f"我的记事本备份-{datetime.now():%Y%m%d-%H%M%S}.zip"
+        )
+        if not save_path:
+            return None
+        if self.backend.export_all_to_zip(save_path):
+            return save_path
+        return None
 
     def pick_and_preview_icon(self):
         """第一步：选择图片，智能裁切为 512×512 基准方图并生成默认圆角预览，不修改正式图标"""

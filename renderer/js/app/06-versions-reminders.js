@@ -2,7 +2,7 @@
 let currentPreviewVersionId = null;
 
 $('#btn-version-history').addEventListener('click', async () => {
-  if (!state.activeNoteId) { alert('请先选择一篇笔记'); return; }
+  if (!state.activeNoteId) { showToast('请先选择一篇笔记', { type: 'warn' }); return; }
   loadVersionList();
   openPanel($('#version-panel'));
 });
@@ -17,7 +17,7 @@ async function loadVersionList() {
   bar.innerHTML = '<button id="btn-delete-all-versions" class="btn-danger" style="flex:1;">删除全部</button>';
   bar.querySelector('#btn-delete-all-versions').addEventListener('click', async () => {
     if (!state.activeNoteId) return;
-    if (confirm('确定删除当前笔记的全部历史版本？此操作不可恢复。')) {
+    if (await showConfirmAsync({ title: '删除全部版本', message: '确定删除当前笔记的全部历史版本？此操作不可恢复。', okText: '删除', danger: true })) {
       await window.pywebview.api.versions_delete_all(state.activeNoteId);
       loadVersionList();
     }
@@ -44,7 +44,7 @@ async function loadVersionList() {
     });
     item.querySelector('[data-delete-version]').addEventListener('click', async (e) => {
       e.stopPropagation();
-      if (confirm('确定删除此历史版本？此操作不可恢复。')) {
+      if (await showConfirmAsync({ title: '删除版本', message: '确定删除此历史版本？此操作不可恢复。', okText: '删除', danger: true })) {
         await window.pywebview.api.versions_delete(v.id);
         loadVersionList();
       }
@@ -58,7 +58,7 @@ async function previewVersion(vid) {
   const ver = await window.pywebview.api.versions_get(vid, isUnlocked);
   if (!ver) return;
   if (ver.is_encrypted) {
-    alert('请先解锁笔记才能查看历史版本内容');
+    showToast('请先解锁笔记才能查看历史版本内容', { type: 'warn' });
     return;
   }
   currentPreviewVersionId = vid;
@@ -79,10 +79,10 @@ async function previewVersion(vid) {
 
 $('#btn-restore-version').addEventListener('click', async () => {
   if (!currentPreviewVersionId) return;
-  if (!confirm('确定恢复到此版本？当前内容将被覆盖。')) return;
+  if (!(await showConfirmAsync({ title: '恢复版本', message: '确定恢复到此版本？当前内容将被覆盖。', okText: '恢复' }))) return;
   const isUnlocked = unlockedNotes[state.activeNoteId] === true;
   const note = await window.pywebview.api.versions_restore(currentPreviewVersionId, isUnlocked);
-  if (!note) { alert('无法恢复：笔记已加密或版本不存在'); return; }
+  if (!note) { showToast('无法恢复：笔记已加密或版本不存在', { type: 'warn' }); return; }
   if (note && state.quill) {
     try {
       const delta = JSON.parse(note.content);
@@ -95,7 +95,7 @@ $('#btn-restore-version').addEventListener('click', async () => {
     state.currentTitle = note.title || '';
   }
   closePanel($('#version-preview-panel'));
-  alert('已恢复到所选版本');
+  showToast('已恢复到所选版本', { type: 'success' });
 });
 
 // ====== 自然语言日期解析器 ======
@@ -262,7 +262,7 @@ let _editingReminderId = null; // 当前正在编辑的提醒 ID
 
 // 打开提醒设置面板
 $('#btn-reminder').addEventListener('click', async () => {
-  if (!state.activeNoteId) { alert('请先选择一篇笔记'); return; }
+  if (!state.activeNoteId) { showToast('请先选择一篇笔记', { type: 'warn' }); return; }
   _editingReminderId = null;
   $('#reminder-panel-title').textContent = '设置提醒';
   $('#reminder-content').value = '';
@@ -336,7 +336,7 @@ $('#btn-save-reminder').addEventListener('click', async () => {
   const content = $('#reminder-content').value.trim();
   const nlInput = $('#reminder-nl-input').value.trim();
   let dt = $('#reminder-datetime').value;
-  if (!dt) { alert('请设置提醒时间'); return; }
+  if (!dt) { showToast('请设置提醒时间', { type: 'warn' }); return; }
 
   // 如果用了自然语言且解析成功，优先使用解析结果
   let repeatType = 'none', repeatInterval = 1;
@@ -427,7 +427,7 @@ async function loadReminderList() {
         } else if (action === 'edit') {
           await editReminderFromList(rid);
         } else if (action === 'delete') {
-          if (await window.pywebview.api.confirm('确定要删除此提醒吗？', '删除提醒')) {
+          if (await showConfirmAsync({ title: '删除提醒', message: '确定要删除此提醒吗？', okText: '删除', danger: true })) {
             await window.pywebview.api.reminder_delete(rid);
             await loadReminderList();
           }
@@ -475,10 +475,10 @@ async function editReminderFromList(rid) {
   openPanel($('#reminder-panel'));
 }
 
-// ====== Toast 通知系统 ======
+// ====== 提醒 Toast 通知系统（独立于 01-core 的统一 showToast，勿合并：带操作按钮可堆叠） ======
 let _toastTimers = {};
 
-function showToast(reminder) {
+function showReminderToast(reminder) {
   const toastId = 'toast-' + reminder.id;
   // 避免重复弹出
   if (document.getElementById(toastId)) return;
@@ -495,7 +495,7 @@ function showToast(reminder) {
     <div class="toast-content">🔔 ${escapeHtml(content)}</div>
     <div class="toast-time">${escapeHtml(time)}</div>
     <div class="toast-actions">
-      <button class="toast-btn toast-btn-primary" data-action="complete">${svgCheck} 完成</button>
+      <button class="toast-btn toast-btn-primary" data-action="complete">${ICONS.check} 完成</button>
       <div class="snooze-dropdown">
         <button class="toast-btn snooze-toggle">🕐 稍后</button>
         <div class="snooze-menu">
@@ -566,7 +566,7 @@ function checkReminders() {
   window.pywebview.api.reminders_check().then(reminders => {
     if (reminders && reminders.length > 0) {
       reminders.forEach(r => {
-        showToast(r);
+        showReminderToast(r);
         if (r.repeat_type && r.repeat_type !== 'none') {
           window.pywebview.api.reminder_update_next_repeat(r.id);
         } else {

@@ -76,7 +76,7 @@ $$('.math-sym-btn').forEach(hint => {
 
 // 打开公式面板
 $('#btn-math').addEventListener('click', () => {
-  if (!state.activeNoteId) { alert('请先选择一篇笔记'); return; }
+  if (!state.activeNoteId) { showToast('请先选择一篇笔记', { type: 'warn' }); return; }
   editingMathNode = null;
   $('#math-input').value = '';
   $('#btn-insert-math').textContent = '插入公式';
@@ -88,7 +88,7 @@ $('#btn-math').addEventListener('click', () => {
 // 插入/更新公式
 $('#btn-insert-math').addEventListener('click', () => {
   const latex = $('#math-input').value.trim();
-  if (!latex) { alert('请输入 LaTeX 公式'); return; }
+  if (!latex) { showToast('请输入 LaTeX 公式', { type: 'warn' }); return; }
 
   if (editingMathNode) {
     // 更新已有公式
@@ -123,7 +123,7 @@ let passwordPanelMode = 'set'; // 'set' | 'remove'
 
 // 工具栏锁按钮
 $('#btn-lock').addEventListener('click', async () => {
-  if (!state.activeNoteId) { alert('请先选择一篇笔记'); return; }
+  if (!state.activeNoteId) { showToast('请先选择一篇笔记', { type: 'warn' }); return; }
   const hasPwd = await window.pywebview.api.note_has_password(state.activeNoteId);
   if (hasPwd) {
     // 已加密 → 先落盘（此时后端仍解锁可加密写入），再清后端密钥缓存
@@ -171,30 +171,33 @@ async function openPasswordPanel(mode) {
 $('#btn-save-password').addEventListener('click', async () => {
   const p1 = $('#password-input1').value;
   const p2 = $('#password-input2').value;
-  if (!p1) { alert('请输入密码'); return; }
-  if (p1 !== p2) { alert('两次输入不一致'); return; }
-  if (p1.length < 6) { alert('密码至少 6 位'); return; }
+  if (!p1) { showToast('请输入密码', { type: 'warn' }); return; }
+  if (p1 !== p2) { showToast('两次输入不一致', { type: 'warn' }); return; }
+  if (p1.length < 6) { showToast('密码至少 6 位', { type: 'warn' }); return; }
   await flushSave();  // 设密码前先落盘，加密以最新内容为准
   const ok = await window.pywebview.api.note_set_password(state.activeNoteId, p1);
-  if (!ok) { alert('密码设置失败：请先解锁笔记后再修改密码'); return; }
+  if (!ok) { showToast('密码设置失败：请先解锁笔记后再修改密码', { type: 'error' }); return; }
   closePanel($('#password-panel'));
-  alert('密码设置成功！笔记内容已加密存储。\n\n请务必牢记密码：忘记密码将无法恢复笔记内容。');
+  await showInfoDialog({
+    title: '密码设置成功',
+    message: '笔记内容已加密存储。\n\n请务必牢记密码：忘记密码将无法恢复笔记内容。'
+  });
   unlockedNotes[state.activeNoteId] = true;
   loadNotes().then(renderNoteList);
 });
 
 $('#btn-remove-password').addEventListener('click', async () => {
   const p = $('#password-input1').value;
-  if (!p) { alert('请先输入当前密码'); return; }
+  if (!p) { showToast('请先输入当前密码', { type: 'warn' }); return; }
   await flushSave();  // 先落盘，解密回写以最新内容为准
   const ok = await window.pywebview.api.note_remove_password(state.activeNoteId, p);
   if (ok) {
     closePanel($('#password-panel'));
-    alert('密码已移除');
+    showToast('密码已移除', { type: 'success' });
     delete unlockedNotes[state.activeNoteId];
     loadNotes().then(renderNoteList);
   } else {
-    alert('密码错误');
+    showToast('密码错误', { type: 'error' });
   }
 });
 

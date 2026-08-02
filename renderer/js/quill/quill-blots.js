@@ -146,3 +146,65 @@ MathFormula.tagName = 'span';
 MathFormula.className = 'math-inline';
 Quill.register('formats/math-formula', MathFormula);
 
+// ====== 图片引用 Blot（覆盖内置 Image blot，图片外置的核心） ======
+// Delta 值双态：string = 旧 data URI（存量/剪贴板粘贴，原样渲染）；dict = 新引用
+//   {id, filename, storedPath, w?, x?, y?} — w/x/y 为位置/尺寸（.img-resizable 的 dataset 同步，
+//   经 value() 进入 Delta，修复「位置/尺寸重启丢失」的存量问题）
+// 渲染：占位 1px → 异步 read_file_base64 换 data URI（自包含，与现状显示一致；失败兜底 file://）。
+// 异步设 src 不走 Quill API，不触发 text-change，不会误触发保存。
+const IMG_PLACEHOLDER = 'data:image/gif;base64,R0lGODlhAQABAIAAAAAAAP///yH5BAEAAAAALAAAAAABAAEAAAIBRAA7';
+
+class NoteImageBlot extends Embed {
+  static create(data) {
+    const node = super.create();
+    if (typeof data === 'string') {
+      // 旧数据 URI（存量数据 / Quill 剪贴板内部复制）：原样渲染
+      node.setAttribute('src', data);
+      return node;
+    }
+    data = data || {};
+    node.setAttribute('data-img-id', data.id || '');
+    node.setAttribute('data-filename', data.filename || '');
+    node.setAttribute('data-stored-path', data.storedPath || '');
+    if (data.w) node.setAttribute('data-w', data.w);
+    if (data.x) node.setAttribute('data-x', data.x);
+    if (data.y) node.setAttribute('data-y', data.y);
+    node.setAttribute('src', IMG_PLACEHOLDER);
+    node.classList.add('note-image');
+    NoteImageBlot._loadAsync(node);
+    return node;
+  }
+
+  static value(node) {
+    if (!node.hasAttribute('data-img-id')) {
+      // 旧节点：原样返回 src 字符串（与内置 Image blot 语义一致）
+      return node.getAttribute('src');
+    }
+    const v = {
+      id: node.getAttribute('data-img-id'),
+      filename: node.getAttribute('data-filename'),
+      storedPath: node.getAttribute('data-stored-path'),
+    };
+    // 位置/尺寸持久化：.img-resizable 拖拽/滚轮写入 dataset，这里收进 Delta
+    if (node.hasAttribute('data-w')) v.w = parseInt(node.dataset.w) || undefined;
+    if (node.hasAttribute('data-x')) v.x = parseInt(node.dataset.x) || undefined;
+    if (node.hasAttribute('data-y')) v.y = parseInt(node.dataset.y) || undefined;
+    return v;
+  }
+
+  static async _loadAsync(node) {
+    const path = node.getAttribute('data-stored-path');
+    if (!path) return;
+    try {
+      const uri = await window.pywebview.api.read_file_base64(path);
+      // isConnected 守卫：迟到渲染的节点可能已被删除/重建
+      if (uri && node.isConnected) node.setAttribute('src', uri);
+    } catch (e) {
+      if (node.isConnected) node.setAttribute('src', 'file:///' + path.replace(/\\/g, '/'));
+    }
+  }
+}
+NoteImageBlot.blotName = 'image';
+NoteImageBlot.tagName = 'img';
+Quill.register('formats/image', NoteImageBlot, true);  // true = 覆盖内置 Image blot
+

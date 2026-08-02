@@ -248,7 +248,7 @@ $('#btn-pick-global-bg').addEventListener('click', async () => {
 // 选择笔记背景图片
 $('#btn-pick-note-bg').addEventListener('click', async () => {
   if (!state.activeNoteId) {
-    alert('请先选择一篇笔记');
+    showToast('请先选择一篇笔记', { type: 'warn' });
     return;
   }
 

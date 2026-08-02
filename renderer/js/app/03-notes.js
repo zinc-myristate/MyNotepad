@@ -32,6 +32,8 @@ function renderNoteList() {
     dom.emptyHint.classList.add('hidden');
   }
 
+  // DocumentFragment 批量挂载：消除每行多次插入引发的重排
+  const frag = document.createDocumentFragment();
   state.notes.forEach(note => {
     const item = document.createElement('div');
     item.className = `note-item${note.id === state.activeNoteId ? ' active' : ''}`;
@@ -49,6 +51,7 @@ function renderNoteList() {
     const lockIcon = note.has_password ? `<span class="note-status-icon locked">${svgLock}</span>` : '';
     // 生成封面
     const coverHtml = generateNoteCover(note);
+    // 事件统一走 #note-list 容器委托（见下方），元素只保留 data-* 路由属性
     item.innerHTML = `
       <div class="note-item-row-cover">
         ${coverHtml}
@@ -66,56 +69,52 @@ function renderNoteList() {
         <button class="note-item-delete" title="删除笔记" data-delete-id="${note.id}">${svgTrash}</button>
       </div>
     `;
-
-    // 置顶按钮
-    item.querySelector('.note-item-pin').addEventListener('click', (e) => {
-      e.stopPropagation();
-      togglePinNote(note.id);
-    });
-
-    // 收藏按钮
-    item.querySelector('.note-item-fav').addEventListener('click', (e) => {
-      e.stopPropagation();
-      toggleFavoriteNote(note.id);
-    });
-    // 密码按钮
-    item.querySelector('.note-item-password').addEventListener('click', async (e) => {
-      e.stopPropagation();
-      // 加密笔记需要先验证密码才能管理密码设置
-      const hasPwd = await window.pywebview.api.note_has_password(note.id);
-      if (hasPwd && !unlockedNotes[note.id]) {
-        // 先弹出验证面板，验证成功后自动打开密码管理面板
-        await flushSave();  // 旧笔记未保存内容先落盘，防止解锁后误存到加密笔记
-        pendingSelectNoteId = note.id;
-        state.activeNoteId = note.id;
-        passwordVerifyCallback = () => {
-          openPasswordPanel('set');
-        };
-        $('#password-verify-input').value = '';
-        $('#password-error-msg').style.display = 'none';
-        openPanel($('#password-verify-panel'));
-        return;
-      }
-      // 无密码或已解锁：直接打开密码管理面板
-      await selectNote(note.id);
-      openPasswordPanel('set');
-    });
-
-    // 点击切换笔记（加密的需要验证密码）
-    item.addEventListener('click', async (e) => {
-      if (!e.target.closest('.note-item-delete, .note-item-pin, .note-item-fav')) {
-        await verifyAndSelectNote(note.id);
-      }
-    });
-
-    // 删除按钮
-    item.querySelector('.note-item-delete').addEventListener('click', (e) => {
-      e.stopPropagation();
-      confirmDeleteNote(note.id, note.title);
-    });
-
-    dom.noteList.appendChild(item);
+    frag.appendChild(item);
   });
+  dom.noteList.appendChild(frag);
+}
+
+// 列表点击事件委托：单监听器代替每行 5 个，靠 data-* 属性路由
+// （与 07 文件的 dragstart/dragover/drop 委托是不同事件类型，互不冲突）
+dom.noteList.addEventListener('click', (e) => {
+  const pin = e.target.closest('[data-pin-id]');
+  if (pin) { e.stopPropagation(); togglePinNote(pin.dataset.pinId); return; }
+  const fav = e.target.closest('[data-fav-id]');
+  if (fav) { e.stopPropagation(); toggleFavoriteNote(fav.dataset.favId); return; }
+  const pwd = e.target.closest('[data-pwd-id]');
+  if (pwd) { e.stopPropagation(); handlePasswordButton(pwd.dataset.pwdId); return; }
+  const del = e.target.closest('[data-delete-id]');
+  if (del) {
+    e.stopPropagation();
+    const it = del.closest('.note-item');
+    const title = it ? (it.querySelector('.note-item-title') || {}).textContent : '';
+    confirmDeleteNote(del.dataset.deleteId, title);
+    return;
+  }
+  const item = e.target.closest('.note-item');
+  if (item) verifyAndSelectNote(item.dataset.noteId);
+});
+
+// 密码按钮逻辑（原每行内联处理器，委托后独立成函数）
+async function handlePasswordButton(noteId) {
+  // 加密笔记需要先验证密码才能管理密码设置
+  const hasPwd = await window.pywebview.api.note_has_password(noteId);
+  if (hasPwd && !unlockedNotes[noteId]) {
+    // 先弹出验证面板，验证成功后自动打开密码管理面板
+    await flushSave();  // 旧笔记未保存内容先落盘，防止解锁后误存到加密笔记
+    pendingSelectNoteId = noteId;
+    state.activeNoteId = noteId;
+    passwordVerifyCallback = () => {
+      openPasswordPanel('set');
+    };
+    $('#password-verify-input').value = '';
+    $('#password-error-msg').style.display = 'none';
+    openPanel($('#password-verify-panel'));
+    return;
+  }
+  // 无密码或已解锁：直接打开密码管理面板
+  await selectNote(noteId);
+  openPasswordPanel('set');
 }
 
 function updateNoteListItem(noteId) {
@@ -254,7 +253,7 @@ async function createNewNote() {
     dom.titleInput.select();
   } catch (err) {
     console.error('创建笔记失败:', err);
-    alert('创建笔记失败：' + err.message);
+    showToast('创建笔记失败：' + (err.message || err), { type: 'error' });
   }
 }
 
@@ -345,10 +344,14 @@ window.__getUnsavedSnapshot = function () {
   }
 };
 
-function confirmDeleteNote(noteId, title) {
-  showConfirm(`确定要删除笔记「${escapeHtml(title || '未命名笔记')}」吗？\n\n此操作不可恢复，笔记中的图片和附件也会被删除。`, async () => {
-    await deleteNoteById(noteId);
+async function confirmDeleteNote(noteId, title) {
+  const ok = await showConfirmAsync({
+    title: '删除笔记',
+    message: `确定要删除笔记「${title || '未命名笔记'}」吗？\n\n笔记将移入回收站，可在回收站中恢复。`,
+    okText: '删除',
+    danger: true
   });
+  if (ok) await deleteNoteById(noteId);
 }
 
 async function deleteNoteById(noteId) {
@@ -387,7 +390,7 @@ async function deleteNoteById(noteId) {
   } catch (err) {
     console.error('删除笔记失败:', err);
     reportError('删除笔记失败: ' + (err.message || err), err && err.stack, 'deleteNoteById');
-    alert('删除笔记失败：' + err.message);
+    showToast('删除笔记失败：' + (err.message || err), { type: 'error' });
   }
 }
 
@@ -403,8 +406,7 @@ dom.titleInput.addEventListener('input', () => {
   }
 });
 
-// 手动保存按钮 + 提示
-let saveIndicatorTimer = null;
+// 手动保存按钮 + 提示（saveIndicatorTimer 由 01-core.js 统一声明，避免全局 let 重复）
 function showSaveToast() {
   let toast = document.getElementById('save-toast');
   if (!toast) {
@@ -421,26 +423,6 @@ function showSaveToast() {
     toast.style.opacity = '0';
     toast.style.transform = 'translateX(-50%) translateY(0)';
   }, 1500);
-}
-
-/** 通用 Toast 提示（无图标，自定义文字和颜色） */
-function showToast(msg, bgColor) {
-  var toast = document.getElementById('save-toast');
-  if (!toast) {
-    toast = document.createElement('div');
-    toast.id = 'save-toast';
-    toast.style.cssText = 'position:fixed;bottom:30px;left:50%;transform:translateX(-50%);padding:10px 24px;color:#fff;border-radius:20px;font-size:14px;font-weight:600;z-index:9999;box-shadow:0 4px 16px rgba(0,0,0,0.3);transition:all 0.3s ease;opacity:0;pointer-events:none;';
-    document.body.appendChild(toast);
-  }
-  toast.style.background = bgColor || '#38A169';
-  toast.textContent = msg;
-  toast.style.opacity = '1';
-  toast.style.transform = 'translateX(-50%) translateY(-10px)';
-  if (saveIndicatorTimer) clearTimeout(saveIndicatorTimer);
-  saveIndicatorTimer = setTimeout(function() {
-    toast.style.opacity = '0';
-    toast.style.transform = 'translateX(-50%) translateY(0)';
-  }, 2000);
 }
 
 $('#btn-save').addEventListener('click', async () => {

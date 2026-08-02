@@ -10,6 +10,14 @@ window.addEventListener('beforeunload', async () => {
 });
 
 // ====== 键盘快捷键 ======
+// 正在输入字段（标题/搜索/面板输入/Quill 编辑区）时，Ctrl+D/E 不接管（避免吃掉编辑器内的删除/其他默认行为）
+function inTypingField() {
+  const el = document.activeElement;
+  if (!el) return false;
+  if (el.isContentEditable) return true;
+  return ['INPUT', 'TEXTAREA', 'SELECT'].includes(el.tagName);
+}
+
 document.addEventListener('keydown', async (e) => {
   // Ctrl+N 新建笔记
   if (e.ctrlKey && e.key === 'n') {
@@ -20,6 +28,25 @@ document.addEventListener('keydown', async (e) => {
   if (e.ctrlKey && e.key === 's') {
     e.preventDefault();
     await flushSave();
+  }
+  // Ctrl+F 聚焦搜索框
+  if (e.ctrlKey && e.key === 'f') {
+    e.preventDefault();
+    dom.searchInput.focus();
+    dom.searchInput.select();
+  }
+  // Ctrl+D 删除当前笔记（输入字段内不接管）
+  if (e.ctrlKey && e.key === 'd' && !inTypingField()) {
+    e.preventDefault();
+    if (state.activeNoteId) {
+      const n = state.notes.find(x => x.id === state.activeNoteId);
+      confirmDeleteNote(n ? n.id : state.activeNoteId, n && n.title);
+    }
+  }
+  // Ctrl+E 导出（输入字段内不接管）
+  if (e.ctrlKey && e.key === 'e' && !inTypingField()) {
+    e.preventDefault();
+    $('#btn-export').click();
   }
   // ESC 取消语音临时文字
   if (e.key === 'Escape' && isVoiceRecording) {
@@ -142,7 +169,7 @@ async function openTagManager() {
     item.innerHTML = `<span class="tag-chip" data-tag-color="${tag.color || ''}">${escapeHtml(tag.name)}</span>
       <button class="btn-link" data-delete-tag="${tag.id}">删除</button>`;
     item.querySelector('[data-delete-tag]').addEventListener('click', async () => {
-      if (confirm(`确定删除标签「${tag.name}」？`)) {
+      if (await showConfirmAsync({ title: '删除标签', message: `确定删除标签「${tag.name}」？`, okText: '删除', danger: true })) {
         await window.pywebview.api.tags_delete(tag.id);
         openTagManager();
         loadTagFilter();
