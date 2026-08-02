@@ -273,8 +273,8 @@ class AppApi:
 
     # 获取数据目录（用于加载本地图片）
     def get_data_dir(self):
-        import os
-        return os.path.join(os.path.dirname(os.path.abspath(__file__)), "data")
+        # 与后端一致：frozen 模式下 __file__ 在 bundle 内，不能据此拼数据目录
+        return _backend_mod.DATA_DIR
 
     # 读取文件为 base64（用于在 WebView 中显示本地图片）
     def read_file_base64(self, file_path):
@@ -589,6 +589,20 @@ def make_closing_handler(target_window, backend):
     return _on_closing
 
 # ====== 创建窗口 ======
+# 单实例互斥：已有实例在运行时聚焦其窗口并退出本进程。
+# 两个进程并发写同一 SQLite（DELETE journal 模式）会撞 database is locked，必须互斥。
+# 测试环境（MYNOTEPAD_DATA_DIR 隔离）跳过，避免并行测试互锁。
+if not os.environ.get('MYNOTEPAD_DATA_DIR'):
+    import ctypes as _ctypes
+    _inst_mutex = _ctypes.windll.kernel32.CreateMutexW(None, False, "MyNotepad_SingleInstance_Mutex")
+    if _ctypes.windll.kernel32.GetLastError() == 183:  # ERROR_ALREADY_EXISTS
+        _hwnd = _ctypes.windll.user32.FindWindowW(None, "我的记事本")
+        if _hwnd:
+            _ctypes.windll.user32.ShowWindow(_hwnd, 9)  # SW_RESTORE（最小化时还原）
+            _ctypes.windll.user32.SetForegroundWindow(_hwnd)
+        sys.exit(0)
+    # _inst_mutex 句柄需存活整个进程，否则互斥量被释放
+
 html_path = os.path.join(BASE_DIR, "renderer", "index.html")
 
 # 加载用户自定义图标（如果存在）

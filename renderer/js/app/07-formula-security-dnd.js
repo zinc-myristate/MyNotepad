@@ -315,9 +315,11 @@ dom.noteList.addEventListener('drop', async (e) => {
   // 重新排列 state.notes（统一走 store）
   notesStore.move(dragSrcIndex, dstIndex);
 
-  // 更新所有笔记的 sort_order
-  for (let i = 0; i < state.notes.length; i++) {
-    await window.pywebview.api.notes_update(state.notes[i].id, { sort_order: i });
+  // 更新所有笔记的 sort_order：列表按 sort_order DESC 排序，顶部（index 0）取最大值；
+  // 后端对纯排序更新不 bump updated_at，拖拽后顺序才可持久
+  const n = state.notes.length;
+  for (let i = 0; i < n; i++) {
+    await window.pywebview.api.notes_update(state.notes[i].id, { sort_order: n - 1 - i });
   }
   renderNoteList();
   dragSrcIndex = null;

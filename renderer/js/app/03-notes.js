@@ -37,13 +37,13 @@ function renderNoteList() {
     item.className = `note-item${note.id === state.activeNoteId ? ' active' : ''}`;
     item.dataset.noteId = note.id;
     item.draggable = true;
-    // SVG 图标定义
-    const svgLock = '<svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round"><rect x="3" y="11" width="18" height="11" rx="2"/><path d="M7 11V7a5 5 0 0110 0v4"/></svg>';
-    const svgPin = '<svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round"><path d="M12 2v20M5 9h14l-3-7H8L5 9z"/><circle cx="12" cy="2" r="2"/></svg>';
-    const svgStar = '<svg width="12" height="12" viewBox="0 0 24 24" fill="currentColor" stroke="currentColor" stroke-width="1"><polygon points="12 2 15.09 8.26 22 9.27 17 14.14 18.18 21.02 12 17.77 5.82 21.02 7 14.14 2 9.27 8.91 8.26 12 2"/></svg>';
-    const svgStarOutline = '<svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polygon points="12 2 15.09 8.26 22 9.27 17 14.14 18.18 21.02 12 17.77 5.82 21.02 7 14.14 2 9.27 8.91 8.26 12 2"/></svg>';
-    const svgTrash = '<svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><polyline points="3 6 5 6 21 6"/><path d="M19 6v14a2 2 0 01-2 2H7a2 2 0 01-2-2V6m3 0V4a2 2 0 012-2h4a2 2 0 012 2v2"/></svg>';
-    const svgKey = '<svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><path d="M21 2l-2 2m-7.61 7.61a5.5 5.5 0 11-7.778 7.778 5.5 5.5 0 017.777-7.777zm0 0L15.5 7.5m0 0l3 3L22 7l-3-3m-3.5 3.5L19 4"/></svg>';
+    // SVG 图标定义（统一取 icons.js，避免循环内重复字符串）
+    const svgLock = ICONS.lock;
+    const svgPin = ICONS.pin;
+    const svgStar = ICONS.star;
+    const svgStarOutline = ICONS['star-outline'];
+    const svgTrash = ICONS.trash;
+    const svgKey = ICONS.key;
     const pinIcon = note.is_pinned ? `<span class="note-status-icon pinned">${svgPin}</span>` : '';
     const favIcon = note.is_favorite ? `<span class="note-status-icon fav">${svgStar}</span>` : '';
     const lockIcon = note.has_password ? `<span class="note-status-icon locked">${svgLock}</span>` : '';
@@ -268,40 +268,49 @@ function setSaveDot(s) {
 }
 
 async function saveCurrentNote() {
+  // 串行化：撞上在途保存时先等它完成，再重新走去重与保存（不能直接跳过——
+  // 期间可能有新输入；且旧保存完成后会更新基线，跳过会让新改动失去触发时机）
+  if (state._savePromise) await state._savePromise;
   if (!state.activeNoteId) return;
-  if (state._saving) return;
   if (state.quill && !state.quill.isEnabled()) return; // 加密未解锁时编辑器禁用，防止空内容覆盖
-  const note = state.notes.find(n => n.id === state.activeNoteId);
-  if (note && note.has_password && !unlockedNotes[state.activeNoteId]) return;
+  const noteId = state.activeNoteId;
+  const note = state.notes.find(n => n.id === noteId);
+  if (note && note.has_password && !unlockedNotes[noteId]) return;
 
-  state._saving = true;
-  try {
-    // 保存前同步贴纸覆盖层位置到 Quill blot
-    if (typeof syncStickersToQuill === 'function') syncStickersToQuill();
+  state._savePromise = (async () => {
+    try {
+      // 保存前同步贴纸覆盖层位置到 Quill blot
+      if (typeof syncStickersToQuill === 'function') syncStickersToQuill();
 
-    const title = dom.titleInput.value.trim() || '未命名笔记';
-    const content = state.quill ? JSON.stringify(state.quill.getContents()) : '';
-    // 去重基线用 currentTitle/currentContent，不能用 state.notes（标题输入处理器为刷新列表
-    // 已提前更新 state.notes[].title，拿它比较会误判"无变化"导致纯标题修改永不落库）
-    if (title === state.currentTitle && content === state.currentContent) {
-      setSaveDot('saved');  // 改动被撤销回原状
-      return;
+      const title = dom.titleInput.value.trim() || '未命名笔记';
+      const content = state.quill ? JSON.stringify(state.quill.getContents()) : '';
+      // 去重基线用 currentTitle/currentContent，不能用 state.notes（标题输入处理器为刷新列表
+      // 已提前更新 state.notes[].title，拿它比较会误判"无变化"导致纯标题修改永不落库）
+      if (title === state.currentTitle && content === state.currentContent) {
+        setSaveDot('saved');  // 改动被撤销回原状
+        return;
+      }
+
+      await window.pywebview.api.notes_update(noteId, { title, content });
+      // 保存成功后才更新基线：失败时基线不动，下次自动重试。
+      // 期间若已切换到其他笔记（在途保存的 await 期间 selectNote 完成），
+      // 迟到的保存只落库、不得用旧值覆盖新笔记的 currentTitle/currentContent 基线
+      if (state.activeNoteId === noteId) {
+        state.currentTitle = title;
+        state.currentContent = content;
+        notesStore.updateFields(noteId, { title, content });
+        updateNoteListItem(noteId);
+        setSaveDot('saved');
+      }
+    } catch (err) {
+      console.error('保存笔记失败:', err.message || err);
+      reportError('保存笔记失败: ' + (err.message || err), err && err.stack, 'saveCurrentNote');
+      setSaveDot('error');
+    } finally {
+      state._savePromise = null;
     }
-
-    await window.pywebview.api.notes_update(state.activeNoteId, { title, content });
-    // 保存成功后才更新基线：失败时基线不动，下次自动重试
-    state.currentTitle = title;
-    state.currentContent = content;
-    notesStore.updateFields(state.activeNoteId, { title, content });
-    updateNoteListItem(state.activeNoteId);
-    setSaveDot('saved');
-  } catch (err) {
-    console.error('保存笔记失败:', err.message || err);
-    reportError('保存笔记失败: ' + (err.message || err), err && err.stack, 'saveCurrentNote');
-    setSaveDot('error');
-  } finally {
-    state._saving = false;
-  }
+  })();
+  return state._savePromise;
 }
 
 // 防抖自动保存：连续输入合并为一次写库；flushSave 在切换/失焦/锁定等时机立即落盘

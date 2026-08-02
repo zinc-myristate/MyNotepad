@@ -430,15 +430,32 @@ if FTS_AVAILABLE:
         applog.get_logger().exception("FTS 初始化失败，降级为 LIKE 搜索")
         FTS_AVAILABLE = False
 
+def _parse_remind_at(s):
+    """解析提醒时间；容错旧数据缺秒格式，解析失败返回 None（调用方自行兜底）"""
+    if not s:
+        return None
+    try:
+        return datetime.strptime(s, '%Y-%m-%d %H:%M:%S')
+    except (ValueError, TypeError):
+        pass
+    try:
+        return datetime.strptime(s, '%Y-%m-%d %H:%M')
+    except (ValueError, TypeError):
+        return None
+
+
 # ====== 导出给前端的 API 类 ======
 class Api:
     # ----- 笔记 -----
     def notes_list(self):
+        # 排序：置顶 → 手动排序（sort_order，拖拽写入）→ 最近更新。新建笔记 sort_order=max+1，
+        # 在 DESC 下自然排最前，与旧的「仅 updated_at」行为一致；未拖拽过的存量笔记 sort_order
+        # 全为 0，退化为 updated_at DESC（兼容旧行为）。
         rows = conn.execute(
             "SELECT id, title, bg_type, bg_value, bg_opacity, is_pinned, is_favorite, "
             "sort_order, created_at, updated_at, "
             "CASE WHEN password_hash IS NOT NULL AND password_hash != '' THEN 1 ELSE 0 END AS has_password "
-            "FROM notes ORDER BY is_pinned DESC, updated_at DESC"
+            "FROM notes ORDER BY is_pinned DESC, sort_order DESC, updated_at DESC"
         ).fetchall()
         return [dict(r) for r in rows]
 
@@ -497,7 +514,9 @@ class Api:
                         return None
                 else:
                     updates['content'] = _encrypt_content(dek, updates['content'], note_id)
-        updates["updated_at"] = datetime.now().strftime('%Y-%m-%d %H:%M:%S')
+        if set(updates) != {'sort_order'}:
+            # 纯排序更新不算修改内容：不 bump updated_at，否则拖拽后所有笔记时间戳被刷新
+            updates["updated_at"] = datetime.now().strftime('%Y-%m-%d %H:%M:%S')
         sets = ", ".join(f"{k} = ?" for k in updates)
         vals = list(updates.values()) + [note_id]
         conn.execute(f"UPDATE notes SET {sets} WHERE id = ?", vals)
@@ -507,6 +526,16 @@ class Api:
         return self.notes_get(note_id)
 
     def notes_delete(self, note_id):
+        # 清理该笔记专属的背景图副本（data/backgrounds/ 内的 uuid 文件，每次选图独立复制，可安全删除）
+        row = conn.execute("SELECT bg_value FROM notes WHERE id = ?", (note_id,)).fetchone()
+        if row and row['bg_value']:
+            try:
+                bg_dir = os.path.realpath(os.path.join(DATA_DIR, 'backgrounds'))
+                real = os.path.realpath(row['bg_value'])
+                if os.path.dirname(real) == bg_dir and os.path.isfile(real):
+                    os.remove(real)
+            except OSError:
+                pass
         # 删除附件文件夹
         note_attach = os.path.join(ATTACH_DIR, note_id)
         if os.path.exists(note_attach):
@@ -686,7 +715,7 @@ class Api:
             "n.sort_order, n.created_at, n.updated_at, "
             "CASE WHEN n.password_hash IS NOT NULL AND n.password_hash != '' THEN 1 ELSE 0 END AS has_password "
             "FROM notes n JOIN note_tags nt ON n.id = nt.note_id "
-            "WHERE nt.tag_id = ? ORDER BY n.is_pinned DESC, n.updated_at DESC",
+            "WHERE nt.tag_id = ? ORDER BY n.is_pinned DESC, n.sort_order DESC, n.updated_at DESC",
             (tag_id,)
         ).fetchall()
         return [dict(r) for r in rows]
@@ -1044,12 +1073,23 @@ class Api:
         return [dict(r) for r in rows]
 
     def reminder_check(self):
-        """检查到期的提醒（remind_at <= 当前时间，且未完成）"""
-        rows = conn.execute(
+        """检查到期的提醒：只返回 24h 内的（防启动时补弹一堆过期提醒）。
+        过期 >24h 的重复提醒自动推进到未来首次触发；一次性提醒标记完成（管理面板仍可见）。"""
+        due = conn.execute(
             "SELECT * FROM reminders "
-            "WHERE remind_at <= datetime('now','localtime') AND is_completed = 0"
+            "WHERE remind_at <= datetime('now','localtime') AND is_completed = 0 "
+            "AND remind_at > datetime('now','localtime', '-1 day')"
         ).fetchall()
-        return [dict(r) for r in rows]
+        stale = conn.execute(
+            "SELECT * FROM reminders "
+            "WHERE remind_at <= datetime('now','localtime', '-1 day') AND is_completed = 0"
+        ).fetchall()
+        for r in stale:
+            if r['repeat_type'] != 'none':
+                self.reminder_update_next_repeat(r['id'])
+            else:
+                self.reminder_complete(r['id'])
+        return [dict(r) for r in due]
 
     def reminder_complete(self, reminder_id):
         """标记提醒为已完成"""
@@ -1059,11 +1099,13 @@ class Api:
 
     def reminder_snooze(self, reminder_id, minutes):
         """推迟提醒 N 分钟"""
-        from datetime import datetime, timedelta
+        from datetime import timedelta
         r = self.reminder_get(reminder_id)
         if not r:
             return None
-        old_time = datetime.strptime(r['remind_at'], '%Y-%m-%d %H:%M:%S')
+        old_time = _parse_remind_at(r['remind_at'])
+        if old_time is None:
+            return None  # 时间格式异常，不修改
         new_time = old_time + timedelta(minutes=minutes)
         new_time_str = new_time.strftime('%Y-%m-%d %H:%M:%S')
         conn.execute("UPDATE reminders SET remind_at = ? WHERE id = ?", (new_time_str, reminder_id))
@@ -1071,42 +1113,65 @@ class Api:
         return self.reminder_get(reminder_id)
 
     def reminder_update_next_repeat(self, reminder_id):
-        """重复提醒触发后：自动计算下一次提醒时间"""
+        """重复提醒触发后：自动计算下一次提醒时间；过期的直接推进到未来首次触发（防启动连弹）"""
         from datetime import datetime, timedelta
         r = self.reminder_get(reminder_id)
         if not r or r['repeat_type'] == 'none':
             self.reminder_complete(reminder_id)
             return None
 
-        old_time = datetime.strptime(r['remind_at'], '%Y-%m-%d %H:%M:%S')
+        old_time = _parse_remind_at(r['remind_at'])
+        if old_time is None:
+            # 时间格式异常无法计算下次 → 标记完成，不无限滞留
+            self.reminder_complete(reminder_id)
+            return None
         interval = r.get('repeat_interval', 1)
         repeat_type = r['repeat_type']
 
-        if repeat_type == 'daily':
-            new_time = old_time + timedelta(days=interval)
-        elif repeat_type == 'weekly':
-            new_time = old_time + timedelta(weeks=interval)
-        elif repeat_type == 'weekday':
-            # 跳到下一个工作日（周一到周五）
-            new_time = old_time + timedelta(days=1)
-            while new_time.weekday() >= 5:  # 5=周六, 6=周日
-                new_time += timedelta(days=1)
-        elif repeat_type == 'monthly':
-            # 加 N 个月
-            month = old_time.month - 1 + interval
-            year = old_time.year + month // 12
-            month = month % 12 + 1
-            day = min(old_time.day, [31, 29 if year % 4 == 0 and (year % 100 != 0 or year % 400 == 0) else 28,
-                                     31, 30, 31, 30, 31, 31, 30, 31, 30, 31][month - 1])
-            new_time = old_time.replace(year=year, month=month, day=day)
-        elif repeat_type == 'yearly':
-            new_time = old_time.replace(year=old_time.year + interval)
-        else:
-            self.reminder_complete(reminder_id)
+        def _next(t):
+            """计算 t 的下一次触发；未知重复类型返回 None"""
+            if repeat_type == 'daily':
+                return t + timedelta(days=interval)
+            if repeat_type == 'weekly':
+                return t + timedelta(weeks=interval)
+            if repeat_type == 'weekday':
+                # 跳到下一个工作日（周一到周五）
+                n = t + timedelta(days=1)
+                while n.weekday() >= 5:  # 5=周六, 6=周日
+                    n += timedelta(days=1)
+                return n
+            if repeat_type == 'monthly':
+                # 加 N 个月
+                month = t.month - 1 + interval
+                year = t.year + month // 12
+                month = month % 12 + 1
+                day = min(t.day, [31, 29 if year % 4 == 0 and (year % 100 != 0 or year % 400 == 0) else 28,
+                                  31, 30, 31, 30, 31, 31, 30, 31, 30, 31][month - 1])
+                return t.replace(year=year, month=month, day=day)
+            if repeat_type == 'yearly':
+                # 2/29 的年度提醒在平年无此日，需像 monthly 一样钳制到月底（否则 replace 抛 ValueError）
+                year = t.year + interval
+                feb = 29 if year % 4 == 0 and (year % 100 != 0 or year % 400 == 0) else 28
+                return t.replace(year=year, day=min(t.day, feb))
             return None
 
-        new_time_str = new_time.strftime('%Y-%m-%d %H:%M:%S')
-        conn.execute("UPDATE reminders SET remind_at = ? WHERE id = ?", (new_time_str, reminder_id))
+        new_time = _next(old_time)
+        if new_time is None:
+            self.reminder_complete(reminder_id)
+            return None
+        # 应用关闭错过多个周期时，推进到未来首次触发。逐档步进保证「月末钳制 / 跳过周末」
+        # 语义正确（不能按周期数直接跳）；100_000 档上限只兜底异常远古数据（如 1900 年），
+        # 正常过期场景几千档内即完成。撞上限仍不到未来 → 标记完成，避免每次轮询反复处理滞留项。
+        now = datetime.now()
+        guard = 0
+        while new_time <= now and guard < 100_000:
+            new_time = _next(new_time)
+            guard += 1
+        if new_time <= now:
+            self.reminder_complete(reminder_id)
+            return None
+        conn.execute("UPDATE reminders SET remind_at = ? WHERE id = ?",
+                     (new_time.strftime('%Y-%m-%d %H:%M:%S'), reminder_id))
         conn.commit()
         return self.reminder_get(reminder_id)
 
@@ -1212,7 +1277,9 @@ class Api:
                         except Exception as e:
                             doc.add_paragraph(f'[图片: {src[:50]}...]')
                     elif src.startswith('file:///'):
-                        local_path = src.replace('file:///', '')
+                        # Windows 下 file:///C:/... 需先 unquote 再剥掉根斜杠，否则空格路径失效
+                        import urllib.parse
+                        local_path = urllib.parse.unquote(src.replace('file:///', '')).lstrip('/')
                         if os.path.exists(local_path):
                             try:
                                 doc.add_picture(local_path, width=Inches(5))

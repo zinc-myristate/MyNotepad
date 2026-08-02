@@ -11,8 +11,11 @@ const notesStore = {
       notes = notes.map(n => ({ ...n, is_pinned: Number(n.is_pinned) || 0, is_favorite: Number(n.is_favorite) || 0 }));
     }
     if (sort) {
+      // 与后端 ORDER BY 对齐：置顶 → 手动排序 DESC → 最近更新
       notes.sort((a, b) => {
         if (b.is_pinned !== a.is_pinned) return b.is_pinned - a.is_pinned;
+        const so = (b.sort_order || 0) - (a.sort_order || 0);
+        if (so !== 0) return so;
         return (b.updated_at || '').localeCompare(a.updated_at || '');
       });
     }
