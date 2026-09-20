@@ -67,9 +67,29 @@ pyinstaller MyNotepad.spec   # 产物在 dist/MyNotepad/
 ## 测试
 
 ```bash
-py -3.14 -m pytest                 # 83 单测（自动隔离临时数据目录）
-py -3.14 -m pytest -m e2e          # 6 无头 pywebview 端到端
+py -3.14 -m pytest                 # 116 单测（自动隔离临时数据目录）
+py -3.14 -m pytest -m e2e          # 10 无头 pywebview 端到端
+python -m ruff check .             # 代码检查（配置见 pyproject.toml）
 ```
+
+## 打包
+
+```bash
+python build.py                    # 推荐：一条命令完成全部步骤
+```
+
+`build.py` 按 `关实例 → 备份 data/resources → PyInstaller → 还原数据 → 修快捷方式 → 冒烟启动`
+执行，任一步失败都会**尽力还原数据**。
+
+> ⚠️ 不要直接跑 `pyinstaller MyNotepad.spec`：它会清空整个 `dist/MyNotepad`，
+> 而你的笔记库、附件、背景图就在 `dist/MyNotepad/data/` 里。手工执行前务必先备份 `data/`。
+
+## 数据库体积
+
+程序启动时（后台线程，备份之后）会检查数据库的**空闲页占比**，超过 30% 就自动 `VACUUM` 回收。
+SQLite 删除或改写大字段后**不会**把空间还给文件系统——图片外置迁移与历史版本快照的删除都会
+持续堆积空闲页。实测某库：12.02 MB 的文件里有效数据只有 0.12 MB（空闲页占 99%），
+启动一次后即回收为 0.12 MB，数据完整性校验通过。
 
 ## 项目结构
 
@@ -77,7 +97,9 @@ py -3.14 -m pytest -m e2e          # 6 无头 pywebview 端到端
 ├── app.pyw                  # 入口（pywebview 窗口 + JS API 桥接 + 关窗兜底 + 图标处理）
 ├── backend.py               # 后端 API（数据库/加密/搜索/备份/提醒/导出）
 ├── applog.py                # 崩溃兜底日志
+├── build.py                 # 打包脚本（备份-构建-还原-修快捷方式-冒烟）
 ├── MyNotepad.spec           # PyInstaller 打包配置
+├── pyproject.toml           # ruff 配置
 ├── renderer/                # 前端（index.html + 4 主题样式 + Quill/KaTeX + js/ 10 模块）
 ├── data/                    # 运行时数据
 ├── resources/               # 图标 + 人脸检测模型
@@ -90,3 +112,41 @@ py -3.14 -m pytest -m e2e          # 6 无头 pywebview 端到端
 1. 前端为全局作用域多文件（无模块系统/构建工具），跨文件依赖靠加载顺序保证
 2. 编辑器内复制图片走 Quill 剪贴板，粘贴出的副本仍以 data URI 内嵌，下次启动迁移外置
 3. 任务栏图标需重启应用后更新（pywebview 框架限制）
+
+## 窗口尺寸与任务栏
+
+窗口初始尺寸/位置不再写死，而是启动时读取**可用工作区**（已排除任务栏，并按 DPI 换算成逻辑像素）
+后居中放置，因此：
+
+- 高 DPI 缩放屏（如 200%）下不会再出现下沿被任务栏压住、底部按钮（日历/回收站）看不见的情况
+- 工作区较小（笔记本、缩放后逻辑分辨率低）时自动收缩，最小不小于 900×600；
+  工作区本身就小于 900×600 时优先保住可用尺寸（允许略微溢出，但左上角一定可见）
+- 调整默认尺寸改 `app.pyw` 的 `DEFAULT_WIN_W` / `DEFAULT_WIN_H`（仍会被工作区钳制）
+- 该逻辑是纯函数（`clamp_window_geometry`），由 `tests/test_window_geometry.py` 覆盖
+  1080p / 1366×768 / 带鱼屏 / 副屏 / 任务栏在左或在顶 / 极小屏等 10 种配置，防止回归
+
+## 自定义图标与重新打包
+
+「更换图标」写入的是 `dist/MyNotepad/resources/icon.{png,ico}`，而重新打包会清空 `dist/MyNotepad`
+并把它还原成仓库默认图标。为此程序每次启动会把自定义图标备份到 `data/custom_icon/`，
+检测到被还原成默认图标时自动恢复（删除 `data/custom_icon/` 即放弃该备份）。
+
+桌面快捷方式的图标则**指向 exe 内嵌资源**（`MyNotepad.exe,0`），由 `build.py` 自动维护——
+不再依赖 `resources/icon.ico` 是否存在，因此重新打包不会让快捷方式变成白图标。
+
+> ⚠️ 用 `python build.py` 打包即可（它会自动备份并还原 `data/`）。
+> 若坚持手工 `pyinstaller`，务必先备份整个 `dist/MyNotepad/data/`。
+
+## 前端脚本加载
+
+前端 17 个模块（Quill / KaTeX / utils / icons / app 各分节）**按依赖顺序**逐个加载，且每个文件
+加载失败会自动重试（最多 4 次），**某个文件彻底失败也不会中断后面的加载**。这不是过度设计：
+WebView2 偶发会拉取失败个别脚本（实测约 1/20），而浏览器遇到失败的 `<script>` 是**静默跳过**的
+——一旦承载公共函数的 `utils.js` 没加载成功，依赖它的多个模块会在顶层抛错而整段不执行，
+表现为「新建笔记点了没反应」＋「工具栏按钮图标消失」这类残缺。
+
+为此还提供了 `escapeHtml` / `formatFileSize` / `debounce` 的兜底实现，即使 `utils.js` 始终加载不上，
+其余模块也不会集体停摆。真出问题会在窗口顶部显示红色提示并写入 `error.log`，不再静默半死。
+
+调整模块加载顺序请改 `renderer/index.html` 末尾加载器的 `FILES` 数组。
+回归测试见 `tests/test_boot_loader.py`。

@@ -1,11 +1,18 @@
-# 运行依赖（打包：还需 pyinstaller）
-pywebview
-cryptography
-Pillow
-python-docx
-openpyxl
-opencv-contrib-python
-numpy
+# 运行依赖
+# 全部锁定精确版本：这是要长期维护的本地应用，且打包产物必须可复现——
+# 放开版本会让某天 pip 拉到不兼容的新版后直接启动/打包失败（本仓库吃过一次这种亏）。
+pywebview==6.2.1
+pythonnet==3.1.0          # pywebview 的 Windows 后端（winforms）必需
+clr_loader==0.3.1         # pythonnet 的运行时加载器
+cryptography==49.0.0
+Pillow==12.3.0
+python-docx==1.2.0
+openpyxl==3.1.5
+opencv-contrib-python==5.0.0.93   # 仅供「自定义图标」智能裁切；缺失会降级居中裁切
+numpy==2.4.6
 
 # 测试依赖
-pytest
+pytest==9.1.1
+
+# 打包依赖（pyinstaller 不在运行时依赖里，故单独列出）
+pyinstaller==6.21.0

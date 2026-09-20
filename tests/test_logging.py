@@ -31,7 +31,8 @@ def test_log_never_contains_note_content(api, backend_mod, tmp_path):
 
 
 def test_uncaught_thread_exception_logged(backend_mod, tmp_path):
-    import threading, time
+    import threading
+    import time
     def boom():
         raise RuntimeError('线程崩溃测试')
     t = threading.Thread(target=boom)

@@ -857,23 +857,116 @@
   </div>
 </div>
 
-<!-- ====== 脚本 ====== -->
-<script src="quill.js"></script>
-<script src="katex/katex.min.js"></script>
-<script src="js/shared/utils.js"></script>
-<script src="js/shared/icons.js"></script>
-<script src="js/quill/quill-blots.js"></script>
-<script src="js/app/01-core.js"></script>
-<script src="js/app/01b-store.js"></script>
-<script src="js/app/02-editor.js"></script>
-<script src="js/app/03-notes.js"></script>
-<script src="js/app/04-appearance.js"></script>
-<script src="js/app/05-shell.js"></script>
-<script src="js/app/06-versions-reminders.js"></script>
-<script src="js/app/07-formula-security-dnd.js"></script>
-<script src="js/app/08-appearance2.js"></script>
-<script src="js/app/09-boot.js"></script>
-<script src="js/app/10-trash.js"></script>
-<script src="js/quill/quill-deco.js"></script>
+<!-- ====== 脚本 ======
+     顺序加载 + 逐个校验 + 失败重试。
+     为什么要这么写：这些都是经典脚本、靠顺序与全局作用域互相依赖，而 WebView2
+     在极少数情况下会拉取失败某个 <script>（实测 ~1/20）。一旦失败，浏览器静默跳过
+     该文件——`utils.js` 没了 `debounce`，03-notes/04/09 等模块在顶层就抛
+     「debounce is not defined」而整段不执行，表现为：
+       · 「新建笔记」点了没反应（监听器注册在 03-notes.js 末尾，永远执行不到）
+       · 工具栏 Quill 内置按钮没有图标、只剩几个小点（09-boot 的 initApp 没跑 -> 主题类没加）
+     这里逐个加载并在失败时重试，任何一次性网络抖动都不会再让界面残缺。
+     失败超过重试次数会在顶部明确报出是哪个文件没加载成功。 -->
+<script>
+// 关键工具函数的兜底实现：与 js/shared/utils.js 同名。
+// utils.js 用 function 声明，加载后会覆盖这里的实现；只有当 utils.js 加载失败时，
+// 这里的最小实现才能让其余模块不至于在顶层抛 ReferenceError 而集体停摆。
+var escapeHtml = function (str) {
+  var d = document.createElement('div');
+  d.textContent = str == null ? '' : str;
+  return d.innerHTML;
+};
+var formatFileSize = function (bytes) {
+  if (!bytes) return '0 B';
+  var k = 1024, sizes = ['B', 'KB', 'MB', 'GB'];
+  var i = Math.floor(Math.log(bytes) / Math.log(k));
+  return parseFloat((bytes / Math.pow(k, i)).toFixed(1)) + ' ' + sizes[i];
+};
+var debounce = function (fn, delay) {
+  var timer;
+  var wrapped = function () {
+    var args = arguments, self = this;
+    clearTimeout(timer);
+    timer = setTimeout(function () { fn.apply(self, args); }, delay);
+  };
+  wrapped.cancel = function () { clearTimeout(timer); };
+  return wrapped;
+};
+</script>
+<script>
+(function () {
+  // 顺序即依赖顺序（与原先静态 <script> 完全一致）
+  var FILES = [
+    'quill.js',
+    'katex/katex.min.js',
+    'js/shared/utils.js',
+    'js/shared/icons.js',
+    'js/quill/quill-blots.js',
+    'js/app/01-core.js',
+    'js/app/01b-store.js',
+    'js/app/02-editor.js',
+    'js/app/03-notes.js',
+    'js/app/04-appearance.js',
+    'js/app/05-shell.js',
+    'js/app/06-versions-reminders.js',
+    'js/app/07-formula-security-dnd.js',
+    'js/app/08-appearance2.js',
+    'js/app/09-boot.js',
+    'js/app/10-trash.js',
+    'js/quill/quill-deco.js'
+  ];
+  var MAX_TRY = 4;
+
+  function loadOne(src, attempt) {
+    return new Promise(function (resolve, reject) {
+      var s = document.createElement('script');
+      // 重试时加查询参数，绕开可能缓存住的失败响应
+      s.src = attempt > 1 ? src + '?retry=' + attempt : src;
+      s.async = false;   // 经典脚本：保证按插入顺序执行
+      s.onload = function () { resolve(src); };
+      s.onerror = function () {
+        s.remove();
+        if (attempt < MAX_TRY) {
+          setTimeout(function () { loadOne(src, attempt + 1).then(resolve, reject); }, 60);
+        } else {
+          reject(new Error('脚本加载失败: ' + src));
+        }
+      };
+      document.head.appendChild(s);
+    });
+  }
+
+  function showBootFailure(msg) {
+    try {
+      var bar = document.createElement('div');
+      bar.style.cssText = 'position:fixed;left:0;right:0;top:0;z-index:99999;' +
+        'background:#C0392B;color:#fff;font:13px/1.6 system-ui,sans-serif;padding:8px 14px;';
+      bar.textContent = '启动不完整：' + msg + '。请重启应用；若反复出现请运行诊断。';
+      document.body.appendChild(bar);
+    } catch (e) { /* 提示失败也不能再抛 */ }
+    try {
+      if (window.pywebview && window.pywebview.api && window.pywebview.api.log_error) {
+        window.pywebview.api.log_error('脚本加载失败: ' + msg, '', 'boot-loader');
+      }
+    } catch (e) { /* 忽略 */ }
+  }
+
+  window.__appBoot = { failed: [] };
+  // 某个文件即使重试到底仍失败，也**继续加载后面的文件**：
+  // 它们是彼此独立的经典脚本，一个缺失不该让其余全部作废——配合上面的兜底实现，
+  // 剩下能加载的模块照常工作，界面不至于整体残缺（只会缺该文件提供的功能）。
+  (function next(i) {
+    if (i >= FILES.length) { window.__appBoot.done = true; return; }
+    loadOne(FILES[i], 1).then(
+      function () { next(i + 1); },
+      function () {
+        window.__appBoot.failed.push(FILES[i]);
+        showBootFailure(FILES[i]);
+        next(i + 1);
+      }
+    );
+  })(0);
+})();
+</script>
 </body>
 </html>

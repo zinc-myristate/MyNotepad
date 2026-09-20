@@ -2,19 +2,20 @@
 我的记事本 - Python 后端
 处理数据库、文件操作，暴露 API 给前端
 """
-import sqlite3
-import os
-import sys
-import shutil
-import uuid
 import base64
-import tempfile
+import functools
 import hashlib
 import hmac
 import json
+import os
+import shutil
+import sqlite3
+import sys
+import tempfile
 import threading
-import functools
+import uuid
 from datetime import datetime
+
 from cryptography.hazmat.primitives.ciphers.aead import AESGCM
 
 # 数据目录：优先存 exe 旁边（便携模式，拷到 U 盘/其他电脑数据一起走）
@@ -66,6 +67,7 @@ os.makedirs(ATTACH_DIR, exist_ok=True)
 
 # 崩溃兜底日志（进程级异常钩子，app.pyw import backend 即生效）
 import applog
+
 applog.init(DATA_DIR)
 
 # ====== 数据库初始化 ======
@@ -365,6 +367,83 @@ def check_integrity(db_path=DB_PATH):
             c.close()
     except Exception:
         return False
+
+
+def space_stats(db_path=None):
+    """返回 (page_size, page_count, freelist_count, 空闲页字节数, 空闲占比)。
+
+    空闲页（freelist）是 SQLite 删除/改写大字段后**不会自动归还文件系统**的页。
+    本应用有两个持续制造空闲页的来源：
+      1) 图片外置迁移——把正文里的 base64 挪到 attachments/，文本从 MB 级缩到几十字节；
+      2) 历史版本快照反复写入再按 50 条上限删除。
+    实测某库：文件 12.02 MB，其中空闲页 3046 页 = 11.90 MB（占 99%），有效数据仅 0.12 MB。
+    """
+    path = db_path or DB_PATH
+    if not os.path.exists(path):
+        return None   # 必须先判断：sqlite3.connect 会顺手创建空文件，不能让它有副作用
+    try:
+        c = sqlite3.connect(path)
+        try:
+            page_size = c.execute("PRAGMA page_size").fetchone()[0]
+            page_count = c.execute("PRAGMA page_count").fetchone()[0]
+            freelist = c.execute("PRAGMA freelist_count").fetchone()[0]
+        finally:
+            c.close()
+    except Exception:
+        return None
+    free_bytes = freelist * page_size
+    ratio = (freelist / page_count) if page_count else 0.0
+    return page_size, page_count, freelist, free_bytes, ratio
+
+
+def reclaim_space(threshold=0.30, db_path=None):
+    """空闲页占比超过 threshold 时 VACUUM 回收磁盘空间（启动维护线程调用）。
+
+    调用时机在 backup_database() **之前**：先有一份页级一致的备份兜底，再压缩。
+    VACUUM 需要重写整个库，必须独占——所以独立连接 + 全局锁。
+    返回 (是否执行, 执行前字节, 执行后字节)；无需回收或失败返回 (False, size, size)。
+    """
+    path = db_path or DB_PATH
+    if not os.path.exists(path):
+        return False, 0, 0
+    before = os.path.getsize(path)
+    st = space_stats(path)
+    if st is None:
+        return False, before, before
+    _ps, _pc, _fl, _free, ratio = st
+    if ratio < threshold:
+        return False, before, before
+
+    with _db_lock:
+        try:
+            c = sqlite3.connect(path)
+            try:
+                c.execute("PRAGMA foreign_keys=OFF")
+                c.execute("VACUUM")          # 触发隐式提交；若被事务挡住则 repair 分支处理
+                c.commit()
+            finally:
+                c.close()
+        except Exception:
+            # 「VACUUM cannot run from within a transaction」兜底：用 isolation_level=None
+            # 的连接（无隐式事务）再试一次。修复连接泄漏（try/finally 释放）。
+            applog.get_logger().exception("VACUUM 失败，尝试 autocommit 重试")
+            try:
+                c2 = sqlite3.connect(path, isolation_level=None)
+                try:
+                    c2.execute("VACUUM")
+                finally:
+                    c2.close()
+            except Exception:
+                applog.get_logger().exception("数据库空间回收失败")
+                return False, before, before
+    after = os.path.getsize(path)
+    try:
+        applog.get_logger().info(
+            "数据库空间回收：%.1f MB -> %.1f MB（空闲页占比 %.0f%%）",
+            before / 1048576, after / 1048576, ratio * 100)
+    except Exception:
+        pass
+    return True, before, after
 
 
 # ====== FTS5 全文搜索（trigram，中文可用） ======
@@ -1455,12 +1534,13 @@ class Api:
 
     def _export_docx(self, title, html_content, save_path):
         try:
-            from docx import Document
-            from docx.shared import Pt, Inches, RGBColor
-            from docx.enum.text import WD_ALIGN_PARAGRAPH
-            import re
-            import os
             import base64
+            import os
+            import re
+
+            from docx import Document
+            from docx.enum.text import WD_ALIGN_PARAGRAPH
+            from docx.shared import Inches
 
             doc = Document()
 
@@ -1472,7 +1552,6 @@ class Api:
             # 按块级元素分割
             blocks = re.split(r'(</?(?:p|h[1-6]|div|br|img)[^>]*>)', html_content)
             current_text = ''
-            current_tag = 'p'
 
             for block in blocks:
                 if not block.strip():
@@ -1500,6 +1579,9 @@ class Api:
                             doc.add_picture(tmp.name, width=Inches(5))
                             os.unlink(tmp.name)
                         except Exception as e:
+                            # 单张图片失败不该毁掉整篇导出：记录原因后降级为文字占位
+                            applog.get_logger().warning(
+                                'DOCX 导出内嵌图片失败（%s）：%s', src[:80], e)
                             doc.add_paragraph(f'[图片: {src[:50]}...]')
                     elif src.startswith('file:///'):
                         # Windows 下 file:///C:/... 需先 unquote 再剥掉根斜杠，否则空格路径失效
@@ -1543,6 +1625,7 @@ class Api:
     def _add_formatted_runs(self, para, html_text):
         """解析内联格式并添加到段落"""
         import re
+
         from docx.shared import Pt
 
         # 分割标签和文本
@@ -1584,11 +1667,12 @@ class Api:
     def _export_xlsx(self, title, html_content, save_path):
         """导出为 Excel，有表格时按表格导出，保留加粗/斜体/颜色等格式"""
         try:
-            from openpyxl import Workbook
-            from openpyxl.styles import Font, PatternFill, Alignment, Border, Side
-            from openpyxl.cell.rich_text import TextBlock, CellRichText
-            from openpyxl.cell.text import InlineFont
             import re
+
+            from openpyxl import Workbook
+            from openpyxl.cell.rich_text import CellRichText, TextBlock
+            from openpyxl.cell.text import InlineFont
+            from openpyxl.styles import Alignment, Border, Font, PatternFill, Side
 
             wb = Workbook()
             ws = wb.active

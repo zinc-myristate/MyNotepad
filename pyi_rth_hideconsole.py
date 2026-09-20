@@ -1,5 +1,7 @@
 # PyInstaller 运行时钩子：彻底抑制控制台窗口
-import sys, os
+import os
+import sys
+
 if sys.platform == 'win32':
     try:
         import ctypes

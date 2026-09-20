@@ -6,7 +6,6 @@ import threading
 import time
 
 import pytest
-
 from conftest import PROJECT_ROOT, load_app_partial
 
 pytestmark = pytest.mark.e2e
@@ -115,7 +114,6 @@ def test_search_filters_note_list(tmp_path, monkeypatch):
 
     result = _run_window(ns, actions)
     assert 'error' not in result, result
-    import json
     hidden = dict(json.loads(result['hidden']))
     assert hidden[a] is False, '正文命中的笔记不应被隐藏'
     assert hidden[b] is True, '未命中的笔记应被隐藏'
@@ -124,8 +122,9 @@ def test_search_filters_note_list(tmp_path, monkeypatch):
 def test_image_dict_embed_renders_and_persists(tmp_path, monkeypatch):
     """图片外置：dict 引用进 Delta → 异步渲染出 data URI → 位置 dataset 落库（图片外置核心链路）"""
     ns = load_app_partial(monkeypatch, tmp_path)
-    import backend
     import base64
+
+    import backend
     nid = backend.api.notes_create()['id']
     # Python 侧落盘一张 1x1 PNG（与生产插入路径一致）
     png = base64.b64decode(
@@ -167,7 +166,7 @@ def test_pin_button_delegation(tmp_path, monkeypatch):
     """列表事件委托：容器级监听路由 data-pin-id 点击（原每行 5 个监听器已移除）"""
     ns = load_app_partial(monkeypatch, tmp_path)
     import backend
-    a = backend.api.notes_create()['id']
+    backend.api.notes_create()
     b = backend.api.notes_create()['id']
 
     def actions(window, result):

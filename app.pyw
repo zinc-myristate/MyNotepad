@@ -19,7 +19,6 @@ if sys.platform == 'win32':
     _subprocess.Popen = _popen_nowindow
 
 import webview
-import tkinter.filedialog
 import tkinter.messagebox
 import json
 
@@ -216,7 +215,13 @@ def _startup_maintenance():
     except Exception:
         import applog
         applog.get_logger().exception("回收站超期清理失败")
+    # 空间回收放在备份之后：先落一份页级一致的备份，再压缩库（见 reclaim_space 文档）
     _backend_mod.backup_database()
+    try:
+        _backend_mod.reclaim_space()
+    except Exception:
+        import applog
+        applog.get_logger().exception("数据库空间回收失败")
 
 _threading.Thread(target=_startup_maintenance, daemon=True).start()
 
@@ -631,6 +636,187 @@ def make_closing_handler(target_window, backend):
         return False  # 取消本次关闭，flush 完成后代码再关
     return _on_closing
 
+
+# ====== 自定义图标持久化（免受重新打包覆盖） ======
+# 为什么需要：用户用「更换图标」写入的是 EXE_DIR/resources/icon.{png,ico}。
+# 重新打包（pyinstaller MyNotepad.spec）会清空 dist/MyNotepad 并把 resources
+# 还原成打包源里的默认图标——自定义图标与桌面快捷方式指向随即失效。
+# 这里在每次启动时把自定义图标另存一份到 exe 同级「数据目录」，
+# 之后重建 dist 也能自动还原。
+_ICON_BAK_DIRNAME = 'custom_icon'
+
+
+def _icon_backup_dir():
+    return os.path.join(EXE_DIR, 'data', _ICON_BAK_DIRNAME)
+
+
+def _icon_is_custom(ico_path):
+    """与 bundle 内默认图标比对，判断 ico 是否为用户自定义（大小/字节一致即默认）"""
+    try:
+        if not os.path.isfile(ico_path):
+            return False
+        default = os.path.join(BASE_DIR, 'resources', 'icon.ico')
+        if os.path.abspath(ico_path) == os.path.abspath(default):
+            return False
+        if not os.path.isfile(default):
+            return True
+        if os.path.getsize(ico_path) != os.path.getsize(default):
+            return True
+        with open(ico_path, 'rb') as a, open(default, 'rb') as b:
+            return a.read() != b.read()
+    except Exception:
+        return False
+
+
+def _backup_custom_icon():
+    """把当前自定义图标（若存在）备份到 data/custom_icon/；失败静默"""
+    try:
+        res_dir = os.path.join(EXE_DIR, 'resources')
+        ico = os.path.join(res_dir, 'icon.ico')
+        if not _icon_is_custom(ico):
+            return False
+        bdir = _icon_backup_dir()
+        os.makedirs(bdir, exist_ok=True)
+        import shutil
+        shutil.copy2(ico, os.path.join(bdir, 'icon.ico'))
+        png = os.path.join(res_dir, 'icon.png')
+        if os.path.isfile(png):
+            shutil.copy2(png, os.path.join(bdir, 'icon.png'))
+        return True
+    except Exception:
+        return False
+
+
+def _restore_custom_icon():
+    """打包后 resources 被还原成默认图标时，用备份恢复用户自定义图标"""
+    try:
+        bdir = _icon_backup_dir()
+        bico = os.path.join(bdir, 'icon.ico')
+        if not os.path.isfile(bico):
+            return False
+        res_dir = os.path.join(EXE_DIR, 'resources')
+        ico = os.path.join(res_dir, 'icon.ico')
+        if _icon_is_custom(ico):
+            return False  # 当前已是自定义图标，无需恢复
+        os.makedirs(res_dir, exist_ok=True)
+        import shutil
+        shutil.copy2(bico, ico)
+        bpng = os.path.join(bdir, 'icon.png')
+        if os.path.isfile(bpng):
+            shutil.copy2(bpng, os.path.join(res_dir, 'icon.png'))
+        return True
+    except Exception:
+        return False
+
+
+_restore_custom_icon()
+_backup_custom_icon()
+
+# ====== 窗口几何：按可用工作区约束（避开任务栏/高 DPI） ======
+# 为什么需要：pywebview 在 Windows 上按「整个屏幕」居中，不避开任务栏，也不理会
+# 高 DPI 缩放。实测 3072×1920 物理屏 @200% 缩放（逻辑 1536×960）+ 底部任务栏，
+# 可用高度只有 912px；固定 1200×800 的窗口被居中到 y=196，底边落在 y=996——
+# 下沿 84px 永久压在任务栏底下，侧边栏最后一排按钮（日历/回收站）就此看不见。
+DEFAULT_WIN_W, DEFAULT_WIN_H = 1200, 800
+MIN_WIN_W, MIN_WIN_H = 900, 600
+_WORKAREA_RESERVE = 48  # 垂直方向预留：留出拖动把手与呼吸空间
+
+
+def _get_work_area():
+    """返回主屏可用工作区 (left, top, width, height)，已排除任务栏。
+
+    统一换算成「逻辑像素」：pywebview 在 Windows 上按逻辑单位设置窗口尺寸/位置，
+    而 SystemParametersInfoW 返回的是当前 DPI 感知级别下的物理像素。高缩放屏上
+    两者相差 dpi/96 倍，不换算会把窗口撑成屏幕的数倍大。
+    注意：绝不在此处调用 SetProcessDpiAwareness——那会改变整个进程的感知级别，
+    反而让 pywebview 自己的尺寸计算错位。
+    """
+    try:
+        import ctypes
+        from ctypes import wintypes
+        user32 = ctypes.windll.user32
+
+        class RECT(ctypes.Structure):
+            _fields_ = [('left', wintypes.LONG), ('top', wintypes.LONG),
+                        ('right', wintypes.LONG), ('bottom', wintypes.LONG)]
+
+        rect = RECT()
+        if user32.SystemParametersInfoW(0x0030, 0, ctypes.byref(rect), 0):  # SPI_GETWORKAREA
+            l, t = rect.left, rect.top
+            w, h = rect.right - rect.left, rect.bottom - rect.top
+            if w > 0 and h > 0:
+                # 物理 -> 逻辑（dpi/96）
+                dpi = 96
+                try:
+                    dpi = ctypes.windll.user32.GetDpiForSystem() or 96
+                except Exception:
+                    try:
+                        hdc = user32.GetDC(0)
+                        dpi = ctypes.windll.gdi32.GetDeviceCaps(hdc, 88) or 96  # LOGPIXELSX
+                        user32.ReleaseDC(0, hdc)
+                    except Exception:
+                        dpi = 96
+                if dpi and dpi != 96:
+                    scale = dpi / 96.0
+                    l, t = int(l / scale), int(t / scale)
+                    w, h = int(w / scale), int(h / scale)
+                return l, t, w, h
+    except Exception:
+        pass
+    try:  # 兜底：整屏尺寸（不扣任务栏，仍好过放弃约束）
+        import ctypes
+        user32 = ctypes.windll.user32
+        sw, sh = user32.GetSystemMetrics(0), user32.GetSystemMetrics(1)
+        if sw > 0 and sh > 0:
+            return 0, 0, sw, sh
+    except Exception:
+        pass
+    return None
+
+
+def clamp_window_geometry(w, h, work_area,
+                          min_w=MIN_WIN_W, min_h=MIN_WIN_H,
+                          reserve=_WORKAREA_RESERVE):
+    """把窗口尺寸与位置收进可用工作区，返回 (w, h, x, y)。**纯函数，不碰 Win32。**
+
+    work_area 为 (left, top, width, height)；传 None 表示取不到工作区，此时
+    只把尺寸按最小值修正，位置交回给 pywebview（x/y 返回 None）。
+
+    位置一律由内部重新计算，不沿用调用方传入的 x/y——唯一可靠的做法是把 x/y
+    直接交给 pywebview.create_window（winforms 后端会自行按 DPI 换算）；创建后
+    再用 SetWindowPos 抢位置会被 pywebview 的 CenterScreen 覆盖（实测逐次漂移
+    25→123→221），而 CenterScreen 本身又不避开任务栏，那正是问题根源。
+    """
+    w, h = int(w), int(h)
+    # 工作区可能来自浮点 DPI 换算；宽高非正说明取值失败，一并按「无工作区」处理
+    if not work_area:
+        return max(min_w, w), max(min_h, h), None, None
+    wl, wt, ww, wh = (int(v) for v in work_area)
+    if ww <= 0 or wh <= 0:
+        return max(min_w, w), max(min_h, h), None, None
+    # 尺寸必须严格小于工作区，否则任何居中结果都会有边被推出屏外
+    max_h = max(min_h, wh - reserve)
+    w = max(min_w, min(w, ww))
+    h = max(min_h, min(h, max_h))
+    cx = wl + max(0, (ww - w) // 2)
+    cy = wt + max(0, (wh - h) // 2)
+    return int(w), int(h), int(cx), int(cy)
+
+
+def _clamp_window_geometry(w, h, x=None, y=None):
+    """_get_work_area() 的薄封装：取真实工作区后交给纯函数（保持原有调用签名）"""
+    return clamp_window_geometry(w, h, _get_work_area())
+
+
+def _resolve_window_geometry(backend):
+    """按可用工作区算出安全的窗口尺寸与位置（避开任务栏，居中且四边可见）"""
+    try:
+        w, h, x, y = _clamp_window_geometry(DEFAULT_WIN_W, DEFAULT_WIN_H)
+        return {'w': w, 'h': h, 'x': x, 'y': y}
+    except Exception:
+        return {'w': DEFAULT_WIN_W, 'h': DEFAULT_WIN_H, 'x': None, 'y': None}
+
+
 # ====== 创建窗口 ======
 # 单实例互斥：已有实例在运行时聚焦其窗口并退出本进程。
 # 两个进程并发写同一 SQLite（DELETE journal 模式）会撞 database is locked，必须互斥。
@@ -653,12 +839,17 @@ icon_path = os.path.join(EXE_DIR, "resources", "icon.ico")
 if not os.path.exists(icon_path):
     icon_path = os.path.join(BASE_DIR, "resources", "icon.ico")
 
+# 按可用工作区解析窗口几何（避开任务栏；默认尺寸过大时自动收缩）
+_geo = _resolve_window_geometry(api)
+
 window = webview.create_window(
     "我的记事本",
     html_path,
     js_api=api,
-    width=1200,
-    height=800,
+    width=_geo['w'],
+    height=_geo['h'],
+    x=_geo['x'],
+    y=_geo['y'],
     min_size=(900, 600),
     text_select=True
 )
@@ -680,6 +871,7 @@ def _on_loaded():
         # 0.5s 后取消置顶
         ctypes.windll.kernel32.Sleep(500)
         user32.SetWindowPos(hwnd, -2, 0, 0, 0, 0, 0x0002 | 0x0001)
+
 
 window.events.loaded += _on_loaded
 

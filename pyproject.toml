@@ -1,0 +1,43 @@
+[tool.ruff]
+# 目标版本与打包环境一致（Python 3.14 + PyInstaller 6.x）
+target-version = "py314"
+line-length = 110
+
+# 只检查仓库自身的源码与测试；dist/build 是产物，renderer 是前端（含第三方压缩库）
+extend-exclude = [
+    "dist",
+    "build",
+    "renderer",
+    "data",
+    "data_backup_dev",
+    "data_backup_dist",
+    ".pytest_cache",
+]
+
+[tool.ruff.lint]
+# 只保留能抓「真问题」的规则集：
+#   F  pyflakes —— 未定义名 / 未使用导入与变量（本类 bug 的高发区，最有价值）
+#   B  bugbear  —— 常见逻辑陷阱
+#   I  isort    —— 导入排序
+#   UP  pyupgrade —— 语法现代化（仅启用安全子集）
+# 刻意不启用 pycodestyle 的排版类规则：本仓库大量使用
+#   `try: ...\nexcept Exception: pass`、`import os, sys` 这类紧凑写法，
+#   属于有意风格，逐条改写只会制造 diff 噪音而没有收益。
+select = ["F", "B", "I", "UP"]
+
+ignore = [
+    "UP031",  # 允许 % 格式化：全仓库统一使用它做断言/日志消息，改造无收益
+    "UP009",  # 允许保留 utf-8 编码声明（Windows 上显式声明更醒目）
+    "UP012",  # 允许显式 .encode('utf-8')
+    "B008",   # 允许函数默认值里调用
+    "B904",   # 允许 except 后不写 raise from（本项目多处静默降级）
+]
+
+[tool.ruff.lint.per-file-ignores]
+# app.pyw 必须在 import webview 之前做 subprocess 猴子补丁（见文件头注释），导入位置特殊
+"app.pyw" = ["E402", "F401"]
+# 测试里会用导入副作用、长断言消息
+"tests/*" = ["B011", "B017", "E402", "F401"]
+
+[tool.ruff.format]
+quote-style = "preserve"
