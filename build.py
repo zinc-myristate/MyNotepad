@@ -233,10 +233,18 @@ def main():
     ap.add_argument('--no-smoke', action='store_true', help='跳过冒烟启动')
     ap.add_argument('--no-kill', action='store_true', help='不自动关闭正在运行的实例')
     ap.add_argument('--keep-backup', action='store_true', help='保留全部备份目录')
+    ap.add_argument('--keep', type=int, default=1, help='保留最近几份快照（默认 1）')
+    ap.add_argument('--prune-only', action='store_true',
+                    help='只清理 dist 下的历史快照再退出（不构建），配合 --keep N 指定保留份数')
     args = ap.parse_args()
 
     log('项目根目录：%s' % ROOT)
     log('产物路径  ：%s' % DIST)
+    if args.prune_only:
+        # 快照会随每次打包累积（每份 ~80MB），这里给一个不改动任何构建产物的清理入口
+        log('只清理历史快照：保留最近 %d 份（当前目录：%s）' % (args.keep, BACKUP_ROOT))
+        prune_backups(keep=max(1, args.keep))
+        return 0
     if args.dry_run:
         log('--dry-run：将执行 关实例 -> 备份 -> PyInstaller -> 还原 -> 修快捷方式 -> 冒烟')
         for name in PROTECTED:
@@ -260,7 +268,7 @@ def main():
     if not args.no_restore:
         restore(backup)
     if not args.keep_backup:
-        prune_backups(keep=1)
+        prune_backups(keep=max(1, args.keep))
     fix_shortcuts()
     if not args.no_smoke:
         try:

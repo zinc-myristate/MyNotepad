@@ -255,7 +255,33 @@ async function initApp() {
   console.log(`   - 当前主题：${state.currentTheme}`);
 }
 
+/** 启动提示（开发态数据目录 / 另一份数据更完整）：一次性展示，可关闭。
+ * 用常驻小横条而不是 Toast：这条信息说的是"你打开的可能不是平时那本记事本"，错过就没意义了。 */
+async function showStartupNotice() {
+  try {
+    const msg = await window.pywebview.api.startup_notice();
+    if (!msg) return;
+    if (document.getElementById('startup-notice')) return;
+    const bar = document.createElement('div');
+    bar.id = 'startup-notice';
+    bar.style.cssText = 'position:fixed;left:0;right:0;bottom:0;z-index:99990;' +
+      'background:#8A6D3B;color:#fff;font:12px/1.6 system-ui,sans-serif;' +
+      'padding:8px 40px 8px 14px;';
+    const span = document.createElement('span');
+    span.textContent = msg;                       // textContent：提示内容不参与 HTML 解析
+    const close = document.createElement('button');
+    close.textContent = '×';
+    close.title = '关闭提示';
+    close.style.cssText = 'position:absolute;right:8px;top:5px;background:none;border:none;' +
+      'color:#fff;font-size:16px;cursor:pointer;line-height:1;';
+    close.addEventListener('click', () => bar.remove());
+    bar.appendChild(span);
+    bar.appendChild(close);
+    document.body.appendChild(bar);
+  } catch (e) { /* 提示失败不影响使用 */ }
+}
+
 // 启动！
-initApp().catch(err => {
+initApp().then(showStartupNotice).catch(err => {
   console.error('启动失败:', err);
 });

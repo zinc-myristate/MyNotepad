@@ -14,6 +14,7 @@ pystray==0.19.5           # 系统托盘常驻（关窗后提醒仍生效）；P
 
 # 测试依赖
 pytest==9.1.1
+ruff==0.16.7              # 代码检查（CI 里是阻断步骤，本地：python -m ruff check .）
 
 # 打包依赖（pyinstaller 不在运行时依赖里，故单独列出）
 pyinstaller==6.21.0

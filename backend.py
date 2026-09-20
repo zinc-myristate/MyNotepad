@@ -375,6 +375,25 @@ def check_integrity(db_path=DB_PATH):
         return False
 
 
+def count_notes(db_path):
+    """只读数一下某个库里有几篇笔记；文件不存在/打不开返回 None。
+
+    必须用 `mode=ro` URI：`sqlite3.connect` 会顺手创建空文件——探测别的数据目录
+    不该留下任何副作用（启动提示用它比较两份数据的笔记数）。
+    """
+    if not db_path or not os.path.exists(db_path):
+        return None
+    try:
+        c = sqlite3.connect('file:%s?mode=ro' % db_path.replace('?', '%3f'), uri=True)
+        try:
+            return c.execute(
+                "SELECT COUNT(*) FROM notes WHERE deleted_at IS NULL").fetchone()[0]
+        finally:
+            c.close()
+    except Exception:
+        return None
+
+
 def space_stats(db_path=None):
     """返回 (page_size, page_count, freelist_count, 空闲页字节数, 空闲占比)。
 

@@ -149,7 +149,9 @@ html, body {
   --accent: #7D8A6E;
   --accent-hover: #6B785E;
   --accent-dark: #4A5540;
-  --accent-text: #636D57;   /* 主色当文字时用它（在原底与选中态底上都 >=4.5） */
+  --accent-text: #636D57;
+  --accent-solid: #6F7A62;  /* 承载白字的实心主色（比 accent 深，白字才过 4.5） */
+  --on-accent: #FFFFFF;   /* 主色当文字时用它（在原底与选中态底上都 >=4.5） */
   --accent-light: #EFF2EA;
   --accent-soft: #F5F7F2;
   --danger: #C2655A;
@@ -186,6 +188,8 @@ html, body {
   --accent-hover: #A0703E;
   --accent-dark: #6E4A28;
   --accent-text: #866035;
+  --accent-solid: #9A6D3C;
+  --on-accent: #FFFFFF;
   --accent-light: #F5ECE0;
   --accent-soft: #F9F4EC;
   --danger: #C27A65;
@@ -222,6 +226,8 @@ html, body {
   --accent-hover: #A8625A;
   --accent-dark: #6E3E38;
   --accent-text: #A24F46;
+  --accent-solid: #B55D54;
+  --on-accent: #FFFFFF;
   --accent-light: #F5E4E0;
   --accent-soft: #F9EFEC;
   --danger: #C2655A;
@@ -258,6 +264,8 @@ html, body {
   --accent-hover: #4C6B94;
   --accent-dark: #2E4568;
   --accent-text: #4E6990;
+  --accent-solid: #5978A4;
+  --on-accent: #FFFFFF;
   --accent-light: #E4ECF4;
   --accent-soft: #F0F4F8;
   --danger: #C2656E;
@@ -297,7 +305,9 @@ html, body {
   --accent: #9CAE8B;
   --accent-hover: #B0C29E;
   --accent-dark: #CBD8BC;
-  --accent-text: #9CAE8B;   /* 深色下主色本身就够亮（6.94），与 --accent 同值 */
+  --accent-text: #9CAE8B;
+  --accent-solid: #9CAE8B;  /* 深色下主色本身就亮，改用它上面的深墨色文字 */
+  --on-accent: #1E1F22;   /* 深色下主色本身就够亮（6.94），与 --accent 同值 */
   --accent-light: #2E3329;
   --accent-soft: #24261F;
   --danger: #E08A7E;
@@ -460,7 +470,7 @@ html, body {
 .btn-new-note {
   display: flex; align-items: center; justify-content: center; gap: 6px;
   margin: 2px 8px 8px; padding: 9px 16px;
-  background: var(--accent); color: #FFFFFF; border: none;
+  background: var(--accent-solid); color: var(--on-accent); border: none;
   border-radius: var(--radius-sm); font-size: 13px; font-family: var(--font-sans);
   font-weight: 600; cursor: pointer; letter-spacing: 0.02em;
   transition: all 0.25s cubic-bezier(0.4,0,0.2,1);
@@ -756,8 +766,8 @@ body.adaptive-bg .ql-custom-btn { border-color: var(--ad-border-strong) !importa
 body.adaptive-bg .ql-custom-btn:hover { background: rgba(128,128,128,0.15) !important; }
 
 body.adaptive-bg .btn-new-note {
-  background: var(--accent) !important;
-  color: #fff !important;
+  background: var(--accent-solid) !important;
+  color: var(--on-accent) !important;
 }
 body.adaptive-bg .btn-secondary {
   background: var(--ad-hover-bg) !important;
@@ -1621,15 +1631,15 @@ body.adaptive-bg .btn-solid-secondary {
   align-items: center;
   justify-content: center;
   width: 16px; height: 16px;
-  border: 2px solid var(--accent);
+  border: 2px solid var(--accent-solid);
   border-radius: 3px;
   margin-right: 8px;
   cursor: pointer;
   vertical-align: middle;
   font-size: 11px;
   font-weight: 700;
-  color: #fff;
-  background: var(--accent);
+  color: var(--on-accent);
+  background: var(--accent-solid);
   transition: all var(--transition-fast);
 }
 .ql-editor li[data-list="checked"],
@@ -1867,7 +1877,7 @@ body.adaptive-bg .btn-solid-secondary {
   transition: all var(--transition-fast); font-family: var(--font-sans);
 }
 .tag-filter-chip:hover, .tag-filter-chip.active {
-  background: var(--accent); color: #fff; border-color: var(--accent);
+  background: var(--accent-solid); color: var(--on-accent); border-color: var(--accent-solid);
 }
 
 /* 标签管理 */
@@ -1892,7 +1902,7 @@ body.adaptive-bg .btn-solid-secondary {
 }
 .tag-picker-chip:hover { border-color: var(--accent); }
 .tag-picker-chip.selected {
-  background: var(--accent); color: #fff; border-color: var(--accent);
+  background: var(--accent-solid); color: var(--on-accent); border-color: var(--accent-solid);
 }
 
 /* ====== 笔记本 ====== */
@@ -1961,7 +1971,7 @@ body.adaptive-bg .btn-solid-secondary {
   transition: all var(--transition-fast);
 }
 .math-mode-btn:hover, .math-mode-btn.active {
-  background: var(--accent); color: #fff; border-color: var(--accent);
+  background: var(--accent-solid); color: var(--on-accent); border-color: var(--accent-solid);
 }
 .math-input {
   width: 100%; height: 100px;
@@ -1981,7 +1991,7 @@ body.adaptive-bg .btn-solid-secondary {
   font-family: serif; display: flex; align-items: center; justify-content: center;
   transition: all 0.15s;
 }
-.math-sym-btn:hover { background: var(--accent); color: #fff; border-color: var(--accent); }
+.math-sym-btn:hover { background: var(--accent-solid); color: var(--on-accent); border-color: var(--accent-solid); }
 .math-sym-btn.chem { font-family: var(--font-sans); font-size: 11px; width: auto; padding: 0 8px; }
 .math-preview {
   padding: 16px; background: var(--bg-secondary);
@@ -2071,7 +2081,7 @@ body.adaptive-bg .btn-solid-secondary {
 .cal-day:hover { background: var(--accent-light); }
 .cal-day.other-month { color: var(--text-very-muted); pointer-events: none; }
 .cal-day.today {
-  background: var(--accent); color: #fff; font-weight: 700;
+  background: var(--accent-solid); color: var(--on-accent); font-weight: 700;
   box-shadow: 0 2px 8px rgba(0,0,0,0.12);
 }
 .cal-day.has-note::after {
@@ -2079,7 +2089,7 @@ body.adaptive-bg .btn-solid-secondary {
   width: 5px; height: 5px; border-radius: 50%;
   background: var(--accent);
 }
-.cal-day.today.has-note::after { background: #fff; }
+.cal-day.today.has-note::after { background: var(--on-accent); }
 .cal-day-note-count {
   position: absolute; top: 1px; right: 3px;
   font-size: 9px; font-weight: 700; color: var(--accent-text);
@@ -2156,7 +2166,7 @@ body.adaptive-bg .btn-solid-secondary {
   transition: all var(--transition-fast);
 }
 .sticker-cat-btn:hover, .sticker-cat-btn.active {
-  background: var(--accent); color: #fff; border-color: var(--accent);
+  background: var(--accent-solid); color: var(--on-accent); border-color: var(--accent-solid);
 }
 .sticker-grid {
   display: grid; grid-template-columns: repeat(4, 1fr);
@@ -2471,7 +2481,7 @@ body.adaptive-bg .btn-solid-secondary {
 }
 .toast-btn:hover { background: rgba(255,255,255,0.2); }
 .toast-btn.toast-btn-primary {
-  background: var(--accent); border-color: var(--accent); color: #fff;
+  background: var(--accent-solid); border-color: var(--accent-solid); color: var(--on-accent);
 }
 .toast-btn.toast-btn-primary:hover { filter: brightness(1.1); }
 .toast-close {
@@ -2524,7 +2534,7 @@ body.adaptive-bg .btn-solid-secondary {
 }
 .repeat-btn:hover { border-color: var(--accent); color: var(--accent-text); }
 .repeat-btn.active {
-  background: var(--accent); color: #fff; border-color: var(--accent);
+  background: var(--accent-solid); color: var(--on-accent); border-color: var(--accent-solid);
 }
 
 /* ====== 提醒列表 ====== */

@@ -18,14 +18,17 @@ jobs:
           restore-keys: pip-${{ runner.os }}-
       - name: Install dependencies
         run: python -m pip install -r requirements.txt
+      - name: Lint (ruff)
+        run: python -m ruff check .
       - name: Run unit tests
         run: python -m pytest
 
-  # 无头 webview 窗口在 CI 可能 flaky（依赖桌面会话/WebView2 时序），结果仅参考不阻塞
+  # 无头 webview 窗口在 CI 上依赖桌面会话/WebView2 时序，理论上可能 flaky，
+  # 因此这里**不**加 continue-on-error：本地连跑多轮均为 15/15 全绿，UI 回归必须能拦住提交。
+  # 若日后在 CI 上出现与代码无关的随机失败，再加回 `continue-on-error: true` 并在此注明原因。
   e2e:
     runs-on: windows-latest
     needs: test
-    continue-on-error: true
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-python@v5

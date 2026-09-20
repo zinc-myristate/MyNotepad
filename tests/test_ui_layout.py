@@ -73,6 +73,27 @@ class TestStaticUI:
             assert block, '缺少主题 %s' % theme
             assert '--accent-text' in block.group(0), '%s 主题缺少 --accent-text' % theme
 
+    def test_every_theme_defines_on_accent_pair(self):
+        """承载文字的实心主色必须是 --accent-solid + --on-accent（白字压主色全主题不达标）"""
+        css = _style()
+        for theme in ('white', 'cream', 'pink', 'blue', 'dark'):
+            block = re.search(r'\[data-theme="%s"\]\s*\{[^}]*\}' % theme, css, re.S).group(0)
+            assert '--accent-solid' in block, '%s 缺少 --accent-solid' % theme
+            assert '--on-accent' in block, '%s 缺少 --on-accent' % theme
+
+    def test_no_white_text_on_plain_accent(self):
+        """回归护栏：不要再出现 `background: var(--accent); color: #fff/#FFFFFF`。
+
+        实测白字压主色在 5 个主题下是 3.66/3.26/3.47/4.22/2.38，全部低于 AA 的 4.5。
+        """
+        css = _style()
+        bad = re.findall(r'background:\s*var\(--accent\)[^;]*;\s*color:\s*#(?:fff|FFFFFF)\b',
+                         css, re.I)
+        assert not bad, '这些规则仍在用「主色底 + 白字」，应改用 --accent-solid/--on-accent'
+        bad2 = re.findall(r'color:\s*#(?:fff|FFFFFF)\s*;\s*background:\s*var\(--accent\)',
+                          css, re.I)
+        assert not bad2, '同上（属性顺序相反的那种写法）'
+
     def test_theme_panel_offers_dark_and_system(self):
         html = _index()
         assert 'data-theme="dark"' in html and 'data-theme="system"' in html

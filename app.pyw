@@ -226,6 +226,33 @@ def _startup_maintenance():
 
 _threading.Thread(target=_startup_maintenance, daemon=True).start()
 
+
+# ====== 开发态数据目录提示 ======
+# 为什么需要：数据目录跟着「谁在运行」走——打包版读 dist/MyNotepad/data/，源码运行读仓库 data/。
+# 两个目录会各自积累笔记，于是直接 `python app.pyw` 时可能打开**另一本笔记更少的记事本**，
+# 那一瞬间非常像"笔记全丢了"。这里只做提示，不改行为（改行为会让开发态动到真实数据）。
+# 用只读 URI 打开候选库，绝不因为探测而创建文件。
+def _build_startup_notice():
+    try:
+        cur_dir = _backend_mod.DATA_DIR
+        cur_n = _backend_mod.count_notes(_backend_mod.DB_PATH) or 0
+        parts = []
+        if not getattr(sys, 'frozen', False):
+            parts.append('开发模式：当前数据目录 %s（%d 篇）。' % (cur_dir, cur_n))
+        # 另一处常见的数据目录：打包版的 dist/MyNotepad/data
+        other = os.path.join(BASE_DIR, 'dist', 'MyNotepad', 'data', 'notes.db')
+        if os.path.abspath(other) != os.path.abspath(_backend_mod.DB_PATH) and os.path.exists(other):
+            other_n = _backend_mod.count_notes(other)
+            if other_n is not None and other_n > cur_n:
+                parts.append('注意：打包版数据 %s 里有 %d 篇（比当前多）——'
+                             '快捷方式/启动.vbs 用的是那一份。' % (os.path.dirname(other), other_n))
+        return ' '.join(parts)
+    except Exception:
+        return ''
+
+
+_STARTUP_NOTICE = _build_startup_notice()
+
 # 扩展 API，添加文件对话框功能
 class AppApi:
     def __init__(self, backend):
@@ -349,6 +376,10 @@ class AppApi:
 
     # 前端错误上报
     def log_error(self, message, stack='', source='js'): return self.backend.log_error(message, stack, source)
+
+    def startup_notice(self):
+        """启动提示（开发态数据目录 / 另一份数据更完整）。前端启动后展示，可关闭。"""
+        return _STARTUP_NOTICE
 
     # ====== 桌面集成（托盘常驻 / 开机自启）======
     # 状态存在两处：tray_enabled 存 settings；开机自启以注册表为准（不另存副本）。
