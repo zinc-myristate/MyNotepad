@@ -1,6 +1,17 @@
+// ====== ESM 依赖（原先靠全局作用域与加载顺序隐式依赖，现显式声明）======
+import { $, closePanel, dom, openPanel, showConfirmAsync, state } from './01-core.js';
+import { notesStore } from './01b-store.js';
+import { clearVoiceTemp, isVoiceRecording, stopVoiceRecording } from './02-editor.js';
+import { confirmDeleteNote, createNewNote, flushSave, renderNoteList, saveCurrentNote } from './03-notes.js';
+import { escapeHtml } from '../shared/utils.js';
+
 // ====== 窗口关闭前保存 ======
-let _intervals = [];
-let _stickerSyncTimer = null;
+export let _intervals = [];
+export let _stickerSyncTimer = null;
+
+// ESM：其他模块需要写入本变量（import 的绑定不可赋值），故导出 setter
+export function set_stickerSyncTimer(v) { _stickerSyncTimer = v; }
+
 window.addEventListener('beforeunload', async () => {
   _intervals.forEach(clearInterval);
   if (isVoiceRecording) stopVoiceRecording();
@@ -59,7 +70,7 @@ document.addEventListener('keydown', async (e) => {
 // ====== 标签系统 ======
 let currentTagFilter = null; // 当前筛选的标签 ID
 
-async function loadTagBar() {
+export async function loadTagBar() {
   if (!state.activeNoteId) { $('#tag-bar').classList.add('hidden'); return; }
   const tags = await window.pywebview.api.note_tags_get(state.activeNoteId);
   const tagList = $('#tag-list');
@@ -82,7 +93,7 @@ async function loadTagBar() {
   $('#tag-bar').classList.remove('hidden');
 }
 
-async function loadTagFilter() {
+export async function loadTagFilter() {
   const tags = await window.pywebview.api.tags_list();
   const container = $('#tag-filter-list');
   container.innerHTML = '';

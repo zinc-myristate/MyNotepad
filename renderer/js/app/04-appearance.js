@@ -1,6 +1,13 @@
 // ====== 主题管理 ======
 
-async function loadSettings(retryCount = 0) {
+// ====== ESM 依赖（原先靠全局作用域与加载顺序隐式依赖，现显式声明）======
+import { $, $$, NotepadConfig, closePanel, dom, openPanel, showToast, state } from './01-core.js';
+import { syncNoteFields } from './02-editor.js';
+import { renderNoteList } from './03-notes.js';
+import { analyzeImageColor, applyAdaptiveUI, buildCoverPanel, clearAdaptiveUI } from './08-appearance2.js';
+import { debounce } from '../shared/utils.js';
+
+export async function loadSettings(retryCount = 0) {
   try {
     if (!window.pywebview || !window.pywebview.api) {
       if (retryCount < 10) { await new Promise(r => setTimeout(r, 500)); return loadSettings(retryCount + 1); }
@@ -91,7 +98,7 @@ async function applyGlobalBackground() {
   }
 }
 
-async function applyNoteBackground(note) {
+export async function applyNoteBackground(note) {
   if (!note) return;
 
   const bgType = note.bg_type || 'global';

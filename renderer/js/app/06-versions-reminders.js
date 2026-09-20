@@ -1,5 +1,16 @@
 // ====== 历史版本 ======
+// ====== ESM 依赖（原先靠全局作用域与加载顺序隐式依赖，现显式声明）======
+import { $, $$, closePanel, dom, openPanel, showConfirmAsync, showToast, state } from './01-core.js';
+import { selectNote } from './03-notes.js';
+import { _intervals } from './05-shell.js';
+import { unlockedNotes } from './07-formula-security-dnd.js';
+import { ICONS } from '../shared/icons.js';
+import { escapeHtml } from '../shared/utils.js';
+
 let currentPreviewVersionId = null;
+
+// ESM：其他模块需要写入本变量（import 的绑定不可赋值），故导出 setter
+export function setCurrentPreviewVersionId(v) { currentPreviewVersionId = v; }
 
 $('#btn-version-history').addEventListener('click', async () => {
   if (!state.activeNoteId) { showToast('请先选择一篇笔记', { type: 'warn' }); return; }

@@ -3,6 +3,9 @@
 // 包含：装饰分割线 (Divider)、贴纸印章 (Sticker) 及其面板构建函数
 
 // ====== 装饰分割线 ======
+// ====== ESM 依赖（原先靠全局作用域与加载顺序隐式依赖，现显式声明）======
+import { state } from '../app/01-core.js';
+
 const DividerBlot = Quill.import('blots/block/embed');
 
 class Divider extends DividerBlot {
@@ -37,7 +40,7 @@ var dividerTypes = [
   { id:'bookend', name:'书卷线', cls:'div-bookend' },
 ];
 
-function buildDividerPanel() {
+export function buildDividerPanel() {
   const grid = document.getElementById('divider-grid');
   if (!grid) return;
   grid.innerHTML = '';
@@ -151,7 +154,10 @@ var stickerData = {
 
 var stickerCat = 'date';
 
-function buildStickerGrid() {
+// ESM：其他模块需要写入本变量（import 的绑定不可赋值），故导出 setter
+export function setStickerCat(v) { stickerCat = v; }
+
+export function buildStickerGrid() {
   const grid = document.getElementById('sticker-grid');
   if (!grid) return;
   grid.innerHTML = '';
@@ -195,7 +201,7 @@ var _selectedStickerId = null;
 var _dragState = null;
 
 /** 扫描 Quill 中的 sticker blot，同步到浮动覆盖层 */
-function syncStickersToOverlay() {
+export function syncStickersToOverlay() {
   if (!state.quill) return;
   const overlay = document.getElementById('sticker-overlay');
   if (!overlay) return;
@@ -339,7 +345,7 @@ function syncStickerPositionToBlot(sid) {
 }
 
 /** 保存前同步所有贴纸位置 */
-function syncStickersToQuill() {
+export function syncStickersToQuill() {
   var overlay = document.getElementById('sticker-overlay');
   if (!overlay || !state.quill) return;
   var floats = overlay.querySelectorAll('.sticker-float');

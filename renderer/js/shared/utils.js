@@ -1,13 +1,13 @@
 // ====== 工具函数 ======
 // 提取自 app.js — 全局命名空间，与现有代码兼容
 
-function escapeHtml(str) {
+export function escapeHtml(str) {
   const div = document.createElement('div');
   div.textContent = str;
   return div.innerHTML;
 }
 
-function formatFileSize(bytes) {
+export function formatFileSize(bytes) {
   if (!bytes || bytes === 0) return '0 B';
   const k = 1024;
   const sizes = ['B', 'KB', 'MB', 'GB'];
@@ -16,7 +16,7 @@ function formatFileSize(bytes) {
 }
 
 // 防抖函数（返回的函数带 .cancel() 可取消待执行任务）
-function debounce(fn, delay) {
+export function debounce(fn, delay) {
   let timer;
   const wrapped = function (...args) {
     clearTimeout(timer);

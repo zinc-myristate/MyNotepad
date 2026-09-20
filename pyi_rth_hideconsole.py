@@ -20,5 +20,5 @@ if sys.platform == 'win32':
         null = open(os.devnull, 'w')
         sys.stdout = null
         sys.stderr = null
-    except:
+    except Exception:
         pass

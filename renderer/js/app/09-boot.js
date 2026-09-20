@@ -1,8 +1,18 @@
 // ====== 笔记本管理 ======
+// ====== ESM 依赖（原先靠全局作用域与加载顺序隐式依赖，现显式声明）======
+import { $, closePanel, dom, hideEditorUI, openPanel, showConfirmAsync, showInputDialog, showToast, state } from './01-core.js';
+import { notesStore } from './01b-store.js';
+import { initQuill, syncFontSizeDisplay } from './02-editor.js';
+import { loadNotes, renderNoteList } from './03-notes.js';
+import { loadSettings } from './04-appearance.js';
+import { loadTagFilter } from './05-shell.js';
+import { initAllDrag, verifyAndSelectNote } from './07-formula-security-dnd.js';
+import { debounce, escapeHtml } from '../shared/utils.js';
+
 let currentNotebookId = null; // null = 全部笔记
 
 /** 同步更新笔记本计数徽章（轻量，无需 API 调用） */
-function updateNotebookCount() {
+export function updateNotebookCount() {
   const countEl = document.getElementById('notebook-count');
   if (!countEl) return;
   if (currentNotebookId === null) {
@@ -13,7 +23,7 @@ function updateNotebookCount() {
   }
 }
 
-async function loadNotebookBar() {
+export async function loadNotebookBar() {
   const notebooks = await window.pywebview.api.notebooks_list();
   const dot = $('#notebook-dot');
   const name = $('#notebook-name');

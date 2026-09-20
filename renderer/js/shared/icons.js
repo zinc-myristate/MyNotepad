@@ -1,7 +1,7 @@
 // ====== SVG 图标库 ======
 // 提取自 app.js — 全局命名空间，与现有代码兼容
 
-const ICONS = {
+export const ICONS = {
   // 锁图标（密码保护笔记）
   lock: '<svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round"><rect x="3" y="11" width="18" height="11" rx="2"/><path d="M7 11V7a5 5 0 0110 0v4"/></svg>',
 

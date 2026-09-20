@@ -60,14 +60,14 @@ def show_confirm_dialog(message, title="确认操作"):
     try:
         window = webview.windows[0]
         window.minimize()
-    except:
+    except Exception:
         pass
 
     result = tkinter.messagebox.askyesno(title, message)
 
     try:
         window.restore()
-    except:
+    except Exception:
         pass
 
     return result
@@ -423,7 +423,7 @@ class AppApi:
             fsize = os.path.getsize(path)
             if fsize > 10 * 1024 * 1024:
                 return {"success": False, "error": "图片文件不能超过 10MB"}
-        except:
+        except Exception:
             return {"success": False, "error": "无法读取文件"}
         try:
             from PIL import Image
@@ -482,11 +482,11 @@ class AppApi:
                 subprocess.run(["powershell", "-ExecutionPolicy", "Bypass", "-File", ps_file],
                                capture_output=True, timeout=10)
                 try: os.remove(ps_file)
-                except: pass
+                except Exception: pass
                 # 刷新图标缓存
                 subprocess.run(["ie4uinit.exe", "-show"], capture_output=True, timeout=5)
                 return True
-        except:
+        except Exception:
             pass
         return False
 
@@ -508,7 +508,7 @@ class AppApi:
                 return False
             user32.SendMessageW(hwnd, WM_SETICON, ICON_BIG, hIcon)
             return True
-        except:
+        except Exception:
             return False
 
     def confirm_icon(self, temp_path, radius_pct=DEFAULT_ICON_RADIUS_PCT):
@@ -536,7 +536,7 @@ class AppApi:
             sc_ok = self._update_shortcut(ico_path)
             # 清理临时文件
             try: os.remove(real)
-            except: pass
+            except Exception: pass
             # 尝试更新任务栏图标
             tb_ok = self._update_taskbar_icon(ico_path)
             msg = "图标已更新"
@@ -808,7 +808,7 @@ def _clamp_window_geometry(w, h, x=None, y=None):
     return clamp_window_geometry(w, h, _get_work_area())
 
 
-def _resolve_window_geometry(backend):
+def _resolve_window_geometry():
     """按可用工作区算出安全的窗口尺寸与位置（避开任务栏，居中且四边可见）"""
     try:
         w, h, x, y = _clamp_window_geometry(DEFAULT_WIN_W, DEFAULT_WIN_H)
@@ -840,7 +840,7 @@ if not os.path.exists(icon_path):
     icon_path = os.path.join(BASE_DIR, "resources", "icon.ico")
 
 # 按可用工作区解析窗口几何（避开任务栏；默认尺寸过大时自动收缩）
-_geo = _resolve_window_geometry(api)
+_geo = _resolve_window_geometry()
 
 window = webview.create_window(
     "我的记事本",

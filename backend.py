@@ -59,7 +59,7 @@ for _f in ['notes.db-wal', 'notes.db-shm']:
     _fp = os.path.join(DATA_DIR, _f)
     if os.path.exists(_fp):
         try: os.remove(_fp)
-        except: pass
+        except Exception: pass
 
 # 确保目录存在
 os.makedirs(DATA_DIR, exist_ok=True)
@@ -116,38 +116,38 @@ conn.executescript("""
 
 # 兼容旧数据库：添加新字段
 try: conn.execute("ALTER TABLE notes ADD COLUMN is_pinned INTEGER NOT NULL DEFAULT 0")
-except: pass
+except Exception: pass
 try: conn.execute("ALTER TABLE notes ADD COLUMN is_favorite INTEGER NOT NULL DEFAULT 0")
-except: pass
+except Exception: pass
 try: conn.execute("ALTER TABLE notes ADD COLUMN notebook_id TEXT")
-except: pass
+except Exception: pass
 try: conn.execute("ALTER TABLE notes ADD COLUMN reminder_time TEXT")
-except: pass
+except Exception: pass
 try: conn.execute("ALTER TABLE notes ADD COLUMN reminder_task_name TEXT")
-except: pass
+except Exception: pass
 try: conn.execute("ALTER TABLE notes ADD COLUMN password_hash TEXT")
-except: pass
+except Exception: pass
 try: conn.execute("ALTER TABLE notes ADD COLUMN bg_zoom INTEGER DEFAULT 100")
-except: pass
+except Exception: pass
 try: conn.execute("ALTER TABLE notes ADD COLUMN bg_pos_x REAL DEFAULT 50")
-except: pass
+except Exception: pass
 try: conn.execute("ALTER TABLE notes ADD COLUMN bg_pos_y REAL DEFAULT 50")
-except: pass
+except Exception: pass
 try: conn.execute("ALTER TABLE notes ADD COLUMN paper_style TEXT DEFAULT 'none'")
-except: pass
+except Exception: pass
 try: conn.execute("ALTER TABLE notes ADD COLUMN paper_color TEXT DEFAULT 'white'")
-except: pass
+except Exception: pass
 try: conn.execute("ALTER TABLE notes ADD COLUMN cover_type TEXT DEFAULT 'none'")
-except: pass
+except Exception: pass
 try: conn.execute("ALTER TABLE notes ADD COLUMN cover_value TEXT DEFAULT ''")
-except: pass
+except Exception: pass
 try: conn.execute("ALTER TABLE notes ADD COLUMN enc_dek TEXT")  # 内容加密：被密码包裹的 DEK，NULL=未启用
-except: pass
+except Exception: pass
 try: conn.execute("ALTER TABLE notes ADD COLUMN deleted_at TEXT")  # 回收站：软删除时间，NULL=正常
-except: pass
+except Exception: pass
 # 索引必须在 ALTER 之后单独建（不能合并进 executescript 的 CREATE TABLE 流程）
 try: conn.execute("CREATE INDEX IF NOT EXISTS idx_notes_deleted ON notes(deleted_at)")
-except: pass
+except Exception: pass
 # 标签表
 conn.executescript("""
     CREATE TABLE IF NOT EXISTS tags (
@@ -176,11 +176,11 @@ conn.executescript("""
 """)
 # 笔记本表扩展字段（必须在 CREATE TABLE 之后）
 try: conn.execute("ALTER TABLE notebooks ADD COLUMN color TEXT DEFAULT '#7D8A6E'")
-except: pass
+except Exception: pass
 try: conn.execute("ALTER TABLE notebooks ADD COLUMN cover_type TEXT DEFAULT 'color'")
-except: pass
+except Exception: pass
 try: conn.execute("ALTER TABLE notebooks ADD COLUMN default_paper TEXT DEFAULT 'none'")
-except: pass
+except Exception: pass
 conn.commit()
 
 # 默认设置
@@ -223,7 +223,7 @@ def _migrate_old_reminders():
                 import subprocess
                 subprocess.run(['schtasks', '/delete', '/tn', task_name, '/f'],
                                capture_output=True, timeout=5)
-            except:
+            except Exception:
                 pass
             migrated += 1
         if migrated > 0:
@@ -234,7 +234,7 @@ def _migrate_old_reminders():
     finally:
         if mig_conn:
             try: mig_conn.close()
-            except: pass
+            except Exception: pass
 
 # 清理所有残留的 MyNotepad_Reminder_* 计划任务
 def _cleanup_all_scheduled_tasks():
@@ -253,7 +253,7 @@ def _cleanup_all_scheduled_tasks():
                     if task_name.startswith('MyNotepad_Reminder_'):
                         subprocess.run(['schtasks', '/delete', '/tn', task_name, '/f'],
                                        capture_output=True, timeout=5)
-    except:
+    except Exception:
         pass
 
 _migrate_old_reminders()
@@ -270,6 +270,11 @@ _db_lock = threading.RLock()   # 保护全局 conn 与解锁缓存（pywebview �
 _unlocked_deks = {}            # note_id -> DEK bytes（会话级，随进程消亡）
 
 PBKDF2_ITERATIONS = 600000     # OWASP 2023
+MAX_PBKDF2_ITERATIONS = 6_000_000  # 解包 DEK 时接受的最大迭代数（当前值的 10 倍）。
+                                   # 迭代数存在库里，损坏或被篡改的库可以塞个天文数字，让
+                                   # 「输入密码解锁」变成纯 CPU 卡死（PBKDF2 无法短路失败）。
+                                   # 留足未来上调迭代数的空间，同时把最坏耗时限制在当前
+                                   # 解锁成本的 10 倍以内。
 ENC_PREFIX = 'encv1:'          # 密文标记；明文是 Delta JSON（{ 开头）或空串，不会冲突
 
 def _derive_kek(password, salt, iterations=PBKDF2_ITERATIONS):
@@ -289,7 +294,8 @@ def _unwrap_dek(enc_dek, password):
         tag, salt_hex, iters, blob = enc_dek.split(':')
         if tag != 'dekv1':
             return None
-        kek = _derive_kek(password, bytes.fromhex(salt_hex), int(iters))
+        kek = _derive_kek(password, bytes.fromhex(salt_hex),
+                          min(int(iters), MAX_PBKDF2_ITERATIONS))
         raw = base64.b64decode(blob)
         return AESGCM(kek).decrypt(raw[:12], raw[12:], None)
     except Exception:
@@ -1128,7 +1134,7 @@ class Api:
                     if hmac.compare_digest(hashlib.pbkdf2_hmac('sha256', password.encode(), salt, iterations), key):
                         return True
             return False
-        except:
+        except Exception:
             return False
 
     def _encrypt_all_note_content(self, note_id, dek):
@@ -1590,7 +1596,7 @@ class Api:
                         if os.path.exists(local_path):
                             try:
                                 doc.add_picture(local_path, width=Inches(5))
-                            except:
+                            except Exception:
                                 doc.add_paragraph(f'[图片: {os.path.basename(local_path)}]')
                     continue
 

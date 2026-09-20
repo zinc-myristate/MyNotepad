@@ -1,6 +1,20 @@
 // ====== 笔记操作 ======
 
-async function loadNotes(retryCount = 0) {
+// ====== ESM 依赖（原先靠全局作用域与加载顺序隐式依赖，现显式声明）======
+import { $, dom, hideEditorUI, openPanel, reportError, saveIndicatorTimer, setSaveIndicatorTimer, showConfirmAsync, showEditorUI, showToast, state } from './01-core.js';
+import { notesStore } from './01b-store.js';
+import { isVoiceRecording, stopVoiceRecording, toggleFavoriteNote, togglePinNote } from './02-editor.js';
+import { applyNoteBackground } from './04-appearance.js';
+import { loadTagBar } from './05-shell.js';
+import { setCurrentPreviewVersionId } from './06-versions-reminders.js';
+import { openPasswordPanel, setEditingMathNode, setPasswordVerifyCallback, setPendingSelectNoteId, unlockedNotes, updateLockButton, verifyAndSelectNote } from './07-formula-security-dnd.js';
+import { generateNoteCover, loadPaperForNote } from './08-appearance2.js';
+import { updateNotebookCount } from './09-boot.js';
+import { syncStickersToOverlay, syncStickersToQuill } from '../quill/quill-deco.js';
+import { ICONS } from '../shared/icons.js';
+import { debounce, escapeHtml } from '../shared/utils.js';
+
+export async function loadNotes(retryCount = 0) {
   try {
     if (!window.pywebview || !window.pywebview.api) {
       if (retryCount < 10) {
@@ -23,7 +37,7 @@ async function loadNotes(retryCount = 0) {
   }
 }
 
-function renderNoteList() {
+export function renderNoteList() {
   dom.noteList.innerHTML = '';
 
   if (state.notes.length === 0) {
@@ -102,11 +116,11 @@ async function handlePasswordButton(noteId) {
   if (hasPwd && !unlockedNotes[noteId]) {
     // 先弹出验证面板，验证成功后自动打开密码管理面板
     await flushSave();  // 旧笔记未保存内容先落盘，防止解锁后误存到加密笔记
-    pendingSelectNoteId = noteId;
+    setPendingSelectNoteId(noteId);
     state.activeNoteId = noteId;
-    passwordVerifyCallback = () => {
+    setPasswordVerifyCallback(() => {
       openPasswordPanel('set');
-    };
+    });
     $('#password-verify-input').value = '';
     $('#password-error-msg').style.display = 'none';
     openPanel($('#password-verify-panel'));
@@ -143,12 +157,12 @@ function updateNoteListItem(noteId) {
   });
 }
 
-async function selectNote(noteId) {
+export async function selectNote(noteId) {
   if (state.activeNoteId === noteId) return;
   if (isVoiceRecording) stopVoiceRecording();
   // 重置版本/公式/背景缓存状态防止跨笔记错乱
-  currentPreviewVersionId = null;
-  editingMathNode = null;
+  setCurrentPreviewVersionId(null);
+  setEditingMathNode(null);
   state._noteBgDataUri = null;
   await flushSave();
 
@@ -178,8 +192,8 @@ async function selectNote(noteId) {
       updateNoteListItem(noteId);
       state.isLoading = false;
       // 弹出密码验证面板
-      pendingSelectNoteId = noteId;
-      passwordVerifyCallback = null;  // 默认行为：解锁后加载笔记即可
+      setPendingSelectNoteId(noteId);
+      setPasswordVerifyCallback(null);  // 默认行为：解锁后加载笔记即可
       $('#password-verify-input').value = '';
       $('#password-error-msg').style.display = 'none';
       openPanel($('#password-verify-panel'));
@@ -235,7 +249,7 @@ async function selectNote(noteId) {
   updateNoteListItem(noteId);
 }
 
-async function createNewNote() {
+export async function createNewNote() {
   try {
     // 先保存当前笔记
     await saveCurrentNote();
@@ -258,7 +272,7 @@ async function createNewNote() {
 }
 
 // ====== 保存状态小圆点（灰=已保存 / 主题色呼吸=未保存或保存中 / 红=保存失败） ======
-function setSaveDot(s) {
+export function setSaveDot(s) {
   const d = document.getElementById('save-dot');
   if (!d) return;
   d.classList.toggle('dirty', s === 'dirty');
@@ -266,7 +280,7 @@ function setSaveDot(s) {
   d.title = { saved: '已保存', dirty: '有未保存修改…', error: '保存失败（已记录日志）' }[s] || '';
 }
 
-async function saveCurrentNote() {
+export async function saveCurrentNote() {
   // 串行化：撞上在途保存时先等它完成，再重新走去重与保存（不能直接跳过——
   // 期间可能有新输入；且旧保存完成后会更新基线，跳过会让新改动失去触发时机）
   if (state._savePromise) await state._savePromise;
@@ -313,8 +327,8 @@ async function saveCurrentNote() {
 }
 
 // 防抖自动保存：连续输入合并为一次写库；flushSave 在切换/失焦/锁定等时机立即落盘
-const debouncedSave = debounce(() => saveCurrentNote(), 500);
-async function flushSave() {
+export const debouncedSave = debounce(() => saveCurrentNote(), 500);
+export async function flushSave() {
   debouncedSave.cancel();
   await saveCurrentNote();
 }
@@ -344,7 +358,7 @@ window.__getUnsavedSnapshot = function () {
   }
 };
 
-async function confirmDeleteNote(noteId, title) {
+export async function confirmDeleteNote(noteId, title) {
   const ok = await showConfirmAsync({
     title: '删除笔记',
     message: `确定要删除笔记「${title || '未命名笔记'}」吗？\n\n笔记将移入回收站，可在回收站中恢复。`,
@@ -419,10 +433,10 @@ function showSaveToast() {
   toast.style.opacity = '1';
   toast.style.transform = 'translateX(-50%) translateY(-10px)';
   if (saveIndicatorTimer) clearTimeout(saveIndicatorTimer);
-  saveIndicatorTimer = setTimeout(function() {
+  setSaveIndicatorTimer(setTimeout(function() {
     toast.style.opacity = '0';
     toast.style.transform = 'translateX(-50%) translateY(0)';
-  }, 1500);
+  }, 1500));
 }
 
 $('#btn-save').addEventListener('click', async () => {

@@ -1,7 +1,14 @@
 // ====== Quill 编辑器初始化 ======
 // 字体/字号 Blot 已在 js/quill/quill-blots.js 中注册
 
-function initQuill() {
+// ====== ESM 依赖（原先靠全局作用域与加载顺序隐式依赖，现显式声明）======
+import { $, $$, closePanel, dom, openPanel, showInfoDialog, showToast, state } from './01-core.js';
+import { debouncedSave, flushSave, loadNotes, renderNoteList, setSaveDot } from './03-notes.js';
+import { _stickerSyncTimer, set_stickerSyncTimer } from './05-shell.js';
+import { unlockedNotes } from './07-formula-security-dnd.js';
+import { syncStickersToOverlay } from '../quill/quill-deco.js';
+
+export function initQuill() {
   const quill = new Quill('#quill-editor', {
     theme: 'snow',
     placeholder: '开始写点什么…',
@@ -156,7 +163,7 @@ function initQuill() {
       // 延迟同步贴纸覆盖层（Quill 可能重建了 DOM）
       if (typeof syncStickersToOverlay === 'function') {
         clearTimeout(_stickerSyncTimer);
-        _stickerSyncTimer = setTimeout(() => syncStickersToOverlay(), 150);
+        set_stickerSyncTimer(setTimeout(() => syncStickersToOverlay(), 150));
       }
     }
   });
@@ -348,7 +355,7 @@ $('#btn-insert-attachment').addEventListener('click', async () => {
 
 // ====== 语音识别 ======
 let voiceRecognition = null;
-let isVoiceRecording = false;
+export let isVoiceRecording = false;
 let voiceStopTimer = null;
 let _voiceRecId = 0;         // 实例 ID，防止竞态
 let _voiceTempRange = null;  // 临时文字在 Quill 中的位置 { index, length }
@@ -465,7 +472,7 @@ function findVoiceTempNode(editor, startIdx) {
 }
 
 /** 清除临时文字 */
-function clearVoiceTemp() {
+export function clearVoiceTemp() {
   if (!_voiceTempRange || !state.quill) return;
   const { index, length } = _voiceTempRange;
   try {
@@ -514,7 +521,7 @@ function startVoiceRecording() {
   }
 }
 
-function stopVoiceRecording() {
+export function stopVoiceRecording() {
   // 防止重复调用
   if (!isVoiceRecording) return;
   isVoiceRecording = false;
@@ -609,7 +616,7 @@ function doApply(formatName, value) {
   }
 }
 
-function syncFontSizeDisplay() {
+export function syncFontSizeDisplay() {
   const q = state.quill;
   if (!q) return;
   var colorDot = document.getElementById('custom-color-dot');
@@ -754,7 +761,7 @@ $('#btn-checklist').addEventListener('click', () => {
 });
 
 // ====== 笔记置顶/收藏 ======
-async function togglePinNote(noteId) {
+export async function togglePinNote(noteId) {
   const note = state.notes.find(n => n.id === noteId);
   if (!note) return;
   const newPinned = note.is_pinned ? 0 : 1;
@@ -765,7 +772,7 @@ async function togglePinNote(noteId) {
   await loadNotes();
 }
 
-async function toggleFavoriteNote(noteId) {
+export async function toggleFavoriteNote(noteId) {
   const note = state.notes.find(n => n.id === noteId);
   if (!note) return;
   const newFav = note.is_favorite ? 0 : 1;
@@ -775,7 +782,7 @@ async function toggleFavoriteNote(noteId) {
 }
 
 /** 同步笔记字段到 state.notes（在 notes_update 后调用，保持面板 UI 一致） */
-function syncNoteFields(noteId, fields) {
+export function syncNoteFields(noteId, fields) {
   const note = state.notes.find(n => n.id === noteId);
   if (note) Object.assign(note, fields);
 }

@@ -3,7 +3,10 @@
 // 导致纯标题修改不落库。收敛所有写入到 store，杜绝任意代码隐式篡改共享状态。
 // 约定：读取仍直接用 state.notes（find/map/循环等只读操作不受限）；
 //       任何赋值/push/splice/sort/属性修改必须走这里。
-const notesStore = {
+// ====== ESM 依赖（原先靠全局作用域与加载顺序隐式依赖，现显式声明）======
+import { state } from './01-core.js';
+
+export const notesStore = {
   /** 整体替换列表（loadNotes/标签筛选/笔记本筛选），可选归一化 + 排序 */
   setNotes(arr, { normalize = false, sort = false } = {}) {
     let notes = arr || [];

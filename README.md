@@ -30,7 +30,7 @@
 | 数据库 | SQLite（`data/notes.db`，FTS5 trigram 全文索引） |
 | 加密 | `cryptography`（AES-256-GCM） |
 | 打包 | PyInstaller（`MyNotepad.spec`） |
-| 测试 | pytest（63 单测 + 3 无头 E2E） |
+| 测试 | pytest（123 单测 + 10 无头 E2E） |
 
 ## 快速开始
 
@@ -67,7 +67,7 @@ pyinstaller MyNotepad.spec   # 产物在 dist/MyNotepad/
 ## 测试
 
 ```bash
-py -3.14 -m pytest                 # 116 单测（自动隔离临时数据目录）
+py -3.14 -m pytest                 # 123 单测（自动隔离临时数据目录）
 py -3.14 -m pytest -m e2e          # 10 无头 pywebview 端到端
 python -m ruff check .             # 代码检查（配置见 pyproject.toml）
 ```
@@ -100,7 +100,7 @@ SQLite 删除或改写大字段后**不会**把空间还给文件系统——图
 ├── build.py                 # 打包脚本（备份-构建-还原-修快捷方式-冒烟）
 ├── MyNotepad.spec           # PyInstaller 打包配置
 ├── pyproject.toml           # ruff 配置
-├── renderer/                # 前端（index.html + 4 主题样式 + Quill/KaTeX + js/ 10 模块）
+├── renderer/                # 前端（ES 模块图 + Quill/KaTeX + 4 主题样式）
 ├── data/                    # 运行时数据
 ├── resources/               # 图标 + 人脸检测模型
 ├── tests/                   # pytest 单测 + 无头 E2E
@@ -109,8 +109,10 @@ SQLite 删除或改写大字段后**不会**把空间还给文件系统——图
 
 ## 已知限制
 
-1. 前端为全局作用域多文件（无模块系统/构建工具），跨文件依赖靠加载顺序保证
-2. 编辑器内复制图片走 Quill 剪贴板，粘贴出的副本仍以 data URI 内嵌，下次启动迁移外置
+1. 前端为**原生 ES 模块**（无打包器/构建工具）：跨文件依赖显式写在 `import` 里，加载顺序由模块图
+   决定；新增模块只需被 `js/app/00-main.js`（或其依赖）import 到即会加载
+2. 编辑器内**复制**图片走 Quill 剪贴板，粘贴出的副本仍以 data URI 内嵌，下次启动迁移外置
+   （用按钮插入/拖拽的图片本身已外置到 `attachments/`）
 3. 任务栏图标需重启应用后更新（pywebview 框架限制）
 
 ## 窗口尺寸与任务栏
@@ -139,14 +141,22 @@ SQLite 删除或改写大字段后**不会**把空间还给文件系统——图
 
 ## 前端脚本加载
 
-前端 17 个模块（Quill / KaTeX / utils / icons / app 各分节）**按依赖顺序**逐个加载，且每个文件
-加载失败会自动重试（最多 4 次），**某个文件彻底失败也不会中断后面的加载**。这不是过度设计：
-WebView2 偶发会拉取失败个别脚本（实测约 1/20），而浏览器遇到失败的 `<script>` 是**静默跳过**的
-——一旦承载公共函数的 `utils.js` 没加载成功，依赖它的多个模块会在顶层抛错而整段不执行，
-表现为「新建笔记点了没反应」＋「工具栏按钮图标消失」这类残缺。
+前端分两部分：
 
-为此还提供了 `escapeHtml` / `formatFileSize` / `debounce` 的兜底实现，即使 `utils.js` 始终加载不上，
-其余模块也不会集体停摆。真出问题会在窗口顶部显示红色提示并写入 `error.log`，不再静默半死。
+- **第三方 UMD 库**（`quill.js`、`katex/katex.min.js`）：由 `index.html` 末尾的加载器按顺序注入，
+  单个文件失败自动重试（最多 4 次，重试带 `?retry=N` 绕开缓存）。WebView2 偶发会拉取失败个别脚本
+  （实测约 1/20），不重试就会静默缺功能。
+- **应用自身**（`renderer/js/` 下 16 个文件）：是一个 **ES 模块图**，唯一入口 `js/app/00-main.js`。
+  每个文件显式 `import` 自己用到的东西，加载顺序由模块图决定。
 
-调整模块加载顺序请改 `renderer/index.html` 末尾加载器的 `FILES` 数组。
-回归测试见 `tests/test_boot_loader.py`。
+改成模块是为了消除一个结构性隐患：改造前这些文件是经典脚本，靠「全局作用域 + 加载顺序」互相依赖，
+`utils.js` 一挂就会让依赖它的 6 个模块在顶层抛错而整段不执行，表现为「新建笔记点了没反应」＋
+「工具栏按钮图标消失」。模块化后依赖关系是显式的，缺文件不再可能造成「界面半死」——要么整图
+成功，要么整体失败并在窗口顶部明确报错（并写 `error.log`）。
+
+模块图失败时用**整页 reload**重试（上限 4 次，计数存 sessionStorage）：浏览器会把「取不到的模块」
+记进本次文档的模块表，同一文档内再试也不会重新请求，reload 才能拿到全新的模块表。
+
+回归测试见 `tests/test_frontend_modules.py`（静态检查：孤儿模块 / import 了不存在的导出 /
+忘了 import；无需浏览器，属默认单测）与 `tests/test_boot_loader.py`（无头 E2E：干净启动、
+经典脚本失败重试、模块图失败明确报错、失败后整页重试到上限）。

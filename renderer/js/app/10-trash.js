@@ -1,5 +1,12 @@
 // ====== 回收站面板 ======
 
+// ====== ESM 依赖（原先靠全局作用域与加载顺序隐式依赖，现显式声明）======
+import { $, openPanel, showConfirmAsync, showToast } from './01-core.js';
+import { loadNotes } from './03-notes.js';
+import { loadNotebookBar } from './09-boot.js';
+import { ICONS } from '../shared/icons.js';
+import { escapeHtml } from '../shared/utils.js';
+
 $('#btn-trash').addEventListener('click', async () => {
   await loadTrashList();
   openPanel($('#trash-panel'));

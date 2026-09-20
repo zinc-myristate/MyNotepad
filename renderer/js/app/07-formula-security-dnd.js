@@ -1,4 +1,9 @@
 // ====== LaTeX 数学公式 ======
+// ====== ESM 依赖（原先靠全局作用域与加载顺序隐式依赖，现显式声明）======
+import { $, $$, closePanel, dom, hideEditorUI, openPanel, showInfoDialog, showToast, state } from './01-core.js';
+import { notesStore } from './01b-store.js';
+import { debouncedSave, flushSave, loadNotes, renderNoteList, selectNote } from './03-notes.js';
+
 let mathMode = 'inline'; // 'inline' | 'block'
 
 // 分类标签切换
@@ -15,7 +20,10 @@ $$('.math-cat-tab').forEach(tab => {
 
 let editingMathNode = null;
 
-function editMathFormula(node) {
+// ESM：其他模块需要写入本变量（import 的绑定不可赋值），故导出 setter
+export function setEditingMathNode(v) { editingMathNode = v; }
+
+export function editMathFormula(node) {
   editingMathNode = node;
   const latex = node.getAttribute('data-latex') || '';
   const display = node.getAttribute('data-display') || 'inline';
@@ -118,7 +126,7 @@ $('#btn-insert-math').addEventListener('click', () => {
 });
 
 // ====== 密码保护 ======
-const unlockedNotes = {}; // 本次会话已解锁的笔记 ID → true
+export const unlockedNotes = {}; // 本次会话已解锁的笔记 ID → true
 let passwordPanelMode = 'set'; // 'set' | 'remove'
 
 // 工具栏锁按钮
@@ -142,7 +150,7 @@ $('#btn-lock').addEventListener('click', async () => {
   }
 });
 
-function updateLockButton() {
+export function updateLockButton() {
   const btn = $('#btn-lock');
   if (!btn) return;
   if (state.activeNoteId && unlockedNotes[state.activeNoteId]) {
@@ -155,7 +163,7 @@ function updateLockButton() {
   }
 }
 
-async function openPasswordPanel(mode) {
+export async function openPasswordPanel(mode) {
   passwordPanelMode = mode;
   const hasPwd = await window.pywebview.api.note_has_password(state.activeNoteId);
   $('#password-input1').value = '';
@@ -203,7 +211,13 @@ $('#btn-remove-password').addEventListener('click', async () => {
 
 // 密码验证
 let pendingSelectNoteId = null;
+
+// ESM：其他模块需要写入本变量（import 的绑定不可赋值），故导出 setter
+export function setPendingSelectNoteId(v) { pendingSelectNoteId = v; }
 let passwordVerifyCallback = null;  // 验证成功后的自定义回调
+
+// ESM：其他模块需要写入本变量（import 的绑定不可赋值），故导出 setter
+export function setPasswordVerifyCallback(v) { passwordVerifyCallback = v; }
 
 // 密码输入框回车键直接验证
 $('#password-verify-input').addEventListener('keydown', (e) => {
@@ -212,7 +226,7 @@ $('#password-verify-input').addEventListener('keydown', (e) => {
   }
 });
 
-async function verifyAndSelectNote(noteId) {
+export async function verifyAndSelectNote(noteId) {
   const hasPwd = await window.pywebview.api.note_has_password(noteId);
   if (!hasPwd || unlockedNotes[noteId]) {
     unlockedNotes[noteId] = true;
@@ -400,7 +414,7 @@ function makeDraggable(containerSelector, buttonSelector, settingKey) {
 }
 
 // ====== Dock 栏 + 工具栏按钮拖拽排序 ======
-function initAllDrag() {
+export function initAllDrag() {
   makeDraggable('.sidebar-footer', '.btn-sidebar-footer', 'footer_order');
   makeDraggable('.custom-formats', '.ql-custom-btn', 'toolbar_order');
 }

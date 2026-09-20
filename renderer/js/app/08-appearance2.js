@@ -1,5 +1,14 @@
 // ====== 自适应背景分析 ======
-function analyzeImageColor(dataUri, callback) {
+// ====== ESM 依赖（原先靠全局作用域与加载顺序隐式依赖，现显式声明）======
+import { $, $$, NotepadConfig, closePanel, dom, openPanel, showToast, state } from './01-core.js';
+import { notesStore } from './01b-store.js';
+import { renderNoteList, saveCurrentNote, selectNote } from './03-notes.js';
+import { verifyAndSelectNote } from './07-formula-security-dnd.js';
+import { updateNotebookCount } from './09-boot.js';
+import { buildDividerPanel, buildStickerGrid, setStickerCat } from '../quill/quill-deco.js';
+import { escapeHtml } from '../shared/utils.js';
+
+export function analyzeImageColor(dataUri, callback) {
   const img = new Image();
   img.onload = () => {
     const canvas = document.createElement('canvas');
@@ -52,7 +61,7 @@ function analyzeImageColor(dataUri, callback) {
   img.src = dataUri;
 }
 
-function applyAdaptiveUI(colorInfo) {
+export function applyAdaptiveUI(colorInfo) {
   // 极简自适应：只控制工具栏/编辑器透明 + 边框线
   // 侧边栏跟随主题色，背景面板深色底白字，均不受影响
   const body = document.body;
@@ -65,7 +74,7 @@ function applyAdaptiveUI(colorInfo) {
   }
 }
 
-function clearAdaptiveUI() {
+export function clearAdaptiveUI() {
   const body = document.body;
   body.classList.remove('adaptive-bg');
   ['--ad-toolbar-bg','--ad-border-strong'].forEach(k => body.style.removeProperty(k));
@@ -215,14 +224,14 @@ $$('.sticker-cat-btn').forEach(btn => {
   btn.addEventListener('click', () => {
     $$('.sticker-cat-btn').forEach(b => b.classList.remove('active'));
     btn.classList.add('active');
-    stickerCat = btn.dataset.stickerCat;
+    setStickerCat(btn.dataset.stickerCat);
     buildStickerGrid();
   });
 });
 
 $('#btn-sticker').addEventListener('click', () => {
   if (!state.activeNoteId) { showToast('请先选择一篇笔记', { type: 'warn' }); return; }
-  stickerCat = 'date';
+  setStickerCat('date');
   $$('.sticker-cat-btn').forEach(b => b.classList.toggle('active', b.dataset.stickerCat === 'date'));
   buildStickerGrid();
   openPanel($('#sticker-panel'));
@@ -263,7 +272,7 @@ function applyPaperStyle(styleId) {
   if (ps && ps.innerCls) state.quill.root.classList.add(ps.innerCls);
 }
 
-function loadPaperForNote(note) {
+export function loadPaperForNote(note) {
   if (!state.quill || !note) return;
   NotepadConfig.paperStyles.forEach(s => { if (s.innerCls) state.quill.root.classList.remove(s.innerCls); });
   const style = note.paper_style || 'none';
@@ -298,7 +307,7 @@ $$('.title-style-btn').forEach(btn => {
 // ====== 封面系统 ======
 // coverColors 已定义在 NotepadConfig 中
 
-function generateNoteCover(note) {
+export function generateNoteCover(note) {
   const type = note.cover_type || 'none';
   const val = note.cover_value || '';
   if (type === 'image' && val) {
@@ -317,7 +326,7 @@ function generateNoteCover(note) {
 }
 
 // 封面设置面板
-function buildCoverPanel() {
+export function buildCoverPanel() {
   const grid = $('#cover-grid');
   if (!grid) return;
   grid.innerHTML = '';

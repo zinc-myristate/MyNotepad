@@ -153,7 +153,7 @@ def test_helper_wrapper_matches_pure_function(app_ns):
 def test_resolved_geometry_fits_real_work_area(app_ns):
     """_resolve_window_geometry 产出的几何必须能在本机真实工作区内完整显示"""
     ns = app_ns
-    geo = ns['_resolve_window_geometry'](None)
+    geo = ns['_resolve_window_geometry']()
     assert geo['w'] > 0 and geo['h'] > 0
     wa = ns['_get_work_area']()
     if wa:

@@ -1,25 +1,25 @@
 // ==========================================
-// 我的记事本 — 前端应用逻辑
+// 我的记事本 — 核心状态与共享 UI 原语
 // ==========================================
 //
-// 依赖加载顺序（index.html）：
-//   1. quill.js, katex (第三方库)
-//   2. js/shared/utils.js   — escapeHtml, formatFileSize, debounce
-//   3. js/shared/icons.js   — getIcon, ICONS
-//   4. js/quill/quill-blots.js — AttachmentBlot, FontBlot, SizeBlot, MathFormula
-//   5. js/quill/quill-deco.js  — Divider, Sticker, dividerTypes, stickerData
-//   6. app.js (本文件)       — 主应用逻辑
+// 本文件是模块图的叶子：只定义状态、DOM 引用、面板/对话框/Toast，不 import 任何应用模块，
+// 因此必然先于其他模块求值——其他模块在**顶层**就会用到 dom / $ / $$。
+// （改造前这些靠 index.html 的加载顺序保证；现在由 ES 模块图保证。）
 //
-// 全局状态（有意暴露，供各模块访问）：
-//   state, dom, $, $$        — 核心状态与 DOM 引用
-//   unlockedNotes             — 密码解锁记录
-//   currentTagFilter          — 当前标签筛选
-//   currentNotebookId         — 当前笔记本
-//   App                       — 应用全局配置
-//   NotepadConfig             — 共享数据常量命名空间
+// 第三方库 Quill / KaTeX 仍是经典脚本，由 index.html 在模块图之前加载，这里按全局使用。
+//
+// 对外导出（各模块显式 import，不再依赖全局作用域）：
+//   state, dom, $, $$                    — 核心状态与 DOM 引用
+//   NotepadConfig                        — 共享数据常量命名空间
+//   openPanel/closePanel                 — 面板显隐
+//   showConfirmAsync/showInfoDialog/showInputDialog — 统一对话框
+//   showToast / saveIndicatorTimer       — 统一提示（后者带 setter，见下方注释）
+//   showEditorUI/hideEditorUI/reportError
+//
+// 其余跨模块状态不在这里：unlockedNotes → 07，currentTagFilter → 05，currentNotebookId → 09。
 
 // ====== 全局数据常量命名空间 ======
-var NotepadConfig = {
+export var NotepadConfig = {
   // 各主题对应的封面颜色
   _themeCoverColors: { white: '#7D8A6E', cream: '#B8844A', pink: '#C0766E', blue: '#5E7DA8' },
   // 当前封面颜色（随主题切换）
@@ -35,7 +35,7 @@ var NotepadConfig = {
 };
 
 // ====== 应用状态 ======
-const state = {
+export const state = {
   notes: [],
   activeNoteId: null,
   currentContent: '',       // 当前笔记的 HTML 内容（用于比较是否变化）
@@ -49,10 +49,10 @@ const state = {
 };
 
 // ====== DOM 引用 ======
-const $ = (sel) => document.querySelector(sel);
-const $$ = (sel) => document.querySelectorAll(sel);
+export const $ = (sel) => document.querySelector(sel);
+export const $$ = (sel) => document.querySelectorAll(sel);
 
-const dom = {
+export const dom = {
   app: $('#app'),
   theme: $('body'),
   sidebar: $('#sidebar'),
@@ -84,7 +84,7 @@ const dom = {
 
 // ====== 前端错误上报（只传 message+stack，绝不传笔记内容） ======
 let _errorReportCount = 0;
-function reportError(message, stack, source) {
+export function reportError(message, stack, source) {
   try {
     if (_errorReportCount >= 20) return;  // 会话内限 20 条，防报错风暴打穿桥接
     if (!window.pywebview || !window.pywebview.api || !window.pywebview.api.log_error) return;
@@ -102,10 +102,10 @@ window.addEventListener('unhandledrejection', (e) => {
 
 // ====== 面板管理 ======
 
-function openPanel(panel) {
+export function openPanel(panel) {
   panel.style.display = 'flex';
 }
-function closePanel(panel) {
+export function closePanel(panel) {
   panel.style.display = 'none';
 }
 // 所有面板 ID 列表（新增面板只需在此添加）
@@ -151,7 +151,10 @@ $$('.panel-overlay').forEach(overlay => {
 
 let _confirmResolver = null;   // confirm-dialog / info-dialog 共用
 let _inputResolver = null;     // input-dialog
-let saveIndicatorTimer = null; // showToast / showSaveToast 共用（03-notes.js 不再声明）
+export let saveIndicatorTimer = null; // showToast / showSaveToast 共用（03-notes.js 不再声明）
+
+// ESM：其他模块需要写入本变量（import 的绑定不可赋值），故导出 setter
+export function setSaveIndicatorTimer(v) { saveIndicatorTimer = v; }
 
 function _resolveConfirm(v) {
   const r = _confirmResolver;
@@ -167,7 +170,7 @@ function _resolveInput(v) {
 }
 
 /** 通用确认：resolve(true)=确认 / resolve(false)=取消。danger 控制按钮危险样式 */
-function showConfirmAsync({ title = '确认', message = '', okText = '确定', danger = false } = {}) {
+export function showConfirmAsync({ title = '确认', message = '', okText = '确定', danger = false } = {}) {
   return new Promise((resolve) => {
     closeAllPanels();
     if (_confirmResolver) _confirmResolver(false);
@@ -186,7 +189,7 @@ function showConfirmAsync({ title = '确认', message = '', okText = '确定', d
 }
 
 /** 长文本提示（替代多行 alert）：与确认同框，隐藏取消按钮，任意方式关闭即 resolve */
-function showInfoDialog({ title = '提示', message = '' } = {}) {
+export function showInfoDialog({ title = '提示', message = '' } = {}) {
   return new Promise((resolve) => {
     closeAllPanels();
     if (_confirmResolver) _confirmResolver(false);
@@ -205,7 +208,7 @@ function showInfoDialog({ title = '提示', message = '' } = {}) {
 }
 
 /** 通用输入：resolve(字符串)=确认 / resolve(null)=取消 */
-function showInputDialog({ title = '输入', message = '', defaultValue = '', placeholder = '', okText = '确定' } = {}) {
+export function showInputDialog({ title = '输入', message = '', defaultValue = '', placeholder = '', okText = '确定' } = {}) {
   return new Promise((resolve) => {
     closeAllPanels();
     if (_inputResolver) _inputResolver(null);
@@ -246,7 +249,7 @@ document.addEventListener('keydown', (e) => {
 });
 
 // ====== 统一 Toast 提示（替代一次性 alert；单元素模式，与现状一致） ======
-function showToast(msg, { type = 'info', duration = 2500 } = {}) {
+export function showToast(msg, { type = 'info', duration = 2500 } = {}) {
   let toast = document.getElementById('save-toast');
   if (!toast) {
     toast = document.createElement('div');
@@ -267,7 +270,7 @@ function showToast(msg, { type = 'info', duration = 2500 } = {}) {
 }
 
 // ====== 编辑器 UI 显隐 ======
-function showEditorUI() {
+export function showEditorUI() {
   const tb = document.querySelector('.ql-toolbar');
   if (tb) tb.classList.remove('hidden');
   const fsb = $('#font-size-bar');
@@ -276,7 +279,7 @@ function showEditorUI() {
   dom.noNoteHint.classList.add('hidden');
   dom.titleInput.classList.remove('hidden');
 }
-function hideEditorUI() {
+export function hideEditorUI() {
   const tb = document.querySelector('.ql-toolbar');
   if (tb) tb.classList.add('hidden');
   const fsb = $('#font-size-bar');

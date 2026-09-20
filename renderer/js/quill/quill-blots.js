@@ -4,6 +4,10 @@
 // 包含：AttachmentBlot、FontBlot、SizeBlot、MathFormula
 
 // ====== 自定义附件 Blot ======
+// ====== ESM 依赖（原先靠全局作用域与加载顺序隐式依赖，现显式声明）======
+import { editMathFormula } from '../app/07-formula-security-dnd.js';
+import { escapeHtml, formatFileSize } from '../shared/utils.js';
+
 const Embed = Quill.import('blots/embed');
 
 class AttachmentBlot extends Embed {

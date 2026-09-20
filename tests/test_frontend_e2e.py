@@ -47,12 +47,12 @@ def test_title_only_edit_persists(tmp_path, monkeypatch):
     test_title = '标题落库验证_' + str(int(time.time()))
 
     def actions(window, result):
-        active = window.evaluate_js("state.activeNoteId")
+        active = window.evaluate_js("__app.state.activeNoteId")
         result['active'] = active
         assert active == nid, f'前端未自动选中预置笔记: {active}'
         window.evaluate_js(
-            "dom.titleInput.value = %r;"
-            "dom.titleInput.dispatchEvent(new Event('input', {bubbles:true}));" % test_title)
+            "__app.dom.titleInput.value = %r;"
+            "__app.dom.titleInput.dispatchEvent(new Event('input', {bubbles:true}));" % test_title)
         result['dot_dirty'] = window.evaluate_js(
             "document.getElementById('save-dot').classList.contains('dirty')")
         time.sleep(2)  # > 500ms 防抖
@@ -79,11 +79,11 @@ def test_closing_flush_saves_last_edits(tmp_path, monkeypatch):
     test_title = '关窗兜底验证_' + str(int(time.time()))
 
     def actions(window, result):
-        active = window.evaluate_js("state.activeNoteId")
+        active = window.evaluate_js("__app.state.activeNoteId")
         assert active == nid, f'前端未自动选中预置笔记: {active}'
         window.evaluate_js(
-            "dom.titleInput.value = %r;"
-            "dom.titleInput.dispatchEvent(new Event('input', {bubbles:true}));" % test_title)
+            "__app.dom.titleInput.value = %r;"
+            "__app.dom.titleInput.dispatchEvent(new Event('input', {bubbles:true}));" % test_title)
         # 不 sleep：立即销毁（防抖 500ms 定时器不会触发，全靠 closing 兜底）
 
     result = _run_window(ns, actions, wait_after=0)
@@ -105,11 +105,11 @@ def test_search_filters_note_list(tmp_path, monkeypatch):
 
     def actions(window, result):
         window.evaluate_js(
-            "dom.searchInput.value = '水果种植';"
-            "dom.searchInput.dispatchEvent(new Event('input', {bubbles:true}));")
+            "__app.dom.searchInput.value = '水果种植';"
+            "__app.dom.searchInput.dispatchEvent(new Event('input', {bubbles:true}));")
         time.sleep(1.5)  # > 200ms 搜索防抖 + 桥接往返
         result['hidden'] = window.evaluate_js(
-            "JSON.stringify([...dom.noteList.querySelectorAll('.note-item')]"
+            "JSON.stringify([...__app.dom.noteList.querySelectorAll('.note-item')]"
             ".map(el => [el.dataset.noteId, el.classList.contains('hidden-by-search')]))")
 
     result = _run_window(ns, actions)
@@ -139,16 +139,16 @@ def test_image_dict_embed_renders_and_persists(tmp_path, monkeypatch):
         # 注意：必须构造 JS 对象字面量，不能塞 JSON 字符串（否则走 legacy string 路径）
         js_obj = "{id: %r, filename: %r, storedPath: %r}" % (
             info['id'], info['filename'], info['storedPath'])
-        window.evaluate_js("state.quill.insertEmbed(0, 'image', %s);" % js_obj)
+        window.evaluate_js("__app.state.quill.insertEmbed(0, 'image', %s);" % js_obj)
         result['ops_value'] = window.evaluate_js(
-            "JSON.stringify(state.quill.getContents().ops[0].insert.image)")
+            "JSON.stringify(__app.state.quill.getContents().ops[0].insert.image)")
         time.sleep(1.5)  # 异步 read_file_base64 渲染
         result['img_src'] = window.evaluate_js(
-            "state.quill.root.querySelector('img').src")
+            "__app.state.quill.root.querySelector('img').src")
         # 模拟 .img-resizable 写位置 → value() 收进 Delta → 保存落库
         window.evaluate_js(
-            "var im = state.quill.root.querySelector('img'); im.dataset.x = '10'; im.dataset.w = '320';")
-        window.evaluate_js("debouncedSave()")
+            "var im = __app.state.quill.root.querySelector('img'); im.dataset.x = '10'; im.dataset.w = '320';")
+        window.evaluate_js("__app.debouncedSave()")
         time.sleep(2)  # > 500ms 防抖
         conn = sqlite3.connect('file:' + str(tmp_path / 'notes.db') + '?mode=ro', uri=True)
         result['db_content'] = conn.execute("SELECT content FROM notes WHERE id=?", (nid,)).fetchone()[0]
@@ -170,7 +170,7 @@ def test_pin_button_delegation(tmp_path, monkeypatch):
     b = backend.api.notes_create()['id']
 
     def actions(window, result):
-        result['items'] = window.evaluate_js("dom.noteList.querySelectorAll('.note-item').length")
+        result['items'] = window.evaluate_js("__app.dom.noteList.querySelectorAll('.note-item').length")
         window.evaluate_js("document.querySelector('[data-pin-id=\"%s\"]').click()" % b)
         time.sleep(1.5)
         conn = sqlite3.connect('file:' + str(tmp_path / 'notes.db') + '?mode=ro', uri=True)
@@ -191,12 +191,12 @@ def test_confirm_async_dialog(tmp_path, monkeypatch):
 
     def actions(window, result):
         window.evaluate_js(
-            "window.__cv = 'pending'; showConfirmAsync({message:'t1'}).then(v => { window.__cv = v; });"
+            "window.__cv = 'pending'; __app.showConfirmAsync({message:'t1'}).then(v => { window.__cv = v; });"
             "setTimeout(() => document.getElementById('btn-confirm-ok').click(), 300);")
         time.sleep(1.5)
         result['ok_path'] = window.evaluate_js("window.__cv")
         window.evaluate_js(
-            "window.__cv = 'pending'; showConfirmAsync({message:'t2'}).then(v => { window.__cv = v; });"
+            "window.__cv = 'pending'; __app.showConfirmAsync({message:'t2'}).then(v => { window.__cv = v; });"
             "setTimeout(() => document.getElementById('btn-confirm-cancel').click(), 300);")
         time.sleep(1.5)
         result['cancel_path'] = window.evaluate_js("window.__cv")

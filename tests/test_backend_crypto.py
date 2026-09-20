@@ -155,3 +155,33 @@ class TestCryptoPrimitives:
         wrapped = backend_mod._wrap_dek(dek, 'secret123')
         assert backend_mod._unwrap_dek(wrapped, 'secret123') == dek
         assert backend_mod._unwrap_dek(wrapped, 'wrong-pass') is None
+
+    def test_unwrap_dek_caps_iterations(self, backend_mod, monkeypatch):
+        """迭代数取自库里的字段：损坏或被篡改的库塞天文数字不能把解锁变成 CPU 卡死。
+
+        PBKDF2 无法短路失败，迭代数多大就得算多久，所以解包时必须截断到上限。
+        这里替换 _derive_kek 记录实参，避免真的花掉 10 亿次迭代的时间。
+        """
+        seen = {}
+
+        def fake_derive(password, salt, iterations=backend_mod.PBKDF2_ITERATIONS):
+            seen['iters'] = iterations
+            raise ValueError('不真的计算')
+
+        monkeypatch.setattr(backend_mod, '_derive_kek', fake_derive)
+        enc = 'dekv1:%s:%d:%s' % ('00' * 32, 10 ** 9, 'AAAA')
+        assert backend_mod._unwrap_dek(enc, 'whatever') is None
+        assert seen['iters'] == backend_mod.MAX_PBKDF2_ITERATIONS
+
+    def test_unwrap_dek_keeps_normal_iterations(self, backend_mod, monkeypatch):
+        """正常范围内的迭代数必须原样使用（不能把合法库一起截断成错的）"""
+        seen = {}
+
+        def fake_derive(password, salt, iterations=backend_mod.PBKDF2_ITERATIONS):
+            seen['iters'] = iterations
+            raise ValueError('不真的计算')
+
+        monkeypatch.setattr(backend_mod, '_derive_kek', fake_derive)
+        enc = 'dekv1:%s:%d:%s' % ('00' * 32, 200000, 'AAAA')
+        assert backend_mod._unwrap_dek(enc, 'whatever') is None
+        assert seen['iters'] == 200000
