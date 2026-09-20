@@ -49,7 +49,14 @@
 
     <!-- 笔记列表 -->
     <nav id="note-list" class="note-list">
-      <!-- 动态生成 -->
+      <!-- 加载骨架：模块图与首次取列表期间显示，renderNoteList() 会整体替换掉。
+           写在静态 HTML 里（而不是等 JS 生成），这样第一帧就有内容，不会先闪一下空白 -->
+      <div class="note-skeleton" aria-hidden="true">
+        <div class="note-skeleton-item"><span class="sk-cover"></span><span class="sk-lines"><i class="sk-line sk-w70"></i><i class="sk-line sk-w40"></i></span></div>
+        <div class="note-skeleton-item"><span class="sk-cover"></span><span class="sk-lines"><i class="sk-line sk-w70"></i><i class="sk-line sk-w40"></i></span></div>
+        <div class="note-skeleton-item"><span class="sk-cover"></span><span class="sk-lines"><i class="sk-line sk-w70"></i><i class="sk-line sk-w40"></i></span></div>
+        <div class="note-skeleton-item"><span class="sk-cover"></span><span class="sk-lines"><i class="sk-line sk-w70"></i><i class="sk-line sk-w40"></i></span></div>
+      </div>
     </nav>
 
     <!-- 空状态提示 -->
@@ -269,6 +276,14 @@
         <div class="theme-option" data-theme="blue">
           <div class="theme-swatch" style="background:#F0F5FF;"></div>
           <span>淡蓝色</span>
+        </div>
+        <div class="theme-option" data-theme="dark">
+          <div class="theme-swatch" style="background:#1E1F22;"></div>
+          <span>深色</span>
+        </div>
+        <div class="theme-option" data-theme="system">
+          <div class="theme-swatch" style="background:linear-gradient(135deg,#FCFAF7 0 50%,#1E1F22 50% 100%);"></div>
+          <span>跟随系统</span>
         </div>
       </div>
     </div>
@@ -577,6 +592,18 @@
     </div>
     <div class="panel-body">
       <div id="reminder-list-items"></div>
+
+      <!-- 桌面集成：这两项直接决定「应用关掉后提醒还能不能响」 -->
+      <div class="desktop-settings">
+        <label class="desktop-setting">
+          <input type="checkbox" id="chk-tray">
+          <span>关闭窗口后驻留托盘<em>提醒继续生效；右键托盘图标可退出</em></span>
+        </label>
+        <label class="desktop-setting" id="row-autostart">
+          <input type="checkbox" id="chk-autostart">
+          <span>开机自动启动<em id="autostart-hint"></em></span>
+        </label>
+      </div>
     </div>
   </div>
 </div>

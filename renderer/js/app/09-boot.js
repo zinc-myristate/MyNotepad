@@ -3,7 +3,7 @@
 import { $, closePanel, dom, hideEditorUI, openPanel, showConfirmAsync, showInputDialog, showToast, state } from './01-core.js';
 import { notesStore } from './01b-store.js';
 import { initQuill, syncFontSizeDisplay } from './02-editor.js';
-import { loadNotes, renderNoteList } from './03-notes.js';
+import { loadNotes, previewHtmlFor, renderNoteList } from './03-notes.js';
 import { loadSettings } from './04-appearance.js';
 import { loadTagFilter } from './05-shell.js';
 import { initAllDrag, verifyAndSelectNote } from './07-formula-security-dnd.js';
@@ -162,8 +162,13 @@ let _searchSeq = 0;  // 请求序号：丢弃迟到的乱序响应
 async function filterNotesBySearch(query) {
   const q = query.trim();
   if (!q) {
-    // 无搜索词：显示全部
-    dom.noteList.querySelectorAll('.note-item').forEach(el => el.classList.remove('hidden-by-search'));
+    // 无搜索词：显示全部，摘要恢复为正文摘要
+    state.searchQuery = '';
+    state.searchSnippets = {};
+    dom.noteList.querySelectorAll('.note-item').forEach(el => {
+      el.classList.remove('hidden-by-search');
+      refreshItemPreview(el);
+    });
     dom.btnSearchClear.style.display = 'none';
     return;
   }
@@ -171,19 +176,32 @@ async function filterNotesBySearch(query) {
 
   const seq = ++_searchSeq;
   let matched;
+  let snippets = {};
   try {
     const result = await window.pywebview.api.notes_search(q);
     if (seq !== _searchSeq) return;  // 已有更新的查询，丢弃本次结果
     matched = new Set((result && result.ids) || []);
+    snippets = (result && result.snippets) || {};
   } catch (e) {
     if (seq !== _searchSeq) return;
     // 后端不可达时回退旧的前端标题匹配
     const lower = q.toLowerCase();
     matched = new Set(state.notes.filter(n => (n.title || '').toLowerCase().includes(lower)).map(n => n.id));
   }
+  state.searchQuery = q;
+  state.searchSnippets = snippets;
   dom.noteList.querySelectorAll('.note-item').forEach(item => {
     item.classList.toggle('hidden-by-search', !matched.has(item.dataset.noteId));
+    refreshItemPreview(item);
   });
+}
+
+/** 就地刷新某一行的摘要文字：不整表重渲染，避免搜索时列表滚动位置被重置 */
+function refreshItemPreview(item) {
+  const el = item.querySelector('.note-item-preview');
+  if (!el) return;
+  const note = state.notes.find(n => n.id === item.dataset.noteId);
+  if (note) el.innerHTML = previewHtmlFor(note);
 }
 
 const _debouncedSearch = debounce(() => filterNotesBySearch(dom.searchInput.value), 200);

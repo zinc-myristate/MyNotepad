@@ -9,7 +9,7 @@
   --font-serif: "Noto Serif SC", "SimSun", "宋体", Georgia, serif;
   --font-handwrite: "Bradley Hand ITC", "Segoe Script", "KaiTi", "楷体", cursive;
   --font-mono: "Cascadia Code", "Fira Code", "Consolas", monospace;
-  --font-size-xs: 11px;
+  --font-size-xs: 12px;   /* 原 11px：中文小字（标签/日期/侧边栏按钮）在 11px 下发挤、可读性差 */
   --font-size-sm: 13px;
   --font-size-base: 15px;
   --font-size-md: 16px;
@@ -31,6 +31,21 @@
   --transition-base: 0.25s var(--ease-out);
   --transition-slow: 0.4s var(--ease-out);
   --sidebar-width: 270px;
+
+  /* 毛玻璃层：浅色主题是「白色半透明」，深色主题必须整体换成「深色半透明」，
+     否则暗色下侧边栏/工具栏/列表卡片会变成刺眼白块。抽成变量后由主题块覆盖。 */
+  --glass-sidebar: rgba(255, 255, 255, 0.45);
+  --glass-sidebar-line: rgba(255, 255, 255, 0.3);
+  --glass-card: rgba(255, 255, 255, 0.35);
+  --glass-card-line: rgba(255, 255, 255, 0.4);
+  --glass-card-hover: rgba(255, 255, 255, 0.55);
+  --glass-card-hover-line: rgba(255, 255, 255, 0.6);
+  --glass-card-active: rgba(255, 255, 255, 0.75);
+  --glass-toolbar: rgba(255, 255, 255, 0.55);
+  --glass-panel: rgba(255, 255, 255, 0.72);
+  --hl-text-shadow: rgba(255, 255, 255, 0.4);
+  /* 标签胶囊上的文字色（浅色主题下胶囊底是浅灰，故用深字） */
+  --tag-text: #2C2826;
 }
 
 /* ====== 基础重置 ====== */
@@ -127,13 +142,14 @@ html, body {
   --bg-editor: #FCFAF7;
   --text-primary: #2C2826;
   --text-secondary: #6B6560;
-  --text-muted: #A09990;
+  --text-muted: #70695F;
   --text-very-muted: #C5BFB8;
   --border-color: #E0DBD4;
   --border-light: #EDE9E3;
   --accent: #7D8A6E;
   --accent-hover: #6B785E;
   --accent-dark: #4A5540;
+  --accent-text: #636D57;   /* 主色当文字时用它（在原底与选中态底上都 >=4.5） */
   --accent-light: #EFF2EA;
   --accent-soft: #F5F7F2;
   --danger: #C2655A;
@@ -162,13 +178,14 @@ html, body {
   --bg-editor: #FBF6ED;
   --text-primary: #3D3224;
   --text-secondary: #7A6850;
-  --text-muted: #B09A7E;
+  --text-muted: #79644A;
   --text-very-muted: #D4C4AE;
   --border-color: #D9C8A8;
   --border-light: #E8DBC4;
   --accent: #B8844A;
   --accent-hover: #A0703E;
   --accent-dark: #6E4A28;
+  --accent-text: #866035;
   --accent-light: #F5ECE0;
   --accent-soft: #F9F4EC;
   --danger: #C27A65;
@@ -197,13 +214,14 @@ html, body {
   --bg-editor: #FBF5F4;
   --text-primary: #3D2825;
   --text-secondary: #7A5852;
-  --text-muted: #B09088;
+  --text-muted: #835F57;
   --text-very-muted: #D4C0BA;
   --border-color: #D9C0B8;
   --border-light: #E8D4CE;
   --accent: #C0766E;
   --accent-hover: #A8625A;
   --accent-dark: #6E3E38;
+  --accent-text: #A24F46;
   --accent-light: #F5E4E0;
   --accent-soft: #F9EFEC;
   --danger: #C2655A;
@@ -232,13 +250,14 @@ html, body {
   --bg-editor: #F4F7FA;
   --text-primary: #252D3A;
   --text-secondary: #556178;
-  --text-muted: #8A93A8;
+  --text-muted: #5E677E;
   --text-very-muted: #C0C8D6;
   --border-color: #C4CDDA;
   --border-light: #D8DFE8;
   --accent: #5E7DA8;
   --accent-hover: #4C6B94;
   --accent-dark: #2E4568;
+  --accent-text: #4E6990;
   --accent-light: #E4ECF4;
   --accent-soft: #F0F4F8;
   --danger: #C2656E;
@@ -257,6 +276,76 @@ html, body {
   --active-shadow: 0 2px 12px rgba(94,125,168,0.18);
 }
 
+/* 深色 — 夜灯下的笔记本（"跟随系统"时由 JS 解析成 dark / white，落到这里）
+   两条容易踩的语义反转：
+     · --accent-dark 在浅色主题里是「更深的强调色」且**当文字用**，深色下必须变亮；
+     · --accent-light 在浅色主题里是「更浅的强调色」且**当底色用**，深色下必须变暗。
+   两者都反转，选中态/标签底/悬浮文字才不会出现深底深字。 */
+[data-theme="dark"] {
+  --bg-primary: #1E1F22;
+  --bg-secondary: #26272B;
+  --bg-sidebar: #191A1D;
+  --bg-sidebar-hover: #2B2C31;
+  --bg-sidebar-active: #232428;
+  --bg-editor: #1E1F22;
+  --text-primary: #E9E5DF;
+  --text-secondary: #B9B3AA;
+  --text-muted: #948D83;
+  --text-very-muted: #635E57;
+  --border-color: #34353A;
+  --border-light: #2A2B2F;
+  --accent: #9CAE8B;
+  --accent-hover: #B0C29E;
+  --accent-dark: #CBD8BC;
+  --accent-text: #9CAE8B;   /* 深色下主色本身就够亮（6.94），与 --accent 同值 */
+  --accent-light: #2E3329;
+  --accent-soft: #24261F;
+  --danger: #E08A7E;
+  --danger-hover: #EFA294;
+  --danger-light: #3A2724;
+  --toolbar-bg: #26272B;
+  --toolbar-border: #34353A;
+  --btn-hover-bg: #2E2F34;
+  --btn-active-bg: #3A3B41;
+  --input-bg: #232428;
+  --input-border: #3D3E44;
+  --input-focus: #9CAE8B;
+  --overlay-bg: rgba(0, 0, 0, 0.6);
+  --tag-bg: #2B2C31;
+  --tag-text: #E9E5DF;
+  --active-border: #9CAE8B;
+  --active-shadow: 0 2px 12px rgba(0, 0, 0, 0.45);
+  /* 毛玻璃层整体反转（浅色主题是白色半透明，暗色下必须换成深色半透明） */
+  --glass-sidebar: rgba(40, 41, 45, 0.55);
+  --glass-sidebar-line: rgba(255, 255, 255, 0.07);
+  --glass-card: rgba(255, 255, 255, 0.04);
+  --glass-card-line: rgba(255, 255, 255, 0.07);
+  --glass-card-hover: rgba(255, 255, 255, 0.08);
+  --glass-card-hover-line: rgba(255, 255, 255, 0.13);
+  --glass-card-active: rgba(156, 174, 139, 0.16);
+  --glass-toolbar: rgba(38, 39, 43, 0.62);
+  --glass-panel: rgba(38, 39, 43, 0.88);
+  --hl-text-shadow: rgba(0, 0, 0, 0.45);
+}
+
+/* 背景面板的毛玻璃卡片在浅色主题里是「白底 + 深字」的刻意设计（Apple Notes 风格），
+   深色主题下必须整块反转——那里有几处颜色是硬编码的深色，不反转就是深底深字。 */
+[data-theme="dark"] .bg-image-settings {
+  background: rgba(38, 39, 43, 0.92);
+  border-color: rgba(255, 255, 255, 0.08);
+}
+[data-theme="dark"] .bg-image-settings,
+[data-theme="dark"] .bg-pos-controls,
+[data-theme="dark"] .bg-pos-btn,
+[data-theme="dark"] .opacity-slider,
+[data-theme="dark"] .bg-image-settings .btn-secondary { color: var(--text-primary); }
+[data-theme="dark"] .bg-pos-btn svg { stroke: var(--text-primary); }
+[data-theme="dark"] .bg-image-settings .bg-filename { background: rgba(255, 255, 255, 0.06); }
+[data-theme="dark"] .bg-pos-btn,
+[data-theme="dark"] .bg-image-settings .btn-secondary { background: rgba(255, 255, 255, 0.08); }
+[data-theme="dark"] .bg-pos-btn:hover,
+[data-theme="dark"] .bg-image-settings .btn-secondary:hover { background: rgba(255, 255, 255, 0.14); }
+
 /* ====== 主布局 ====== */
 .app-container {
   display: flex;
@@ -269,12 +358,12 @@ html, body {
 .sidebar {
   width: var(--sidebar-width);
   min-width: var(--sidebar-width);
-  background: rgba(255,255,255,0.45);
+  background: var(--glass-sidebar);
   backdrop-filter: blur(16px) saturate(140%);
   -webkit-backdrop-filter: blur(16px) saturate(140%);
   display: flex; flex-direction: column;
   position: relative; z-index: 20;
-  border-right: 1px solid rgba(255,255,255,0.3);
+  border-right: 1px solid var(--glass-sidebar-line);
   box-shadow: 2px 0 24px rgba(0,0,0,0.04);
   transition: background var(--transition-slow), border-color var(--transition-slow), box-shadow var(--transition-slow);
 }
@@ -395,7 +484,7 @@ html, body {
 .btn-sidebar-footer svg { vertical-align: middle; flex-shrink: 0; }
 .btn-sidebar-footer { display: inline-flex; align-items: center; gap: 5px; justify-content: center; }
 .app-title { display: flex; align-items: center; gap: 8px; }
-.app-title svg { flex-shrink: 0; color: var(--accent); }
+.app-title svg { flex-shrink: 0; color: var(--accent-text); }
 .app-title::before { display: none; }
 
 /* 笔记列表容器 */
@@ -430,19 +519,19 @@ html, body {
   padding: 10px 10px; margin: 3px 4px;
   border-radius: 10px; cursor: pointer;
   position: relative;
-  background: rgba(255,255,255,0.35);
-  border: 1px solid rgba(255,255,255,0.4);
+  background: var(--glass-card);
+  border: 1px solid var(--glass-card-line);
   box-shadow: 0 1px 3px rgba(0,0,0,0.03);
   transition: all 0.2s cubic-bezier(0.4,0,0.2,1);
 }
 .note-item:hover {
-  background: rgba(255,255,255,0.55);
-  border-color: rgba(255,255,255,0.6);
+  background: var(--glass-card-hover);
+  border-color: var(--glass-card-hover-line);
   box-shadow: 0 2px 12px rgba(0,0,0,0.06);
   transform: translateX(3px);
 }
 .note-item.active {
-  background: rgba(255,255,255,0.75);
+  background: var(--glass-card-active);
   border-color: var(--accent);
   box-shadow: 0 4px 16px rgba(0,0,0,0.08), 0 0 0 1px var(--accent-light);
 }
@@ -479,6 +568,52 @@ html, body {
   color: var(--accent-dark);
 }
 
+/* 列表项摘要行：与时间同排（摘要占满剩余宽度，时间固定不缩） */
+.note-item-preview {
+  flex: 1;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-size: var(--font-size-xs);
+  color: var(--text-muted);
+  line-height: 1.5;
+}
+.note-item-preview-locked,
+.note-item-preview-empty { opacity: 0.85; }
+/* 搜索命中高亮：用主题主色系的浅底，不用浏览器默认荧光黄 */
+.note-item-preview mark {
+  background: var(--accent-light);
+  color: var(--accent-dark);
+  border-radius: 2px;
+  padding: 0 1px;
+}
+
+/* 列表加载骨架：首屏 JS 模块图与首次取列表期间占位，renderNoteList() 整体替换掉 */
+.note-skeleton { padding: 4px 0; }
+.note-skeleton-item {
+  display: flex; align-items: center; gap: 8px;
+  padding: 10px 12px; margin: 0 0 4px;
+}
+.sk-cover {
+  width: 40px; height: 40px; flex-shrink: 0;
+  border-radius: var(--radius-sm); background: var(--bg-sidebar-hover);
+}
+.sk-lines { flex: 1; min-width: 0; display: flex; flex-direction: column; gap: 7px; }
+.sk-line {
+  display: block; height: 9px; border-radius: 4px;
+  background: var(--bg-sidebar-hover);
+}
+.sk-w70 { width: 70%; }
+.sk-w40 { width: 40%; }
+.note-skeleton-item, .sk-cover, .sk-line {
+  animation: skPulse 1.4s var(--ease-out) infinite;
+}
+@keyframes skPulse {
+  0%, 100% { opacity: 1; }
+  50% { opacity: 0.45; }
+}
+
 /* 笔记项底部信息 */
 .note-item-meta {
   display: flex;
@@ -499,7 +634,7 @@ html, body {
   display: inline-flex; align-items: center; vertical-align: middle;
   margin-right: 1px; flex-shrink: 0;
 }
-.note-status-icon.pinned svg { color: var(--accent); }
+.note-status-icon.pinned svg { color: var(--accent-text); }
 .note-status-icon.fav svg { color: #D69E2E; }
 .note-status-icon.locked svg { color: var(--danger); }
 
@@ -673,6 +808,11 @@ body.adaptive-bg .panel-dialog {
   display: grid;
   grid-template-rows: auto auto auto auto 1fr;
   /* 行1:标题  行2:标签  行3:字体  行4:工具栏  行5:编辑器(占满剩余空间) */
+  /* 关键：列必须显式给一个可收缩的最小值。默认 auto 会被「工具栏 26 个按钮的固有宽度
+     (826px)」撑住，窗口窄于此时整列溢出，再被 .editor-area 的 overflow:hidden 裁掉——
+     实测 900px 窗口下编辑器右侧少 209px、公式/提醒/锁定共 4 个按钮点不到。
+     minmax(0, 1fr) 让列随容器收缩，配合下面的 .ql-formats 换行一起生效。 */
+  grid-template-columns: minmax(0, 1fr);
   height: 100%;
   background: transparent;
   overflow: hidden;
@@ -746,9 +886,9 @@ body.adaptive-bg .panel-dialog {
 /* ====== Quill 工具栏 — 毛玻璃 ====== */
 .ql-toolbar.ql-snow {
   border: none !important;
-  border-bottom: 1px solid rgba(255,255,255,0.3) !important;
+  border-bottom: 1px solid var(--glass-sidebar-line) !important;
   padding: 10px 40px !important;
-  background: rgba(255,255,255,0.55) !important;
+  background: var(--glass-toolbar) !important;
   backdrop-filter: blur(12px) saturate(130%);
   -webkit-backdrop-filter: blur(12px) saturate(130%);
   font-family: var(--font-sans);
@@ -769,6 +909,9 @@ body.adaptive-bg .panel-dialog {
   display: flex;
   align-items: center;
   gap: 1px;
+  /* 组内允许换行：自定义按钮组有 18 个按钮（固有宽度 738px），不换行时任何窄窗口都会
+     把它挤出可视区（工具条整体 826px）。换行代价只是窄窗口下工具栏多占一行。 */
+  flex-wrap: wrap;
 }
 
 /* 工具栏按钮 */
@@ -785,7 +928,7 @@ body.adaptive-bg .panel-dialog {
 }
 .ql-toolbar.ql-snow button.ql-active {
   background: var(--accent-light);
-  color: var(--accent);
+  color: var(--accent-text);
 }
 .ql-toolbar.ql-snow .ql-stroke {
   stroke: var(--text-secondary);
@@ -862,7 +1005,7 @@ body.adaptive-bg .panel-dialog {
 }
 .ql-custom-btn:hover {
   background: var(--accent-light) !important;
-  color: var(--accent) !important;
+  color: var(--accent-text) !important;
   border-color: var(--accent) !important;
   transform: translateY(-1px);
 }
@@ -1159,7 +1302,7 @@ body.adaptive-bg .panel-dialog {
 }
 .panel-tab:hover { color: var(--text-primary); }
 .panel-tab.active {
-  color: var(--accent);
+  color: var(--accent-text);
   font-weight: 600;
 }
 .panel-tab.active::after { background: var(--accent); }
@@ -1187,7 +1330,7 @@ body.adaptive-bg .panel-dialog {
 .bg-image-settings {
   margin-top: 14px;
   padding: 18px;
-  background: rgba(255,255,255,0.72);
+  background: var(--glass-panel);
   backdrop-filter: blur(20px) saturate(160%);
   -webkit-backdrop-filter: blur(20px) saturate(160%);
   border: 1px solid rgba(0,0,0,0.08);
@@ -1274,7 +1417,7 @@ body.adaptive-bg .panel-dialog {
 }
 .bg-pos-btn svg { stroke: #2C2826; }
 .bg-image-settings .btn-link { color: var(--text-muted); font-size: var(--font-size-xs); }
-.bg-image-settings .btn-link:hover { color: var(--accent); }
+.bg-image-settings .btn-link:hover { color: var(--accent-text); }
 .bg-image-settings .btn-secondary {
   background: rgba(0,0,0,0.05);
   color: #2C2826;
@@ -1393,7 +1536,7 @@ body.adaptive-bg .btn-solid-secondary {
   padding: 4px 0;
   background: none;
   border: none;
-  color: var(--accent);
+  color: var(--accent-text);
   font-size: var(--font-size-xs);
   font-family: var(--font-sans);
   font-weight: 500;
@@ -1534,7 +1677,7 @@ body.adaptive-bg .btn-solid-secondary {
 .stepper span {
   width: 44px; text-align: center;
   font-size: var(--font-size-md);
-  font-weight: 700; color: var(--accent);
+  font-weight: 700; color: var(--accent-text);
 }
 .table-preview-wrapper { margin-bottom: 16px; overflow-x: auto; }
 .table-preview {
@@ -1689,8 +1832,8 @@ body.adaptive-bg .btn-solid-secondary {
   border-radius: 20px;
   font-size: var(--font-size-xs); font-weight: 500;
   background: var(--tag-bg, var(--accent));
-  color: #2C2826;
-  text-shadow: 0 1px 1px rgba(255,255,255,0.4);
+  color: var(--tag-text);
+  text-shadow: 0 1px 1px var(--hl-text-shadow);
   transition: all var(--transition-fast);
 }
 .tag-chip .tag-remove {
@@ -1704,7 +1847,7 @@ body.adaptive-bg .btn-solid-secondary {
   color: var(--text-muted); cursor: pointer;
   transition: all var(--transition-fast);
 }
-.btn-add-tag:hover { border-color: var(--accent); color: var(--accent); }
+.btn-add-tag:hover { border-color: var(--accent); color: var(--accent-text); }
 
 /* 标签筛选 */
 .tag-filter {
@@ -1778,13 +1921,14 @@ body.adaptive-bg .btn-solid-secondary {
   margin-left: auto;
 }
 .btn-new-notebook {
-  padding: 4px 10px; border: 1px dashed var(--border-color);
+  /* 与 notebook-select-btn 同高（34px）：原先 4px padding → 24px，比其他按钮矮一截 */
+  min-height: 34px; padding: 8px 10px; border: 1px dashed var(--border-color);
   border-radius: var(--radius-sm); background: transparent;
   font-size: var(--font-size-xs); font-family: var(--font-sans);
   color: var(--text-muted); cursor: pointer;
   transition: all var(--transition-fast); margin: 2px 8px;
 }
-.btn-new-notebook:hover { border-color: var(--accent); color: var(--accent); }
+.btn-new-notebook:hover { border-color: var(--accent); color: var(--accent-text); }
 
 /* ====== 历史版本 ====== */
 .version-list { display: flex; flex-direction: column; gap: 4px; }
@@ -1938,7 +2082,7 @@ body.adaptive-bg .btn-solid-secondary {
 .cal-day.today.has-note::after { background: #fff; }
 .cal-day-note-count {
   position: absolute; top: 1px; right: 3px;
-  font-size: 9px; font-weight: 700; color: var(--accent);
+  font-size: 9px; font-weight: 700; color: var(--accent-text);
   min-width: 16px; text-align: right;
 }
 .cal-day.today .cal-day-note-count { color: #fff; }
@@ -1961,7 +2105,7 @@ body.adaptive-bg .btn-solid-secondary {
 }
 
 /* 12种分割线风格 */
-.div-floral { text-align:center; color:var(--accent); font-size:15px; letter-spacing:2px; }
+.div-floral { text-align:center; color:var(--accent-text); font-size:15px; letter-spacing:2px; }
 .div-floral::before { content:'~\2730~  ~\2730~  ~\2730~'; }
 .div-diamond { text-align:center; color:var(--text-muted); font-size:13px; letter-spacing:3px; }
 .div-diamond::before { content:'\25C6  \25C6  \25C6'; }
@@ -1971,15 +2115,15 @@ body.adaptive-bg .btn-solid-secondary {
   -webkit-mask-image: radial-gradient(circle 5px at 50% 0, transparent 60%, #000 62%);
   mask-image: radial-gradient(circle 5px at 50% 0, transparent 60%, #000 62%);
 }
-.div-dots { text-align:center; color:var(--accent); font-size:18px; letter-spacing:6px; }
+.div-dots { text-align:center; color:var(--accent-text); font-size:18px; letter-spacing:6px; }
 .div-dots::before { content:'\00B7  \00B7  \00B7'; }
-.div-leaf { text-align:center; color:var(--accent); font-size:15px; letter-spacing:4px; }
+.div-leaf { text-align:center; color:var(--accent-text); font-size:15px; letter-spacing:4px; }
 .div-leaf::before { content:'\263C  \2767  \263C'; }
 .div-heart { text-align:center; color:var(--danger); font-size:14px; letter-spacing:6px; }
 .div-heart::before { content:'\2014  \2665  \2014  \2665  \2014'; }
 .div-dashed { text-align:center; color:var(--text-muted); font-size:13px; }
 .div-dashed::before { content:'\2500\2500\2500\2500  \2735  \2500\2500\2500\2500'; }
-.div-feather { text-align:center; color:var(--accent); font-size:14px; letter-spacing:4px; }
+.div-feather { text-align:center; color:var(--accent-text); font-size:14px; letter-spacing:4px; }
 .div-feather::before { content:'\00B7 \00B7 \2726 \00B7 \00B7'; }
 .div-double {
   height:10px; width:100%; border-top:2px solid var(--border-color); border-bottom:1px solid var(--border-light);
@@ -2162,7 +2306,7 @@ body.adaptive-bg .btn-solid-secondary {
   transition: all var(--transition-fast); display:flex; align-items:center; justify-content:center;
 }
 .title-style-btn:hover, .title-style-btn.active {
-  border-color: var(--accent); background: var(--accent-light); color: var(--accent);
+  border-color: var(--accent); background: var(--accent-light); color: var(--accent-text);
 }
 
 /* ====== 封面系统 ====== */
@@ -2201,7 +2345,9 @@ body.adaptive-bg .btn-solid-secondary {
 }
 .notebook-select-btn {
   display: flex; align-items: center; gap: 4px;
-  padding: 4px 8px; border: 1px solid var(--border-color);
+  /* 与其他侧边栏按钮统一为 34px 高：原先 padding 4px+11px 字号只有 24px，
+     比同级按钮矮 10px，既不好点也不整齐 */
+  min-height: 34px; padding: 8px 10px; border: 1px solid var(--border-color);
   border-radius: var(--radius-sm); background: var(--bg-secondary);
   font-size: var(--font-size-xs); font-family: var(--font-sans);
   font-weight: 600; color: var(--text-primary); cursor: pointer;
@@ -2230,7 +2376,7 @@ body.adaptive-bg .btn-solid-secondary {
 .notebook-drop-item.active { background: var(--accent-soft); font-weight: 700; color: var(--accent-dark); }
 .notebook-drop-new {
   padding: 10px 14px; cursor: pointer; font-size: var(--font-size-xs);
-  color: var(--accent); font-weight: 600; text-align: center;
+  color: var(--accent-text); font-weight: 600; text-align: center;
 }
 .notebook-drop-new:hover { background: var(--accent-light); }
 .notebook-bar-wrapper { position: relative; }
@@ -2361,7 +2507,7 @@ body.adaptive-bg .btn-solid-secondary {
 /* ====== 自然语言解析提示 ====== */
 .hint-text {
   font-size: var(--font-size-xs);
-  color: var(--accent);
+  color: var(--accent-text);
   min-height: 18px;
   line-height: 1.4;
 }
@@ -2376,7 +2522,7 @@ body.adaptive-bg .btn-solid-secondary {
   font-weight: 500; color: var(--text-secondary); cursor: pointer;
   transition: all var(--transition-fast);
 }
-.repeat-btn:hover { border-color: var(--accent); color: var(--accent); }
+.repeat-btn:hover { border-color: var(--accent); color: var(--accent-text); }
 .repeat-btn.active {
   background: var(--accent); color: #fff; border-color: var(--accent);
 }
@@ -2401,14 +2547,14 @@ body.adaptive-bg .btn-solid-secondary {
   white-space: nowrap;
 }
 .reminder-item-repeat {
-  color: var(--accent); font-size: 12px;
+  color: var(--accent-text); font-size: 12px;
 }
 .reminder-item-note {
   font-size: 11px; color: var(--text-muted);
   max-width: 120px; overflow: hidden; text-overflow: ellipsis;
   white-space: nowrap; cursor: pointer;
 }
-.reminder-item-note:hover { color: var(--accent); text-decoration: underline; }
+.reminder-item-note:hover { color: var(--accent-text); text-decoration: underline; }
 .reminder-item-actions {
   display: flex; gap: 4px; flex-shrink: 0;
 }
@@ -2417,8 +2563,32 @@ body.adaptive-bg .btn-solid-secondary {
   border-radius: var(--radius-sm); border: none; background: transparent;
   cursor: pointer; color: var(--text-muted); transition: all var(--transition-fast);
 }
-.reminder-item-btn:hover { background: var(--accent-soft); color: var(--accent); }
+.reminder-item-btn:hover { background: var(--accent-soft); color: var(--accent-text); }
 .reminder-item-btn.danger:hover { background: #FED7D7; color: #E53E3E; }
+
+/* ====== 桌面集成设置（提醒列表面板底部）====== */
+.desktop-settings {
+  margin-top: 14px; padding-top: 12px;
+  border-top: 1px solid var(--border-light);
+  display: flex; flex-direction: column; gap: 9px;
+}
+.desktop-setting {
+  display: flex; align-items: flex-start; gap: 8px;
+  font-size: var(--font-size-sm); color: var(--text-primary);
+  cursor: pointer;
+}
+.desktop-setting input[type="checkbox"] {
+  margin-top: 2px; width: 15px; height: 15px;
+  accent-color: var(--accent); cursor: pointer; flex-shrink: 0;
+}
+.desktop-setting em {
+  display: block; font-style: normal; margin-top: 2px;
+  font-size: var(--font-size-xs); color: var(--text-muted);
+}
+.desktop-setting.disabled { opacity: 0.6; cursor: default; }
+.desktop-setting.disabled input { cursor: default; }
+/* 深色主题下的危险色（浅色 #FED7D7 在暗底上会刺眼） */
+[data-theme="dark"] .reminder-item-btn.danger:hover { background: var(--danger-light); color: var(--danger); }
 
 /* ====== 待办清单右键菜单 ====== */
 .checklist-context-menu {
@@ -2433,4 +2603,4 @@ body.adaptive-bg .btn-solid-secondary {
   font-size: var(--font-size-sm); font-family: var(--font-sans);
   color: var(--text-primary); text-align: left; border-radius: var(--radius-sm);
 }
-.checklist-context-menu button:hover { background: var(--accent-soft); color: var(--accent); }
+.checklist-context-menu button:hover { background: var(--accent-soft); color: var(--accent-text); }

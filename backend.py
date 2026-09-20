@@ -483,6 +483,35 @@ def _delta_to_text(content):
         text = content
     return text[:100_000]
 
+PREVIEW_MAX = 120      # 列表摘要最长字符数（列表里只有一行，再多也是被省略号截掉）
+
+def _preview_text(content, limit=PREVIEW_MAX):
+    """Quill Delta JSON → 单行摘要（列表显示用）。
+
+    与 _delta_to_text 的区别：解析失败返回**空串**而不是原始 JSON——摘要位置显示一坨
+    `{"ops":[...` 比不显示更糟。取够 limit*2 个字符就停，不必遍历全部 ops。
+    """
+    if not content:
+        return ''
+    try:
+        data = json.loads(content)
+    except Exception:
+        return ''
+    ops = data.get('ops', []) if isinstance(data, dict) else data
+    if not isinstance(ops, list):
+        return ''
+    parts, total = [], 0
+    for op in ops:
+        if not isinstance(op, dict):
+            continue
+        ins = op.get('insert')
+        if isinstance(ins, str):
+            parts.append(ins)
+            total += len(ins)
+            if total >= limit * 2:
+                break
+    return ' '.join(''.join(parts).split())[:limit]   # 折叠换行与连续空白
+
 def _fts_sync(note_id, title, plain_content):
     """重写单条 FTS 行。plain_content=None（加密笔记）时 body 恒空——索引绝不落加密明文。"""
     if not FTS_AVAILABLE:
@@ -696,14 +725,25 @@ class Api:
         # 排序：置顶 → 手动排序（sort_order，拖拽写入）→ 最近更新。新建笔记 sort_order=max+1，
         # 在 DESC 下自然排最前，与旧的「仅 updated_at」行为一致；未拖拽过的存量笔记 sort_order
         # 全为 0，退化为 updated_at DESC（兼容旧行为）。
+        #
+        # preview：列表里显示的一行正文摘要。content 是 Quill Delta JSON，只在后端提取纯文本，
+        # **不把 content 发给前端**（既避免大 payload，也避免把加密笔记的密文送出去）。
+        # 加密笔记（无论是否已解锁）一律给空串——列表渲染不参与解锁流程，摘要留给解锁后的编辑区。
         rows = conn.execute(
             "SELECT id, title, bg_type, bg_value, bg_opacity, is_pinned, is_favorite, "
-            "sort_order, created_at, updated_at, "
-            "CASE WHEN password_hash IS NOT NULL AND password_hash != '' THEN 1 ELSE 0 END AS has_password "
+            "sort_order, created_at, updated_at, content, password_hash "
             "FROM notes WHERE deleted_at IS NULL "
             "ORDER BY is_pinned DESC, sort_order DESC, updated_at DESC"
         ).fetchall()
-        return [dict(r) for r in rows]
+        out = []
+        for r in rows:
+            d = dict(r)
+            raw = d.pop('content', '') or ''
+            has_pwd = bool(d.pop('password_hash', None))
+            d['has_password'] = 1 if has_pwd else 0
+            d['preview'] = '' if has_pwd else _preview_text(raw)
+            out.append(d)
+        return out
 
     def notes_get(self, note_id, unlocked=False):
         """获取笔记详情。加密笔记仅当后端已解锁（DEK 在缓存）时返回明文内容。
@@ -820,10 +860,15 @@ class Api:
 
     def notes_search(self, query):
         """全文搜索：≥3 字符且 FTS5 可用走 trigram；否则 LIKE 回退（标题 + 明文笔记正文）。
-        加密笔记任何情况下只搜标题。返回 {'ids': [...], 'title_hits': [...]}"""
+        加密笔记任何情况下只搜标题。
+
+        返回 {'ids': [...], 'title_hits': [...], 'snippets': {note_id: 片段}}
+        snippets 是命中处 ±40 字的明文片段，供列表显示「为什么这条命中了」并高亮关键词；
+        标题命中（正文里找不到关键词）时退化为正文开头。加密笔记恒为空串——密文/明文都不过桥。
+        """
         q = (query or '').strip()
         if not q:
-            return {'ids': [], 'title_hits': []}
+            return {'ids': [], 'title_hits': [], 'snippets': {}}
         if FTS_AVAILABLE and len(q) >= 3:
             try:
                 phrase = '"' + q.replace('"', '""') + '"'
@@ -833,7 +878,8 @@ class Api:
                 all_ids = [r['note_id'] for r in conn.execute(
                     "SELECT note_id FROM notes_fts WHERE notes_fts MATCH ?",
                     (phrase,)).fetchall()]
-                return {'ids': all_ids, 'title_hits': title_ids}
+                return {'ids': all_ids, 'title_hits': title_ids,
+                        'snippets': self._snippets_for(all_ids, q)}
             except Exception:
                 applog.get_logger().exception("FTS 查询失败，回退 LIKE")
         # LIKE 回退：<3 字符（中文双字常态）/ FTS 不可用 / FTS 查询异常
@@ -844,8 +890,35 @@ class Api:
             "WHERE deleted_at IS NULL AND (title LIKE ? ESCAPE '\\' "
             "   OR (COALESCE(password_hash, '') = '' AND content LIKE ? ESCAPE '\\'))",
             (like, like, like)).fetchall()
-        return {'ids': [r['id'] for r in rows],
-                'title_hits': [r['id'] for r in rows if r['th']]}
+        ids = [r['id'] for r in rows]
+        return {'ids': ids,
+                'title_hits': [r['id'] for r in rows if r['th']],
+                'snippets': self._snippets_for(ids, q)}
+
+    @staticmethod
+    def _snippets_for(note_ids, q, width=40):
+        """给命中结果生成正文片段（只在命中集上取，通常只有几条，成本可忽略）"""
+        if not note_ids:
+            return {}
+        out = {}
+        marks = ','.join('?' * len(note_ids))
+        rows = conn.execute(
+            f"SELECT id, content, password_hash FROM notes WHERE id IN ({marks})",
+            list(note_ids)).fetchall()
+        ql = q.lower()
+        for r in rows:
+            if r['password_hash']:
+                out[r['id']] = ''      # 加密笔记不外泄任何正文片段
+                continue
+            text = ' '.join(_delta_to_text(r['content']).split())
+            i = text.lower().find(ql)
+            if i < 0:
+                out[r['id']] = text[:width * 2]        # 标题命中：给正文开头
+                continue
+            start = max(0, i - width)
+            end = min(len(text), i + len(q) + width)
+            out[r['id']] = ('…' if start > 0 else '') + text[start:end] + ('…' if end < len(text) else '')
+        return out
 
     # ----- 附件 -----
     def attachments_list(self, note_id):

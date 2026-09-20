@@ -17,6 +17,13 @@ export function initQuill() {
     }
   });
 
+  // 开启 WebView2 内置拼写检查：Quill 生成的 .ql-editor 默认没有 spellcheck 属性，
+  // 英文笔记写错不会标红。中文不受影响（Chromium 对中文不做拼写检查）。
+  try {
+    quill.root.setAttribute('spellcheck', 'true');
+    quill.root.setAttribute('lang', 'zh-CN');
+  } catch (e) { /* 属性设置失败不影响编辑功能 */ }
+
   // 表格删除增强：Quill 默认在单元格开头吃掉 Backspace（空 handler 保护结构），
   // 导致内容删完后行骨架（标题行）永远删不掉。改为：整行为空时 Backspace 删该行，
   // 删到只剩一行时删除整个表格。

@@ -20,6 +20,7 @@ if sys.platform == 'win32':
 
 import webview
 import tkinter.messagebox
+import desktop          # 托盘常驻 / 开机自启 / 提醒守护（见 desktop.py）
 import json
 
 # PyInstaller 兼容
@@ -349,6 +350,27 @@ class AppApi:
     # 前端错误上报
     def log_error(self, message, stack='', source='js'): return self.backend.log_error(message, stack, source)
 
+    # ====== 桌面集成（托盘常驻 / 开机自启）======
+    # 状态存在两处：tray_enabled 存 settings；开机自启以注册表为准（不另存副本）。
+    def desktop_status(self):
+        return {
+            'tray': (self.backend.settings_get(TRAY_KEY) or '1') != '0',
+            'autostart': desktop.autostart_enabled(),
+            'autostart_supported': desktop.autostart_supported(),
+        }
+
+    def set_tray_enabled(self, enabled):
+        self.backend.settings_set(TRAY_KEY, '1' if enabled else '0')
+        # 立即生效（不必重启）：由 app.pyw 底部注册的控制器起/停托盘与提醒守护
+        apply = _TRAY_CTL.get('apply')
+        if apply is not None:
+            apply(bool(enabled))
+        return bool(enabled)
+
+    def set_autostart(self, enabled):
+        """写注册表；返回操作后的真实状态（失败时可能与请求不同）"""
+        return desktop.set_autostart(bool(enabled))
+
     # 提醒（兼容旧接口）
     def reminder_set(self, note_id, reminder_time): return self.backend.reminder_set(note_id, reminder_time)
     def reminder_cancel(self, note_id): return self.backend.reminder_cancel(note_id)
@@ -590,15 +612,45 @@ api = AppApi(backend_api)
 # 采用「取消-冲洗-再关」：首次 closing 返回 False 取消关闭，后台线程 flush
 # （此时 UI 线程已空闲，evaluate_js 正常），完成后 destroy 触发第二次 closing 放行。
 # 3 秒看门狗兜底：flush 卡死也强制关窗，绝不让窗口关不掉。
-def make_closing_handler(target_window, backend):
+def make_closing_handler(target_window, backend, tray=None, is_quitting=None, should_hide=None):
+    """关窗兜底 + 「关窗驻留托盘」。
+
+    tray 不为 None 且用户没点退出时：flush 完成后**隐藏**窗口而不是销毁——进程与提醒守护
+    线程继续跑，提醒才有意义（原先窗口一关提醒就彻底失效）。tray=None（测试与未启用托盘）
+    时行为不变：flush 后直接销毁。
+
+    should_hide 让「驻留托盘」这一开关**即时生效**：用户在设置里关掉后，本次会话点关闭
+    就应该真的退出，而不是等下次启动。tray 也可以传一个可调用对象（`lambda: _tray`）——
+    托盘可能在运行中被起/停，按值捕获会拿到过期的引用。
+    """
     state = {'phase': 'idle', 'watchdog': None}  # idle -> flushing -> done
+
+    def _current_tray():
+        return tray() if callable(tray) else tray
 
     def _force_close():
         if state['phase'] == 'done':
             return  # 幂等：flush 与看门狗只有一方真正执行关闭
-        state['phase'] = 'done'
         if state['watchdog'] is not None:
             state['watchdog'].cancel()  # 必须取消：迟到的 Timer 会按 uid 误杀后续新窗口
+        _save_window_geometry(backend, target_window)   # 记住窗口大小/位置，下次启动恢复
+        quitting = bool(is_quitting and is_quitting())
+        current_tray = _current_tray()
+        want_hide = current_tray is not None and (should_hide() if should_hide else True)
+        if want_hide and not quitting:
+            try:
+                target_window.hide()
+                state['phase'] = 'idle'   # 回到空闲：下次点关闭还能再走一遍
+                current_tray.notify_hidden_once()
+                return
+            except Exception:
+                # 隐藏失败就老实关掉：绝不能出现"点了关闭却关不掉"
+                try:
+                    import applog
+                    applog.get_logger().exception("隐藏到托盘失败，改为直接关闭")
+                except Exception:
+                    pass
+        state['phase'] = 'done'
         try:
             target_window.destroy()
         except Exception:
@@ -776,16 +828,19 @@ def _get_work_area():
 
 def clamp_window_geometry(w, h, work_area,
                           min_w=MIN_WIN_W, min_h=MIN_WIN_H,
-                          reserve=_WORKAREA_RESERVE):
+                          reserve=_WORKAREA_RESERVE, prefer=None):
     """把窗口尺寸与位置收进可用工作区，返回 (w, h, x, y)。**纯函数，不碰 Win32。**
 
     work_area 为 (left, top, width, height)；传 None 表示取不到工作区，此时
     只把尺寸按最小值修正，位置交回给 pywebview（x/y 返回 None）。
 
-    位置一律由内部重新计算，不沿用调用方传入的 x/y——唯一可靠的做法是把 x/y
+    位置默认由内部重新计算（居中），不沿用调用方传入的 x/y——唯一可靠的做法是把 x/y
     直接交给 pywebview.create_window（winforms 后端会自行按 DPI 换算）；创建后
     再用 SetWindowPos 抢位置会被 pywebview 的 CenterScreen 覆盖（实测逐次漂移
     25→123→221），而 CenterScreen 本身又不避开任务栏，那正是问题根源。
+
+    prefer=(x, y) 用于「恢复上次关闭时的窗口位置」：只有该位置能让窗口**完整**落在
+    工作区内才采用，否则退回居中——显示器被拔掉/分辨率变小后，旧坐标可能整个在屏外。
     """
     w, h = int(w), int(h)
     # 工作区可能来自浮点 DPI 换算；宽高非正说明取值失败，一并按「无工作区」处理
@@ -798,6 +853,10 @@ def clamp_window_geometry(w, h, work_area,
     max_h = max(min_h, wh - reserve)
     w = max(min_w, min(w, ww))
     h = max(min_h, min(h, max_h))
+    if prefer and prefer[0] is not None and prefer[1] is not None:
+        px, py = int(prefer[0]), int(prefer[1])
+        if wl <= px and px + w <= wl + ww and wt <= py and py + h <= wt + wh:
+            return int(w), int(h), px, py
     cx = wl + max(0, (ww - w) // 2)
     cy = wt + max(0, (wh - h) // 2)
     return int(w), int(h), int(cx), int(cy)
@@ -808,10 +867,62 @@ def _clamp_window_geometry(w, h, x=None, y=None):
     return clamp_window_geometry(w, h, _get_work_area())
 
 
-def _resolve_window_geometry():
-    """按可用工作区算出安全的窗口尺寸与位置（避开任务栏，居中且四边可见）"""
+# ====== 窗口几何持久化 ======
+# 默认 1200×800 居中在多数机器上够用，但用户一旦习惯某个尺寸/位置（副屏、分屏缩到 900 宽），
+# 每次启动都被重置就很难受。关窗时把几何写进 settings，启动时读回来再按工作区钳制。
+# 只认 window_geometry 这一个键：早期版本在 settings 里留下了 window_width/window_height/
+# window_x/window_y，但没有任何代码读它们（那些残留值可能是过期甚至屏外的），刻意不读。
+_WIN_GEOM_KEY = 'window_geometry'
+TRAY_KEY = 'tray_enabled'      # '1'（默认）= 关闭窗口时驻留托盘
+# 托盘控制器：AppApi.set_tray_enabled 只能看到桥接层，托盘对象在下面创建，
+# 用这个字典做一次「后注册回调」（启动时还没创建 → 设置只落库，启动时读取即可）。
+_TRAY_CTL = {'apply': None}
+
+
+def _load_saved_geometry(backend):
+    """读取上次保存的窗口几何，返回 (w, h, x, y) 或 None（无/损坏/非法一律当没存过）"""
+    if backend is None:
+        return None
     try:
-        w, h, x, y = _clamp_window_geometry(DEFAULT_WIN_W, DEFAULT_WIN_H)
+        raw = backend.settings_get(_WIN_GEOM_KEY)
+        if not raw:
+            return None
+        data = json.loads(raw) if isinstance(raw, str) else raw
+        w, h = int(data['w']), int(data['h'])
+        if w <= 0 or h <= 0:
+            return None
+        x, y = data.get('x'), data.get('y')
+        return (w, h, int(x) if x is not None else None, int(y) if y is not None else None)
+    except Exception:
+        return None
+
+
+def _save_window_geometry(backend, win):
+    """关窗时把当前几何写回设置。任何失败都不能影响关闭流程。"""
+    try:
+        w, h = int(win.width), int(win.height)
+        if w <= 0 or h <= 0:
+            return
+        backend.settings_set(_WIN_GEOM_KEY,
+                             json.dumps({'w': w, 'h': h, 'x': int(win.x), 'y': int(win.y)}))
+    except Exception:
+        try:
+            import applog
+            applog.get_logger().exception("保存窗口几何失败")
+        except Exception:
+            pass
+
+
+def _resolve_window_geometry(backend=None):
+    """按「上次保存的几何 > 默认尺寸」选尺寸与位置，再按可用工作区钳制"""
+    try:
+        work = _get_work_area()
+        saved = _load_saved_geometry(backend)
+        if saved:
+            w, h, sx, sy = saved
+            w, h, x, y = clamp_window_geometry(w, h, work, prefer=(sx, sy))
+        else:
+            w, h, x, y = clamp_window_geometry(DEFAULT_WIN_W, DEFAULT_WIN_H, work)
         return {'w': w, 'h': h, 'x': x, 'y': y}
     except Exception:
         return {'w': DEFAULT_WIN_W, 'h': DEFAULT_WIN_H, 'x': None, 'y': None}
@@ -839,8 +950,8 @@ icon_path = os.path.join(EXE_DIR, "resources", "icon.ico")
 if not os.path.exists(icon_path):
     icon_path = os.path.join(BASE_DIR, "resources", "icon.ico")
 
-# 按可用工作区解析窗口几何（避开任务栏；默认尺寸过大时自动收缩）
-_geo = _resolve_window_geometry()
+# 按「上次保存的几何 > 默认尺寸」解析窗口几何，并按可用工作区钳制（避开任务栏）
+_geo = _resolve_window_geometry(backend_api)
 
 window = webview.create_window(
     "我的记事本",
@@ -875,11 +986,109 @@ def _on_loaded():
 
 window.events.loaded += _on_loaded
 
-# 关窗兜底：不等防抖的最后输入由 closing 同步落库
-window.events.closing += make_closing_handler(window, backend_api)
+# ====== 托盘常驻 + 提醒守护 ======
+# 关窗驻留托盘不只是「方便」：提醒原先只靠前端 30s 轮询，窗口一关就再也不提醒。
+# 驻留托盘后进程还活着，配合 ReminderWatcher（窗口隐藏时在后端补气泡）才让提醒可信。
+_state = {'quitting': False}
+
+
+def _tray_is_enabled():
+    try:
+        return (backend_api.settings_get(TRAY_KEY) or '1') != '0'
+    except Exception:
+        return True
+
+
+def _window_visible():
+    """以 Win32 为准判断主窗口用户是否看得见。
+
+    不在进程内自己记标志：单实例激活时是**另一个进程**把本窗口显示出来的，标志会失真。
+    最小化也算「看不见」——那时前端 Toast 弹在看不见的地方，正该用托盘气泡。
+    """
+    try:
+        import ctypes
+        user32 = ctypes.windll.user32
+        hwnd = user32.FindWindowW(None, "我的记事本")
+        if not hwnd:
+            return False
+        if user32.IsIconic(hwnd):        # 最小化
+            return False
+        return bool(user32.IsWindowVisible(hwnd))
+    except Exception:
+        return True                      # 判断不了就当作可见：宁少弹气泡，也别重复提醒
+
+
+def _show_window():
+    try:
+        window.show()
+        window.restore()          # 可能还处于最小化状态
+    except Exception:
+        pass
+    _on_loaded()                  # 重新置顶一次，方便用户看到
+
+
+def _quit_from_tray():
+    _state['quitting'] = True
+    try:
+        window.destroy()          # 触发 closing -> flush -> 真正销毁（quitting=True 时不再隐藏）
+    except Exception:
+        pass
+
+
+_tray = None
+_watcher = None
+
+
+def _start_tray():
+    """起托盘 + 提醒守护；失败返回 False（退化为普通窗口行为，不影响应用可用）"""
+    global _tray, _watcher
+    if _tray is not None:
+        return True
+    tray = desktop.Tray(icon_path, _show_window, _quit_from_tray,
+                        on_toggle_autostart=lambda v: desktop.set_autostart(v))
+    if not tray.start():
+        return False
+    _tray = tray
+    # 窗口隐藏/最小化时由后端补提醒气泡（可见时交给前端 Toast，避免重复提醒）
+    _watcher = desktop.ReminderWatcher(backend_api, _tray, _window_visible)
+    _watcher.start()
+    return True
+
+
+def _stop_tray():
+    global _tray, _watcher
+    if _watcher is not None:
+        _watcher.stop()
+        _watcher = None
+    if _tray is not None:
+        _tray.stop()
+        _tray = None
+
+
+def _apply_tray_setting(enabled):
+    """设置项变化即时生效：关掉「驻留托盘」后本次会话点关闭就该真的退出"""
+    if enabled:
+        return _start_tray()
+    _stop_tray()
+    return False
+
+
+_TRAY_CTL['apply'] = _apply_tray_setting
+
+if _tray_is_enabled():
+    _start_tray()
+
+# 关窗兜底：不等防抖的最后输入由 closing 同步落库；启用托盘时关窗 = 隐藏到托盘
+window.events.closing += make_closing_handler(
+    window, backend_api, tray=lambda: _tray, is_quitting=lambda: _state['quitting'],
+    should_hide=_tray_is_enabled)
 
 # 启动
 if os.path.exists(icon_path):
     webview.start(debug=False, icon=icon_path)
 else:
     webview.start(debug=False)
+
+# webview 退出（真正关闭）：收尾托盘与守护线程
+_state['quitting'] = True
+_stop_tray()

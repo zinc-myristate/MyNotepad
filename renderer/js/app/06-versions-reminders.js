@@ -390,7 +390,55 @@ $('#btn-delete-reminder').addEventListener('click', async () => {
 // ====== 提醒列表面板 ======
 $('#btn-reminder-list').addEventListener('click', async () => {
   await loadReminderList();
+  await loadDesktopSettings();
   openPanel($('#reminder-list-panel'));
+});
+
+// ----- 桌面集成设置（关窗驻留托盘 / 开机自启）-----
+// 这两项决定了「应用关掉后提醒还响不响」，所以放在提醒面板里而不是某个外观面板。
+async function loadDesktopSettings() {
+  const chkTray = $('#chk-tray');
+  const chkAuto = $('#chk-autostart');
+  const rowAuto = $('#row-autostart');
+  const hint = $('#autostart-hint');
+  try {
+    const st = await window.pywebview.api.desktop_status();
+    chkTray.checked = !!st.tray;
+    chkAuto.checked = !!st.autostart;
+    const ok = !!st.autostart_supported;
+    rowAuto.classList.toggle('disabled', !ok);
+    chkAuto.disabled = !ok;
+    if (hint) hint.textContent = ok ? '' : '（仅打包版可用）';
+  } catch (e) {
+    if (hint) hint.textContent = '（读取失败）';
+  }
+}
+
+$('#chk-tray').addEventListener('change', async (e) => {
+  try {
+    await window.pywebview.api.set_tray_enabled(e.target.checked);
+    showToast(e.target.checked
+      ? '已开启：关闭窗口后驻留托盘，提醒继续生效'
+      : '已关闭：关闭窗口将直接退出，提醒不再触发', { type: 'info' });
+  } catch (err) {
+    showToast('设置失败：' + err, { type: 'error' });
+    await loadDesktopSettings();
+  }
+});
+
+$('#chk-autostart').addEventListener('change', async (e) => {
+  try {
+    const actual = await window.pywebview.api.set_autostart(e.target.checked);
+    if (actual !== e.target.checked) {
+      showToast('开机自启设置未生效（可能被系统策略拦截）', { type: 'warn' });
+      e.target.checked = actual;
+    } else {
+      showToast(actual ? '已设为开机自动启动' : '已取消开机自动启动', { type: 'info' });
+    }
+  } catch (err) {
+    showToast('设置失败：' + err, { type: 'error' });
+    await loadDesktopSettings();
+  }
 });
 
 async function loadReminderList() {

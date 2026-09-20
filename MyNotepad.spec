@@ -9,7 +9,7 @@ a = Analysis(
     # 注：这里曾列 'pycparser.yacctab', 'pycparser.lextab' —— pycparser 3.x 已删除这两个模块
     # （实测 find_spec 为 None），保留只会让**每次构建都刷两行** `ERROR: Hidden import ... not found`，
     # 淹没真正缺失的 hiddenimport。故移除。
-    hiddenimports=['backend', 'docx', 'openpyxl', 'PIL', 'cryptography',
+    hiddenimports=['backend', 'desktop', 'pystray', 'docx', 'openpyxl', 'PIL', 'cryptography',
                    'cv2', 'numpy'],
     hookspath=[],
     hooksconfig={},

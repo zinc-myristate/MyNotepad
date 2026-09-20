@@ -37,6 +37,38 @@ export async function loadNotes(retryCount = 0) {
   }
 }
 
+/** 列表项里那一行摘要的 HTML（三种来源：搜索命中片段 > 正文摘要 > 加密占位）。
+
+ * 安全：所有文本都先转义再拼 `innerHTML`；搜索高亮不能用「先转义整段再找关键词」的做法
+ * （关键词含 < & 时会错位），而是按关键词切成多段、逐段转义后再插 <mark>。
+ */
+export function previewHtmlFor(note) {
+  if (!note) return '';
+  const q = state.searchQuery || '';
+  const snip = (q && state.searchSnippets) ? state.searchSnippets[note.id] : '';
+  if (snip) return highlightHtml(snip, q);
+  if (note.has_password) {
+    return '<span class="note-item-preview-locked">已加密 · 解锁后可见</span>';
+  }
+  const text = note.preview || '';
+  return text ? escapeHtml(text) : '<span class="note-item-preview-empty">（空白笔记）</span>';
+}
+
+function highlightHtml(text, q) {
+  const ql = (q || '').toLowerCase();
+  if (!ql) return escapeHtml(text);
+  const lower = String(text).toLowerCase();
+  let out = '', i = 0;
+  for (;;) {
+    const at = lower.indexOf(ql, i);
+    if (at < 0) { out += escapeHtml(String(text).slice(i)); break; }
+    out += escapeHtml(String(text).slice(i, at)) +
+           '<mark>' + escapeHtml(String(text).slice(at, at + ql.length)) + '</mark>';
+    i = at + ql.length;
+  }
+  return out;
+}
+
 export function renderNoteList() {
   dom.noteList.innerHTML = '';
 
@@ -45,7 +77,6 @@ export function renderNoteList() {
   } else {
     dom.emptyHint.classList.add('hidden');
   }
-
   // DocumentFragment 批量挂载：消除每行多次插入引发的重排
   const frag = document.createDocumentFragment();
   state.notes.forEach(note => {
@@ -74,6 +105,7 @@ export function renderNoteList() {
             <span class="note-item-title">${escapeHtml(note.title || '未命名笔记')}</span>${pinIcon}${favIcon}${lockIcon}
           </div>
           <div class="note-item-meta">
+            <span class="note-item-preview">${previewHtmlFor(note)}</span>
             <span class="note-item-time">${(note.updated_at || '').substring(0, 16)}</span>
           </div>
         </div>

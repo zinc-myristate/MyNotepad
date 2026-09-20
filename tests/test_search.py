@@ -48,8 +48,10 @@ class TestSearch:
         assert ids(api.notes_search('ops')) == set()
 
     def test_empty_query(self, api, seeded):
-        assert api.notes_search('') == {'ids': [], 'title_hits': []}
-        assert api.notes_search('   ') == {'ids': [], 'title_hits': []}
+        r = api.notes_search('')
+        assert r['ids'] == [] and r['title_hits'] == [] and r['snippets'] == {}
+        r = api.notes_search('   ')
+        assert r['ids'] == [] and r['title_hits'] == [] and r['snippets'] == {}
 
     def test_special_chars_safe(self, api, seeded):
         for q in ['100%', 'a_b', '"quoted"', 'back\\slash', "'; DROP TABLE notes;--"]:
@@ -119,3 +121,74 @@ def test_delta_to_text(backend_mod):
     assert f('{"ops":[{"insert":"你好"},{"insert":{"image":"x"}},{"insert":"世界\\n"}]}') == '你好世界\n'
     assert f('') == ''
     assert f('不是JSON的内容') == '不是JSON的内容'  # 解析失败回退原串
+
+
+class TestSnippets:
+    """命中片段：列表要能显示「为什么这条命中了」"""
+
+    def test_snippet_contains_query_and_context(self, api, seeded):
+        r = api.notes_search('项目进度')
+        snip = r['snippets'][seeded['cn']]
+        assert '项目进度' in snip
+        assert '明天开会' in snip, '片段应带上下文，便于判断是否是想要的笔记'
+
+    def test_snippet_adds_ellipsis_when_truncated(self, api):
+        nid = api.notes_create()['id']
+        api.notes_update(nid, {'title': '长文', 'content': delta('开头' + '填充' * 60 + '目标词' + '后续' * 60)})
+        snip = api.notes_search('目标词')['snippets'][nid]
+        assert '目标词' in snip
+        assert snip.startswith('…') and snip.endswith('…'), '两侧被截断时应加省略号'
+
+    def test_title_only_hit_falls_back_to_body_head(self, api, seeded):
+        # 「工作计划」只出现在标题里 → 片段退化为正文开头，而不是空
+        snip = api.notes_search('工作计划')['snippets'][seeded['cn']]
+        assert snip.startswith('明天开会')
+
+    def test_encrypted_snippet_is_empty(self, api, seeded):
+        """加密笔记即使标题命中，也不返回任何正文片段"""
+        r = api.notes_search('私密日记')
+        assert seeded['enc'] in r['ids']
+        assert r['snippets'][seeded['enc']] == ''
+
+    def test_snippets_only_for_matched_ids(self, api, seeded):
+        r = api.notes_search('roadmap')
+        assert set(r['snippets']) <= set(r['ids'])
+
+
+class TestPreview:
+    """列表摘要（notes_list 的 preview 字段）：正文纯文本、加密/坏数据不外泄"""
+
+    def test_preview_is_plaintext_not_delta(self, api):
+        nid = api.notes_create()['id']
+        api.notes_update(nid, {'title': 'T', 'content': delta('第一行正文\n第二行正文')})
+        n = [x for x in api.notes_list() if x['id'] == nid][0]
+        assert n['preview'] == '第一行正文 第二行正文'
+        assert 'ops' not in n['preview']
+
+    def test_preview_truncated(self, api, backend_mod):
+        nid = api.notes_create()['id']
+        api.notes_update(nid, {'title': 'T', 'content': delta('字' * 500)})
+        n = [x for x in api.notes_list() if x['id'] == nid][0]
+        assert len(n['preview']) == backend_mod.PREVIEW_MAX
+
+    def test_preview_empty_for_encrypted(self, api):
+        nid = api.notes_create()['id']
+        api.notes_update(nid, {'title': 'T', 'content': delta('绝密正文')})
+        api.note_set_password(nid, 'secret123')
+        n = [x for x in api.notes_list() if x['id'] == nid][0]
+        assert n['preview'] == '', '加密笔记不能把明文/密文摘要送到前端'
+        assert n['has_password'] == 1
+
+    def test_preview_skips_embeds_and_bad_json(self, api):
+        nid = api.notes_create()['id']
+        api.notes_update(nid, {'title': 'T', 'content': '{"ops":[{"insert":{"image":"x"}},{"insert":"文字"}]}'})
+        assert [x for x in api.notes_list() if x['id'] == nid][0]['preview'] == '文字'
+        api.notes_update(nid, {'title': 'T', 'content': '不是JSON'})
+        assert [x for x in api.notes_list() if x['id'] == nid][0]['preview'] == '', \
+            '坏数据不能把原始 JSON 当摘要显示'
+
+    def test_notes_list_does_not_ship_content(self, api):
+        nid = api.notes_create()['id']
+        api.notes_update(nid, {'title': 'T', 'content': delta('正文')})
+        n = [x for x in api.notes_list() if x['id'] == nid][0]
+        assert 'content' not in n, 'notes_list 不应把整篇正文发给前端（大 payload + 密文外泄）'

@@ -41,18 +41,31 @@ export async function loadSettings(retryCount = 0) {
   }
 }
 
+// 「跟随系统」：把 'system' 解析成 dark / white。只在用户明确选了「跟随系统」时才解析，
+// 手动选主题时始终以用户选择为准（不去猜系统偏好）。
+const _systemDark = (typeof window.matchMedia === 'function')
+  ? window.matchMedia('(prefers-color-scheme: dark)') : null;
+
+export function resolveTheme(themeName) {
+  if (themeName !== 'system') return themeName;
+  return (_systemDark && _systemDark.matches) ? 'dark' : 'white';
+}
+
 function applyTheme(themeName) {
-  state.currentTheme = themeName;
-  dom.theme.setAttribute('data-theme', themeName);
-  window.pywebview.api.settings_set('theme', themeName);
+  state.currentTheme = themeName;                       // 保存用户的选择（可能就是 'system'）
+  const resolved = resolveTheme(themeName);             // 落到 DOM 的永远是具体主题
+  dom.theme.setAttribute('data-theme', resolved);
+  if (window.pywebview && window.pywebview.api) {
+    window.pywebview.api.settings_set('theme', themeName);
+  }
 
   // 切换封面颜色以匹配主题
-  var coverColor = NotepadConfig._themeCoverColors[themeName];
+  var coverColor = NotepadConfig._themeCoverColors[resolved];
   if (coverColor) {
     NotepadConfig.coverColors = [coverColor];
   }
 
-  // 更新主题面板的选中状态
+  // 更新主题面板的选中状态（按用户选择高亮，而不是解析结果）
   $$('.theme-option').forEach(opt => {
     opt.classList.toggle('active', opt.dataset.theme === themeName);
   });
@@ -62,6 +75,13 @@ function applyTheme(themeName) {
     applyGlobalBackground();
 
   }
+}
+
+// 系统深浅色切换时，若正处在「跟随系统」就立刻跟着变（Windows 设置里改主题无需重启应用）
+if (_systemDark && typeof _systemDark.addEventListener === 'function') {
+  _systemDark.addEventListener('change', () => {
+    if (state.currentTheme === 'system') applyTheme('system');
+  });
 }
 
 async function applyGlobalBackground() {

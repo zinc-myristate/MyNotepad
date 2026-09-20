@@ -10,6 +10,7 @@ python-docx==1.2.0
 openpyxl==3.1.5
 opencv-contrib-python==5.0.0.93   # 仅供「自定义图标」智能裁切；缺失会降级居中裁切
 numpy==2.4.6
+pystray==0.19.5           # 系统托盘常驻（关窗后提醒仍生效）；PyInstaller 自带 hook-pystray
 
 # 测试依赖
 pytest==9.1.1

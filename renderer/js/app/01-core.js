@@ -21,7 +21,7 @@
 // ====== 全局数据常量命名空间 ======
 export var NotepadConfig = {
   // 各主题对应的封面颜色
-  _themeCoverColors: { white: '#7D8A6E', cream: '#B8844A', pink: '#C0766E', blue: '#5E7DA8' },
+  _themeCoverColors: { white: '#7D8A6E', cream: '#B8844A', pink: '#C0766E', blue: '#5E7DA8', dark: '#9CAE8B' },
   // 当前封面颜色（随主题切换）
   coverColors: ['#7D8A6E'],
   // 纸张样式定义
@@ -46,6 +46,8 @@ export const state = {
   currentTheme: 'white',
   globalBg: { type: 'color', value: '', opacity: 1.0, zoom: 100, posX: 50, posY: 50 },
   noteBgImagePath: null,    // 当前笔记自定义背景图片的绝对路径
+  searchQuery: '',          // 当前搜索词（列表摘要据此高亮）
+  searchSnippets: {},       // note_id -> 命中片段（后端 notes_search 返回，仅命中集）
 };
 
 // ====== DOM 引用 ======
