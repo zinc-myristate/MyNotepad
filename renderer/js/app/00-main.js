@@ -30,6 +30,7 @@ import './07-formula-security-dnd.js';
 import './08-appearance2.js';
 import './09-boot.js';
 import './10-trash.js';
+import './11-quick-switch.js';
 import '../quill/quill-deco.js';
 
 // ----- 对外接口 -----

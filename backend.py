@@ -320,6 +320,18 @@ def _decrypt_content(dek, stored, note_id):
 # ====== 数据库定期备份 ======
 BACKUP_DIR = os.path.join(DATA_DIR, "backups")
 
+def _next_sort_order(table='notes'):
+    """下一个排序值 = 当前最大值 + 1。
+
+    **不要写 `.fetchone()['m'] or -1`**：MAX 为 0 时 `0 or -1` 得到 -1，新行又拿到 0，
+    于是多行 sort_order 撞在一起，`ORDER BY sort_order DESC` 退化成同秒内随机——
+    「新建的排最前」「副本排最前」都会时灵时不灵。None（空表）才当 -1。
+    """
+    row = conn.execute("SELECT MAX(sort_order) AS m FROM %s" % table).fetchone()
+    m = row['m'] if row and row['m'] is not None else -1
+    return int(m) + 1
+
+
 def backup_database():
     """启动时调用（app.pyw 后台线程）：距最新备份 >24h 才备份，保留最近 7 份。
 
@@ -791,12 +803,73 @@ class Api:
             note['is_encrypted'] = False
         return note
 
+    def notes_duplicate(self, note_id):
+        """复制一篇笔记（含附件文件与标签）。
+
+        复制：正文、标签、笔记本、背景/纸张/封面等外观字段。
+        不复制：历史版本（那是原笔记的历史，副本从零开始更合理）、提醒（会造成双份打扰）、
+        置顶/收藏（副本突然插到最前面会让人困惑）、密码（副本默认明文——见下）。
+        加密笔记**只在已解锁时**才允许复制：锁定态读不到正文，与其复制出一串密文，
+        不如明确拒绝；复制出来的副本是明文（用户想加密可以自己再设一次密码）。
+        返回新笔记；源笔记不存在、或加密未解锁时返回 None。
+        """
+        row = conn.execute("SELECT * FROM notes WHERE id = ? AND deleted_at IS NULL",
+                           (note_id,)).fetchone()
+        if not row:
+            return None
+        src = dict(row)
+        content = src.get('content') or ''
+        if src.get('password_hash'):
+            dek = _unlocked_deks.get(note_id)
+            if dek is None:
+                return None
+            content = _decrypt_content(dek, content, note_id)
+            if content is None or content.startswith(ENC_PREFIX):
+                return None      # 解不开就不要复制出乱码
+        nid = str(uuid.uuid4())
+        max_order = _next_sort_order('notes')
+        title = (src.get('title') or '未命名笔记') + ' 副本'
+        conn.execute(
+            "INSERT INTO notes (id, title, content, bg_type, bg_value, bg_opacity, bg_zoom, "
+            "bg_pos_x, bg_pos_y, notebook_id, paper_style, paper_color, cover_type, cover_value, "
+            "sort_order) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
+            (nid, title, content, src.get('bg_type'), src.get('bg_value'), src.get('bg_opacity'),
+             src.get('bg_zoom'), src.get('bg_pos_x'), src.get('bg_pos_y'), src.get('notebook_id'),
+             src.get('paper_style'), src.get('paper_color'), src.get('cover_type'),
+             src.get('cover_value'), max_order)
+        )
+        # 标签一起复制
+        for r in conn.execute("SELECT tag_id FROM note_tags WHERE note_id = ?", (note_id,)).fetchall():
+            conn.execute("INSERT OR IGNORE INTO note_tags (note_id, tag_id) VALUES (?, ?)",
+                         (nid, r['tag_id']))
+        # 附件：行 + 文件都要复制。正文里的图片按 note_id 拼路径，不复制文件副本就会指向原笔记目录
+        atts = conn.execute("SELECT * FROM attachments WHERE note_id = ?", (note_id,)).fetchall()
+        if atts:
+            src_dir = os.path.join(ATTACH_DIR, note_id)
+            dst_dir = os.path.join(ATTACH_DIR, nid)
+            if os.path.isdir(src_dir):
+                os.makedirs(dst_dir, exist_ok=True)
+            for a in atts:
+                try:
+                    shutil.copy2(os.path.join(src_dir, a['filename']),
+                                 os.path.join(dst_dir, a['filename']))
+                except OSError:
+                    continue          # 文件缺失就只留行，别让整次复制失败
+                conn.execute(
+                    "INSERT INTO attachments (id, note_id, filename, original_name, mime_type, "
+                    "file_size, type) VALUES (?,?,?,?,?,?,?)",
+                    (str(uuid.uuid4()), nid, a['filename'], a['original_name'], a['mime_type'],
+                     a['file_size'], a['type'])
+                )
+        _fts_sync(nid, title, content)
+        conn.commit()
+        return self.notes_get(nid)
+
     def notes_create(self):
         nid = str(uuid.uuid4())
-        max_order = conn.execute("SELECT MAX(sort_order) as m FROM notes").fetchone()['m'] or -1
         conn.execute(
             "INSERT INTO notes (id, title, content, sort_order) VALUES (?, '未命名笔记', '', ?)",
-            (nid, max_order + 1)
+            (nid, _next_sort_order('notes'))
         )
         _fts_sync(nid, '未命名笔记', '')
         conn.commit()
@@ -1092,8 +1165,8 @@ class Api:
 
     def notebooks_create(self, name='新建笔记本'):
         nid = str(uuid.uuid4())
-        max_order = conn.execute("SELECT MAX(sort_order) as m FROM notebooks").fetchone()['m'] or -1
-        conn.execute("INSERT INTO notebooks (id, name, sort_order) VALUES (?, ?, ?)", (nid, name, max_order + 1))
+        conn.execute("INSERT INTO notebooks (id, name, sort_order) VALUES (?, ?, ?)",
+                     (nid, name, _next_sort_order('notebooks')))
         conn.commit()
         return dict(conn.execute("SELECT * FROM notebooks WHERE id = ?", (nid,)).fetchone())
 
@@ -1546,6 +1619,25 @@ class Api:
         return self.reminder_get(reminder_id)
 
     # ----- 导出笔记 -----
+    def _snapshot_db(self, dest):
+        """用 sqlite backup API 把当前库页级一致地快照到 dest（遇写入自动重启）"""
+        src = sqlite3.connect(DB_PATH)
+        dst = sqlite3.connect(dest)
+        try:
+            with dst:
+                src.backup(dst)
+        finally:
+            src.close()
+            dst.close()
+
+    @staticmethod
+    def _zip_dir(zf, base, arc):
+        if os.path.isdir(base):
+            for root, _, files in os.walk(base):
+                for fn in files:
+                    fp = os.path.join(root, fn)
+                    zf.write(fp, os.path.join(arc, os.path.relpath(fp, base)).replace('\\', '/'))
+
     def export_all_to_zip(self, save_path):
         """一键全库导出：sqlite backup API 快照 notes.db + attachments/ + backgrounds/ 归档为 zip。
         snapshot 页级一致（遇写入自动重启），归档内容与备份包同构，可直接替换 data/ 目录恢复。"""
@@ -1554,29 +1646,82 @@ class Api:
             tmp = tempfile.mkdtemp(prefix='mynotepad_export_')
             try:
                 snap = os.path.join(tmp, 'notes.db')
-                src = sqlite3.connect(DB_PATH)
-                dst = sqlite3.connect(snap)
-                try:
-                    with dst:
-                        src.backup(dst)
-                finally:
-                    src.close()
-                    dst.close()
+                self._snapshot_db(snap)
                 with zipfile.ZipFile(save_path, 'w', zipfile.ZIP_DEFLATED) as zf:
                     zf.write(snap, 'notes.db')
-                    for base, arc in ((ATTACH_DIR, 'attachments'),
-                                      (os.path.join(DATA_DIR, 'backgrounds'), 'backgrounds')):
-                        if os.path.isdir(base):
-                            for root, _, files in os.walk(base):
-                                for fn in files:
-                                    fp = os.path.join(root, fn)
-                                    zf.write(fp, os.path.join(arc, os.path.relpath(fp, base)).replace('\\', '/'))
+                    self._zip_dir(zf, ATTACH_DIR, 'attachments')
+                    self._zip_dir(zf, os.path.join(DATA_DIR, 'backgrounds'), 'backgrounds')
                 return True
             finally:
                 shutil.rmtree(tmp, ignore_errors=True)
         except Exception:
             applog.get_logger().exception("全库导出失败")
             return False
+
+    def export_notes_zip(self, save_path, notebook_id=None, tag_id=None):
+        """按范围导出为一个**可当库打开**的 zip（笔记 + 标签 + 附件 + 背景图）。
+
+        做法：先页级快照，再在**快照副本**里删掉范围外的笔记（FK 级联清 attachments/
+        note_tags/versions/reminders），然后只把范围内的附件与背景图打进 zip。
+        这样导出的包与全库备份同构——解压后替换 data/ 就是一个只含这些笔记的记事本，
+        而不是一堆需要手工整理的散文件。
+
+        返回导出的笔记数；无匹配返回 0；出错返回 None。
+        """
+        where, params = ["deleted_at IS NULL"], []
+        if notebook_id:
+            where.append("notebook_id = ?")
+            params.append(notebook_id)
+        if tag_id:
+            where.append("id IN (SELECT note_id FROM note_tags WHERE tag_id = ?)")
+            params.append(tag_id)
+        clause = " AND ".join(where)
+        try:
+            ids = [r['id'] for r in conn.execute(
+                "SELECT id FROM notes WHERE " + clause, params).fetchall()]
+            if not ids:
+                return 0
+            import zipfile
+            tmp = tempfile.mkdtemp(prefix='mynotepad_export_')
+            try:
+                snap = os.path.join(tmp, 'notes.db')
+                self._snapshot_db(snap)
+                # 在快照副本里裁剪：必须是另一个连接，且开 FK 才能级联清子表
+                c = sqlite3.connect(snap)
+                try:
+                    c.execute("PRAGMA foreign_keys=ON")
+                    marks = ','.join('?' * len(ids))
+                    c.execute("DELETE FROM notes WHERE id NOT IN (%s)" % marks, ids)
+                    c.commit()
+                finally:
+                    c.close()
+                with zipfile.ZipFile(save_path, 'w', zipfile.ZIP_DEFLATED) as zf:
+                    zf.write(snap, 'notes.db')
+                    for nid in ids:                      # 只打包这些笔记的附件目录
+                        self._zip_dir(zf, os.path.join(ATTACH_DIR, nid),
+                                      os.path.join('attachments', nid))
+                    bg = os.path.join(DATA_DIR, 'backgrounds')
+                    used_bg = set()
+                    for r in conn.execute(
+                            "SELECT bg_value FROM notes WHERE id IN (%s)" % marks, ids).fetchall():
+                        v = r['bg_value'] or ''
+                        if v and os.path.isfile(v):
+                            used_bg.add(os.path.basename(v))
+                    for name in used_bg:                 # 只带这些笔记用到的背景图
+                        fp = os.path.join(bg, name)
+                        if os.path.isfile(fp):
+                            zf.write(fp, 'backgrounds/' + name)
+                    zf.writestr('导出说明.txt',
+                                '本包含 %d 篇笔记（%s）。\n\n'
+                                '恢复方法：退出「我的记事本」，把这里的 notes.db、attachments/、\n'
+                                'backgrounds/ 覆盖到程序目录的 data/ 下即可（建议先备份原 data/）。\n'
+                                % (len(ids), '按笔记本' if notebook_id else '按标签'))
+                return len(ids)
+            finally:
+                shutil.rmtree(tmp, ignore_errors=True)
+        except Exception:
+            applog.get_logger().exception("按范围导出失败")
+            return None
 
     def export_note(self, title, html_content, format_type, save_path):
         """导出笔记为指定格式"""

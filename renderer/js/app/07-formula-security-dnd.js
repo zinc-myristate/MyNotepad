@@ -150,6 +150,84 @@ $('#btn-lock').addEventListener('click', async () => {
   }
 });
 
+// ====== 闲置自动锁定 ======
+// 解锁状态一直是"到手动锁定或关窗为止"。这里补上超时：闲置 N 分钟后自动锁回去，
+// 并把编辑器恢复成锁定态——只清后端密钥缓存而界面还显示明文，等于没锁。
+let _autoLockMinutes = 0;      // 0 = 关闭
+let _lastActivity = Date.now();
+let _autoLockTimer = null;
+
+function _markActivity() { _lastActivity = Date.now(); }
+
+/** 从设置读取超时值并刷新下拉框（面板打开/启动时调用） */
+export async function loadAutoLockSetting() {
+  try {
+    const v = await window.pywebview.api.settings_get('auto_lock_minutes');
+    _autoLockMinutes = parseInt(v || '0', 10) || 0;
+  } catch (e) {
+    _autoLockMinutes = 0;
+  }
+  const sel = $('#sel-autolock');
+  if (sel) sel.value = String(_autoLockMinutes);
+  return _autoLockMinutes;
+}
+
+async function _lockAllUnlocked() {
+  const ids = Object.keys(unlockedNotes);
+  if (!ids.length) return;
+  const activeWasUnlocked = state.activeNoteId && unlockedNotes[state.activeNoteId];
+  for (const id of ids) {
+    try {
+      await window.pywebview.api.note_lock(id);
+    } catch (e) { /* 单条失败不影响其余 */ }
+    delete unlockedNotes[id];
+  }
+  if (activeWasUnlocked) {
+    // 恢复成"加密未解锁"的样子：清空编辑器 + 隐藏编辑区（与 selectNote 的锁定分支一致）
+    await flushSave();
+    state.activeNoteId = null;
+    state.currentContent = '';
+    state.currentTitle = '';
+    if (state.quill) { state.quill.setContents([]); state.quill.enable(true); }
+    hideEditorUI();
+  }
+  updateLockButton();
+  renderNoteList();
+  showToast('已自动锁定（闲置 ' + _autoLockMinutes + ' 分钟）', { type: 'info' });
+}
+
+/** 启动自动锁定：记录活动时间 + 每分钟检查一次。返回清理函数（测试用）。 */
+export function initAutoLock() {
+  loadAutoLockSetting();
+  ['mousemove', 'keydown', 'wheel', 'click'].forEach(ev =>
+    document.addEventListener(ev, _markActivity, { passive: true }));
+  if (_autoLockTimer) clearInterval(_autoLockTimer);
+  _autoLockTimer = setInterval(() => {
+    if (!_autoLockMinutes) return;
+    if (Object.keys(unlockedNotes).length === 0) return;
+    // 密码面板开着时不锁：用户正在输密码，锁掉只会让流程错乱
+    const pwdOpen = ['password-panel', 'password-verify-panel'].some(id => {
+      const el = document.getElementById(id);
+      return el && el.style.display === 'flex';
+    });
+    if (pwdOpen) { _markActivity(); return; }
+    if (Date.now() - _lastActivity >= _autoLockMinutes * 60 * 1000) _lockAllUnlocked();
+  }, 60 * 1000);
+  return () => { if (_autoLockTimer) { clearInterval(_autoLockTimer); _autoLockTimer = null; } };
+}
+
+// 面板里的下拉框：改完立刻生效并存库
+const _autolockSel = $('#sel-autolock');
+if (_autolockSel) {
+  _autolockSel.addEventListener('change', async (e) => {
+    _autoLockMinutes = parseInt(e.target.value, 10) || 0;
+    try {
+      await window.pywebview.api.settings_set('auto_lock_minutes', String(_autoLockMinutes));
+    } catch (err) { /* 存不上也不影响本次会话生效 */ }
+    _markActivity();
+  });
+}
+
 export function updateLockButton() {
   const btn = $('#btn-lock');
   if (!btn) return;

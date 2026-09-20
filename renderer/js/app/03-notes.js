@@ -91,6 +91,7 @@ export function renderNoteList() {
     const svgStarOutline = ICONS['star-outline'];
     const svgTrash = ICONS.trash;
     const svgKey = ICONS.key;
+    const svgCopy = ICONS.copy;
     const pinIcon = note.is_pinned ? `<span class="note-status-icon pinned">${svgPin}</span>` : '';
     const favIcon = note.is_favorite ? `<span class="note-status-icon fav">${svgStar}</span>` : '';
     const lockIcon = note.has_password ? `<span class="note-status-icon locked">${svgLock}</span>` : '';
@@ -110,6 +111,7 @@ export function renderNoteList() {
           </div>
         </div>
         <button class="note-item-password" title="设置密码" data-pwd-id="${note.id}">${svgKey}</button>
+        <button class="note-item-copy" title="复制这篇笔记" data-copy-id="${note.id}">${svgCopy}</button>
         <button class="note-item-pin" title="${note.is_pinned ? '取消置顶' : '置顶'}" data-pin-id="${note.id}">${svgPin}</button>
         <button class="note-item-fav" title="${note.is_favorite ? '取消收藏' : '收藏'}" data-fav-id="${note.id}">${note.is_favorite ? svgStar : svgStarOutline}</button>
         <button class="note-item-delete" title="删除笔记" data-delete-id="${note.id}">${svgTrash}</button>
@@ -129,6 +131,8 @@ dom.noteList.addEventListener('click', (e) => {
   if (fav) { e.stopPropagation(); toggleFavoriteNote(fav.dataset.favId); return; }
   const pwd = e.target.closest('[data-pwd-id]');
   if (pwd) { e.stopPropagation(); handlePasswordButton(pwd.dataset.pwdId); return; }
+  const dup = e.target.closest('[data-copy-id]');
+  if (dup) { e.stopPropagation(); duplicateNote(dup.dataset.copyId); return; }
   const del = e.target.closest('[data-delete-id]');
   if (del) {
     e.stopPropagation();
@@ -141,9 +145,24 @@ dom.noteList.addEventListener('click', (e) => {
   if (item) verifyAndSelectNote(item.dataset.noteId);
 });
 
+/** 复制一篇笔记：正文/标签/笔记本/外观 + 附件文件一起复制（后端 notes_duplicate）。
+ * 加密笔记在锁定态会被后端拒绝——那种情况给出明确解释，而不是静默失败。 */
+async function duplicateNote(noteId) {
+  try {
+    const dup = await window.pywebview.api.notes_duplicate(noteId);
+    if (!dup) {
+      showToast('无法复制：加密笔记需要先解锁', { type: 'warn' });
+      return;
+    }
+    await loadNotes();                      // 副本会像新笔记一样排在最前
+    showToast('已复制为「' + (dup.title || '副本') + '」', { type: 'success' });
+  } catch (err) {
+    showToast('复制失败：' + (err.message || err), { type: 'error' });
+  }
+}
+
 // 密码按钮逻辑（原每行内联处理器，委托后独立成函数）
-async function handlePasswordButton(noteId) {
-  // 加密笔记需要先验证密码才能管理密码设置
+async function handlePasswordButton(noteId) {  // 加密笔记需要先验证密码才能管理密码设置
   const hasPwd = await window.pywebview.api.note_has_password(noteId);
   if (hasPwd && !unlockedNotes[noteId]) {
     // 先弹出验证面板，验证成功后自动打开密码管理面板

@@ -264,6 +264,7 @@ class AppApi:
     def notes_get(self, note_id, unlocked=False): return self.backend.notes_get(note_id, unlocked)
     def notes_create(self):
         return self.backend.notes_create()
+    def notes_duplicate(self, note_id): return self.backend.notes_duplicate(note_id)
     def notes_update(self, note_id, fields): return self.backend.notes_update(note_id, fields)
     def notes_delete(self, note_id): return self.backend.notes_delete(note_id)
     def notes_trash_list(self): return self.backend.notes_trash_list()
@@ -463,6 +464,25 @@ class AppApi:
         if self.backend.export_all_to_zip(save_path):
             return save_path
         return None
+
+    def export_scope(self, notebook_id=None, tag_id=None, label=''):
+        """按笔记本/标签导出为可当库打开的 zip。返回 (保存路径, 笔记数) 或 None"""
+        import tkinter.filedialog
+        from datetime import datetime
+        stem = ('我的记事本-%s' % (label or ('笔记本' if notebook_id else '标签'))
+                ).replace('/', '_').replace('\\', '_')
+        save_path = tkinter.filedialog.asksaveasfilename(
+            title="导出所选范围",
+            defaultextension='.zip',
+            filetypes=[('ZIP 压缩包', '*.zip')],
+            initialfile=f"{stem}-{datetime.now():%Y%m%d-%H%M%S}.zip"
+        )
+        if not save_path:
+            return None
+        n = self.backend.export_notes_zip(save_path, notebook_id=notebook_id, tag_id=tag_id)
+        if n is None:
+            return None
+        return {'path': save_path, 'count': n}
 
     def pick_and_preview_icon(self):
         """第一步：选择图片，智能裁切为 512×512 基准方图并生成默认圆角预览，不修改正式图标"""

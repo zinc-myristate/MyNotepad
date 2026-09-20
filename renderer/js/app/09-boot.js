@@ -6,10 +6,21 @@ import { initQuill, syncFontSizeDisplay } from './02-editor.js';
 import { loadNotes, previewHtmlFor, renderNoteList } from './03-notes.js';
 import { loadSettings } from './04-appearance.js';
 import { loadTagFilter } from './05-shell.js';
-import { initAllDrag, verifyAndSelectNote } from './07-formula-security-dnd.js';
+import { initAllDrag, initAutoLock, verifyAndSelectNote } from './07-formula-security-dnd.js';
 import { debounce, escapeHtml } from '../shared/utils.js';
 
 let currentNotebookId = null; // null = 全部笔记
+let _notebooks = [];          // 最近一次加载的笔记本列表（供名称查询，避免各处重复请求）
+
+/** 当前笔记本筛选（null = 全部）。供导出等"按当前范围"的功能读取 */
+export function getCurrentNotebookId() { return currentNotebookId; }
+
+/** 当前笔记本名字（未筛选返回空串）：导出时要告诉用户导的是哪一本 */
+export function getCurrentNotebookName() {
+  if (!currentNotebookId) return '';
+  const nb = _notebooks.find(n => n.id === currentNotebookId);
+  return nb ? nb.name : '';
+}
 
 /** 同步更新笔记本计数徽章（轻量，无需 API 调用） */
 export function updateNotebookCount() {
@@ -25,6 +36,7 @@ export function updateNotebookCount() {
 
 export async function loadNotebookBar() {
   const notebooks = await window.pywebview.api.notebooks_list();
+  _notebooks = notebooks;
   const dot = $('#notebook-dot');
   const name = $('#notebook-name');
 
@@ -231,6 +243,8 @@ async function initApp() {
 
   // 加载设置
   await loadSettings();
+  // 闲置自动锁定（读设置 + 起每分钟检查）
+  initAutoLock();
 
   // 加载笔记列表
   const notes = await loadNotes();

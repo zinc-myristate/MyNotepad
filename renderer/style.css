@@ -649,10 +649,10 @@ html, body {
 .note-status-icon.locked svg { color: var(--danger); }
 
 /* 密码/操作按钮 SVG */
-.note-item-password, .note-item-pin, .note-item-fav, .note-item-delete {
+.note-item-password, .note-item-copy, .note-item-pin, .note-item-fav, .note-item-delete {
   display: flex; align-items: center; justify-content: center;
 }
-.note-item-password svg, .note-item-pin svg,
+.note-item-password svg, .note-item-copy svg, .note-item-pin svg,
 .note-item-fav svg, .note-item-delete svg {
   pointer-events: none;
 }
@@ -667,6 +667,17 @@ html, body {
 }
 .note-item:hover .note-item-password { display: flex; }
 .note-item-password:hover { opacity: 1; background: var(--btn-hover-bg); }
+
+/* 复制按钮（与密码按钮同一套 hover 显隐） */
+.note-item-copy {
+  width: 20px; height: 20px; border: none; background: transparent;
+  cursor: pointer; border-radius: 4px;
+  display: none; align-items: center; justify-content: center;
+  flex-shrink: 0; opacity: 0.3; transition: all var(--transition-fast);
+  padding: 0;
+}
+.note-item:hover .note-item-copy { display: flex; }
+.note-item-copy:hover { opacity: 1; background: var(--btn-hover-bg); }
 
 /* 置顶/收藏/删除按钮 */
 .note-item-pin, .note-item-fav {
@@ -2576,6 +2587,57 @@ body.adaptive-bg .btn-solid-secondary {
 .reminder-item-btn:hover { background: var(--accent-soft); color: var(--accent-text); }
 .reminder-item-btn.danger:hover { background: #FED7D7; color: #E53E3E; }
 
+/* ====== 快速跳转（Ctrl+P）====== */
+.quick-switch-dialog {
+  align-self: flex-start;          /* 贴顶部：命令面板的位置习惯 */
+  margin-top: 8vh;
+  max-width: 560px;
+}
+.quick-switch-dialog .panel-body { padding: 12px; }
+.quick-switch-input {
+  width: 100%; box-sizing: border-box;
+  padding: 11px 14px;
+  font-size: var(--font-size-md); font-family: var(--font-sans);
+  color: var(--text-primary);
+  background: var(--input-bg);
+  border: 1px solid var(--input-border);
+  border-radius: var(--radius-sm);
+  outline: none;
+}
+.quick-switch-input:focus { border-color: var(--accent); box-shadow: 0 0 0 2px var(--accent-light); }
+.quick-switch-list {
+  margin-top: 10px; max-height: 46vh; overflow-y: auto;
+}
+.quick-switch-item {
+  display: flex; align-items: center; gap: 8px;
+  padding: 9px 12px; border-radius: var(--radius-sm);
+  cursor: pointer; font-size: var(--font-size-sm);
+  color: var(--text-primary);
+}
+.quick-switch-item .qs-title {
+  flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+}
+.quick-switch-item .qs-meta {
+  flex-shrink: 0; font-size: var(--font-size-xs); color: var(--text-muted);
+}
+.quick-switch-item.cursor { background: var(--accent-light); }
+.quick-switch-item.cursor .qs-title { color: var(--accent-dark); font-weight: 600; }
+.quick-switch-empty {
+  padding: 18px 12px; text-align: center;
+  font-size: var(--font-size-sm); color: var(--text-muted);
+}
+.quick-switch-item mark {
+  background: transparent; color: var(--accent-text); font-weight: 700;
+}
+
+/* 自动锁定设置行（密码面板底部） */
+.autolock-row {
+  display: flex; align-items: center; justify-content: space-between;
+  gap: 10px; margin-top: 16px; padding-top: 12px;
+  border-top: 1px solid var(--border-light);
+  font-size: var(--font-size-sm); color: var(--text-primary);
+}
+
 /* ====== 桌面集成设置（提醒列表面板底部）====== */
 .desktop-settings {
   margin-top: 14px; padding-top: 12px;
@@ -2597,6 +2659,10 @@ body.adaptive-bg .btn-solid-secondary {
 }
 .desktop-setting.disabled { opacity: 0.6; cursor: default; }
 .desktop-setting.disabled input { cursor: default; }
+
+/* 按范围导出：当前没有对应筛选时置灰（点了仍会给提示，不做成静默无反应） */
+.export-option.is-disabled { opacity: 0.55; }
+.export-option.is-disabled .export-desc { color: var(--danger); }
 /* 深色主题下的危险色（浅色 #FED7D7 在暗底上会刺眼） */
 [data-theme="dark"] .reminder-item-btn.danger:hover { background: var(--danger-light); color: var(--danger); }
 

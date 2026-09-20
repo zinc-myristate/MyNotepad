@@ -481,6 +481,21 @@
             <span class="export-desc">导出全部笔记数据库、附件与背景图</span>
           </div>
         </button>
+        <!-- 按范围导出：用「当前筛选」作为范围（所见即所得），没筛选时置灰并说明 -->
+        <button class="export-option" data-format="zip-notebook" id="export-scope-notebook">
+          <span class="export-icon"><svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round"><path d="M4 19.5A2.5 2.5 0 016.5 17H20"/><path d="M6.5 2H20v20H6.5A2.5 2.5 0 014 19.5v-15A2.5 2.5 0 016.5 2z"/></svg></span>
+          <div class="export-info">
+            <span class="export-name">导出当前笔记本</span>
+            <span class="export-desc" id="export-scope-notebook-desc">含附件，解压即可作为独立库打开</span>
+          </div>
+        </button>
+        <button class="export-option" data-format="zip-tag" id="export-scope-tag">
+          <span class="export-icon"><svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round"><path d="M20.59 13.41l-7.17 7.17a2 2 0 01-2.83 0L2 12V2h10l8.59 8.59a2 2 0 010 2.82z"/><line x1="7" y1="7" x2="7.01" y2="7"/></svg></span>
+          <div class="export-info">
+            <span class="export-name">导出当前标签</span>
+            <span class="export-desc" id="export-scope-tag-desc">含附件，解压即可作为独立库打开</span>
+          </div>
+        </button>
       </div>
     </div>
   </div>
@@ -608,6 +623,18 @@
   </div>
 </div>
 
+<!-- ====== 快速跳转面板（Ctrl+P）====== -->
+<div id="quick-switch-panel" class="panel-overlay" style="display:none;">
+  <div class="panel-dialog quick-switch-dialog">
+    <div class="panel-body">
+      <input id="quick-switch-input" class="quick-switch-input" type="text"
+             placeholder="输入标题的几个字跳转…（↑↓ 选择 · Enter 打开 · Esc 关闭）"
+             autocomplete="off" spellcheck="false">
+      <div id="quick-switch-list" class="quick-switch-list"></div>
+    </div>
+  </div>
+</div>
+
 <!-- ====== 回收站面板 ====== -->
 <div id="trash-panel" class="panel-overlay" style="display:none;">
   <div class="panel-dialog panel-dialog-wide">
@@ -641,6 +668,17 @@
       <p style="font-size:12px;color:var(--danger);margin-bottom:14px;">⚠ 笔记内容将使用此密码加密存储，忘记密码将无法恢复内容，请妥善保管。</p>
       <button id="btn-save-password" class="btn-new-note" style="width:100%;margin:0;">设置密码</button>
       <button id="btn-remove-password" class="btn-danger" style="width:100%;margin-top:8px;display:none;">移除密码</button>
+      <!-- 自动锁定：解锁后长时间无人操作就自动锁回去（0 = 关闭） -->
+      <div class="autolock-row">
+        <label for="sel-autolock">闲置后自动锁定</label>
+        <select id="sel-autolock" class="my-toolbar-select">
+          <option value="0">关闭</option>
+          <option value="5">5 分钟</option>
+          <option value="10">10 分钟</option>
+          <option value="30">30 分钟</option>
+          <option value="60">1 小时</option>
+        </select>
+      </div>
     </div>
   </div>
 </div>

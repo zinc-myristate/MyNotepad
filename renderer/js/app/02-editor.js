@@ -4,7 +4,8 @@
 // ====== ESM 依赖（原先靠全局作用域与加载顺序隐式依赖，现显式声明）======
 import { $, $$, closePanel, dom, openPanel, showInfoDialog, showToast, state } from './01-core.js';
 import { debouncedSave, flushSave, loadNotes, renderNoteList, setSaveDot } from './03-notes.js';
-import { _stickerSyncTimer, set_stickerSyncTimer } from './05-shell.js';
+import { getCurrentNotebookId, getCurrentNotebookName } from './09-boot.js';
+import { _stickerSyncTimer, getCurrentTagFilter, getCurrentTagName, set_stickerSyncTimer } from './05-shell.js';
 import { unlockedNotes } from './07-formula-security-dnd.js';
 import { syncStickersToOverlay } from '../quill/quill-deco.js';
 
@@ -888,8 +889,45 @@ $('#btn-delete-table').addEventListener('click', () => {
 const exportPanel = $('#export-panel');
 $('#btn-export').addEventListener('click', () => {
   // 无笔记也允许打开面板（「备份全部数据」zip 导出不依赖当前笔记）
+  refreshScopeExportLabels();
   openPanel(exportPanel);
 });
+
+/** 按范围导出用的是「当前筛选」（所见即所得）：没在筛选就把按钮置灰并说明原因，
+ *  而不是让用户点开一个保存对话框才发现导错了范围。 */
+function refreshScopeExportLabels() {
+  const nbBtn = $('#export-scope-notebook');
+  const tagBtn = $('#export-scope-tag');
+  const nbDesc = $('#export-scope-notebook-desc');
+  const tagDesc = $('#export-scope-tag-desc');
+  const nbId = getCurrentNotebookId();
+  const tagId = getCurrentTagFilter();
+  const nbName = getCurrentNotebookName();
+  const tagName = getCurrentTagName();
+
+  [nbBtn, tagBtn].forEach(b => { if (b) b.classList.remove('is-disabled'); });
+
+  if (nbBtn) {
+    const ok = !!nbId;
+    nbBtn.classList.toggle('is-disabled', !ok);
+    nbBtn.title = ok ? ('导出笔记本「' + (nbName || '当前笔记本') + '」') : '先在侧边栏选择一个笔记本';
+    if (nbDesc) {
+      nbDesc.textContent = ok
+        ? ('当前：' + (nbName || '所选笔记本') + '（含附件）')
+        : '先在侧边栏选择一个笔记本';
+    }
+  }
+  if (tagBtn) {
+    const ok = !!tagId;
+    tagBtn.classList.toggle('is-disabled', !ok);
+    tagBtn.title = ok ? ('导出标签「' + (tagName || '当前标签') + '」') : '先按标签筛选';
+    if (tagDesc) {
+      tagDesc.textContent = ok
+        ? ('当前：' + (tagName || '所选标签') + '（含附件）')
+        : '先按标签筛选';
+    }
+  }
+}
 
 // 导出前把外置图片引用解析回 data URI（占位图/file:// 直通会导致导出文件破图；html/docx/xlsx 共用）
 async function resolveExportImages(htmlContent) {
@@ -917,6 +955,26 @@ $$('.export-option').forEach(btn => {
       try {
         const p = await window.pywebview.api.export_all();
         if (p) showToast('备份包已导出', { type: 'success' });
+      } catch (err) {
+        showToast('导出失败：' + (err.message || err), { type: 'error' });
+      }
+      return;
+    }
+
+    // 按当前筛选范围导出（笔记本 / 标签）：没在筛选就提示，不让用户导错范围
+    if (format === 'zip-notebook' || format === 'zip-tag') {
+      const byTag = format === 'zip-tag';
+      const scopeId = byTag ? getCurrentTagFilter() : getCurrentNotebookId();
+      const scopeName = byTag ? getCurrentTagName() : getCurrentNotebookName();
+      if (!scopeId) {
+        showToast(byTag ? '请先按标签筛选' : '请先在侧边栏选择笔记本', { type: 'warn' });
+        return;
+      }
+      try {
+        const r = await window.pywebview.api.export_scope(
+          byTag ? null : scopeId, byTag ? scopeId : null, scopeName);
+        if (r && r.count === 0) showToast('这个范围里还没有笔记', { type: 'warn' });
+        else if (r) showToast('已导出 ' + r.count + ' 篇笔记', { type: 'success' });
       } catch (err) {
         showToast('导出失败：' + (err.message || err), { type: 'error' });
       }

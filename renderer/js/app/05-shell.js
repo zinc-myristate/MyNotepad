@@ -21,6 +21,16 @@ window.addEventListener('beforeunload', async () => {
 });
 
 // ====== 键盘快捷键 ======
+// 当前标签筛选（供导出等功能读取"用户现在看到的范围"）
+export function getCurrentTagFilter() { return currentTagFilter; }
+
+/** 当前标签名（未筛选返回空串） */
+export function getCurrentTagName() {
+  if (!currentTagFilter) return '';
+  const tag = _tags.find(t => t.id === currentTagFilter);
+  return tag ? tag.name : '';
+}
+
 // 正在输入字段（标题/搜索/面板输入/Quill 编辑区）时，Ctrl+D/E 不接管（避免吃掉编辑器内的删除/其他默认行为）
 function inTypingField() {
   const el = document.activeElement;
@@ -69,6 +79,7 @@ document.addEventListener('keydown', async (e) => {
 
 // ====== 标签系统 ======
 let currentTagFilter = null; // 当前筛选的标签 ID
+let _tags = [];              // 最近一次加载的标签列表（供名称查询）
 
 export async function loadTagBar() {
   if (!state.activeNoteId) { $('#tag-bar').classList.add('hidden'); return; }
@@ -95,6 +106,7 @@ export async function loadTagBar() {
 
 export async function loadTagFilter() {
   const tags = await window.pywebview.api.tags_list();
+  _tags = tags;
   const container = $('#tag-filter-list');
   container.innerHTML = '';
   if (tags.length === 0) { $('#tag-filter').style.display = 'none'; return; }

@@ -117,10 +117,10 @@ const ALL_PANEL_IDS = [
   'version-preview-panel','reminder-panel','reminder-list-panel','trash-panel',
   'password-panel','password-verify-panel',
   'math-panel','calendar-panel','divider-panel','sticker-panel','paper-panel',
-  'link-panel','icon-preview-panel',
+  'link-panel','icon-preview-panel','quick-switch-panel',
 ];
 
-function closeAllPanels() {
+export function closeAllPanels() {
   ALL_PANEL_IDS.forEach(id => {
     const p = document.getElementById(id);
     if (p) p.style.display = 'none';
