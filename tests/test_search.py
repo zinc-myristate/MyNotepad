@@ -202,3 +202,67 @@ class TestPreview:
         n = [x for x in api.notes_list() if x['id'] == nid][0]
         assert n.get('notebook_id') == nb, '列表必须带上 notebook_id'
         assert len([x for x in api.notes_list() if x['notebook_id'] == nb]) == 1
+
+
+class TestSearchScope:
+    """范围语法：tag: / notebook: / in:trash，可与关键词组合"""
+
+    @pytest.fixture
+    def scoped(self, api):
+        nb_a = api.notebooks_create('课程A')['id']
+        nb_b = api.notebooks_create('课程B')['id']
+        t_math = api.tags_create('数学')['id']
+        t_food = api.tags_create('菜谱')['id']
+        out = {}
+        for key, title, body, nb in (('a', '极限与连续', '夹逼定理的证明', nb_a),
+                                     ('b', '矩阵分解', '特征值与特征向量', nb_a),
+                                     ('c', '红烧肉做法', '先焯水再炒糖色', nb_b)):
+            nid = api.notes_create()['id']
+            api.notes_update(nid, {'title': title, 'content': delta(body), 'notebook_id': nb})
+            out[key] = nid
+        api.note_tags_set(out['a'], [t_math])
+        api.note_tags_set(out['b'], [t_math])
+        api.note_tags_set(out['c'], [t_food])
+        out.update({'nb_a': nb_a, 'nb_b': nb_b, 't_math': t_math, 't_food': t_food})
+        return out
+
+    def test_tag_scope_alone(self, api, scoped):
+        r = api.notes_search('tag:数学')
+        assert set(r['ids']) == {scoped['a'], scoped['b']}
+
+    def test_tag_scope_with_keyword(self, api, scoped):
+        r = api.notes_search('tag:数学 夹逼')
+        assert set(r['ids']) == {scoped['a']}, '范围与关键词要同时满足'
+
+    def test_notebook_scope_by_name_and_alias(self, api, scoped):
+        assert set(api.notes_search('notebook:课程A')['ids']) == {scoped['a'], scoped['b']}
+        assert set(api.notes_search('nb:课程B')['ids']) == {scoped['c']}
+
+    def test_notebook_scope_by_id(self, api, scoped):
+        assert set(api.notes_search('notebook:' + scoped['nb_a'])['ids']) == \
+            {scoped['a'], scoped['b']}
+
+    def test_unknown_scope_value_returns_empty(self, api, scoped):
+        assert api.notes_search('tag:不存在')['ids'] == []
+        assert api.notes_search('notebook:不存在')['ids'] == []
+
+    def test_trash_scope_only_trashed(self, api, scoped):
+        api.notes_delete(scoped['a'])
+        r = api.notes_search('in:trash')
+        assert set(r['ids']) == {scoped['a']}, '只应列出回收站里的那篇'
+        assert scoped['a'] not in set(api.notes_search('')['ids'])
+
+    def test_trash_scope_with_keyword_uses_title(self, api, scoped):
+        api.notes_delete(scoped['a'])
+        assert set(api.notes_search('in:trash 极限')['ids']) == {scoped['a']}
+        assert api.notes_search('in:trash 矩阵')['ids'] == []
+
+    def test_snippet_still_provided_for_scoped_hits(self, api, scoped):
+        r = api.notes_search('tag:数学 夹逼')
+        assert '夹逼' in r['snippets'][scoped['a']]
+
+    def test_unknown_prefix_is_treated_as_text(self, api, scoped):
+        """不认识的 a:b 不能被吞掉——用户可能真的想搜这个词"""
+        nid = api.notes_create()['id']
+        api.notes_update(nid, {'title': 'T', 'content': delta('版本 v1:2 的说明')})
+        assert nid in set(api.notes_search('v1:2')['ids'])

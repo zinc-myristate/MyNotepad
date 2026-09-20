@@ -181,6 +181,49 @@ class TestClosingHandlerWithTray:
         assert win.calls.count('hide') == 2, '第二次关闭应同样隐藏（状态已回到 idle）'
 
 
+class TestGlobalHotkey:
+    """全局快速记录热键（desktop.GlobalHotkey）。
+
+    真机注册在测试里不可靠（可能被占用、也没有桌面会话），所以这里只锁**接口契约**：
+    未启动时 started=False 且不抛、stop() 幂等；真实注册留给打包后的手工验证。
+    """
+
+    def test_starts_unstarted_and_stop_is_safe(self):
+        import desktop
+        calls = []
+        hk = desktop.GlobalHotkey(lambda: calls.append(1))
+        assert hk.started is False
+        hk.stop()                       # 还没启动就 stop 不能抛
+        assert calls == []
+
+    def test_callback_is_not_called_before_start(self):
+        import desktop
+        hk = desktop.GlobalHotkey(lambda: None)
+        assert hk._callback is not None and hk.started is False
+
+    def test_registration_conflict_reports_error(self, monkeypatch):
+        """注册失败（被占用）时必须 started=False 并把原因写进 error，而不是静默成功"""
+        import ctypes
+
+        import desktop
+        monkeypatch.setattr(ctypes.windll.user32, 'RegisterHotKey',
+                            lambda *a: 0, raising=False)
+        hk = desktop.GlobalHotkey(lambda: None)
+        hk.start()
+        hk.join(timeout=3)
+        assert hk.started is False
+        assert hk.error, '失败必须留下原因（界面据此提示用户）'
+
+    def test_hotkey_default_is_off(self):
+        """默认不抢系统热键：设置项缺省必须是关（'0'）"""
+        import os
+
+        from conftest import PROJECT_ROOT
+        src = open(os.path.join(PROJECT_ROOT, 'app.pyw'), encoding='utf-8').read()
+        assert "HOTKEY_KEY = 'quick_hotkey'" in src
+        assert "settings_get(HOTKEY_KEY) or '0'" in src, '默认值必须是关'
+
+
 class TestTrayKey:
     def test_tray_key_and_default(self):
         """托盘开关的键名与默认值（默认必须为开，否则提醒默认失效）"""

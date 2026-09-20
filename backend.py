@@ -8,6 +8,7 @@ import hashlib
 import hmac
 import json
 import os
+import re
 import shutil
 import sqlite3
 import sys
@@ -330,6 +331,303 @@ def _next_sort_order(table='notes'):
     row = conn.execute("SELECT MAX(sort_order) AS m FROM %s" % table).fetchone()
     m = row['m'] if row and row['m'] is not None else -1
     return int(m) + 1
+
+
+def _parse_search_scope(q):
+    """把查询里的范围前缀拆出来：`tag:数学`、`notebook:课程A`（或 nb:）、`in:trash`。
+
+    返回 (剩余的自由文本, {'tag':.., 'notebook':.., 'trash':True})。
+    不认识的前缀（例如用户真想搜 "a:b"）原样留在自由文本里，不做吞掉。
+    """
+    scope, words = {}, []
+    for tok in (q or '').split():
+        if ':' in tok:
+            k, _, v = tok.partition(':')
+            k = k.lower()
+            if k == 'tag' and v:
+                scope['tag'] = v
+                continue
+            if k in ('notebook', 'nb') and v:
+                scope['notebook'] = v
+                continue
+            if k == 'in' and v.lower() in ('trash', '回收站'):
+                scope['trash'] = True
+                continue
+        words.append(tok)
+    return ' '.join(words), scope
+
+
+def _scope_note_ids(scope):
+    """按范围取出候选笔记 id（tag/notebook 支持按名字或 id 匹配；trash 决定看回收站还是正常笔记）"""
+    where = ["n.deleted_at IS " + ("NOT NULL" if scope.get('trash') else "NULL")]
+    params = []
+    if scope.get('tag'):
+        where.append("n.id IN (SELECT nt.note_id FROM note_tags nt JOIN tags t ON t.id = nt.tag_id "
+                     "WHERE t.id = ? OR t.name = ?)")
+        params += [scope['tag'], scope['tag']]
+    if scope.get('notebook'):
+        where.append("(n.notebook_id = ? OR n.notebook_id IN "
+                     "(SELECT id FROM notebooks WHERE name = ?))")
+        params += [scope['notebook'], scope['notebook']]
+    rows = conn.execute("SELECT n.id FROM notes n WHERE " + " AND ".join(where), params).fetchall()
+    return [r['id'] for r in rows]
+
+
+def _trash_title_ids(text):
+    """回收站里的笔记已被移出 FTS 索引，正文搜索只能退化为标题 LIKE（够用来找回来删掉的那篇）"""
+    esc = text.replace('\\', '\\\\').replace('%', '\\%').replace('_', '\\_')
+    rows = conn.execute(
+        "SELECT id FROM notes WHERE deleted_at IS NOT NULL AND title LIKE ? ESCAPE '\\'",
+        ('%' + esc + '%',)).fetchall()
+    return [r['id'] for r in rows]
+
+
+def _md_inline_escape(text):
+    """把纯文本里的 Markdown 元字符转义，避免正文里的 * 和 _ 被当成格式"""
+    out = []
+    for ch in text or '':
+        if ch in '\\`*_{}[]()#+-.!|':
+            out.append('\\' + ch)
+        else:
+            out.append(ch)
+    return ''.join(out)
+
+
+def _md_inline(pieces):
+    """(文本, 行内属性) 列表 → Markdown 行内文本"""
+    out = []
+    for text, attrs in pieces:
+        s = _md_inline_escape(text)
+        if attrs.get('code'):
+            s = '`' + text + '`'          # 代码里的元字符不该转义
+        else:
+            if attrs.get('bold'):
+                s = '**' + s + '**'
+            if attrs.get('italic'):
+                s = '*' + s + '*'
+            if attrs.get('strike'):
+                s = '~~' + s + '~~'
+        if attrs.get('link'):
+            s = '[%s](%s)' % (s, attrs['link'])
+        out.append(s)
+    return ''.join(out)
+
+
+def _md_embed(kind, value):
+    """嵌入对象 → Markdown 片段（图片用占位，真正的路径由调用方替换）"""
+    if kind == 'image':
+        name = value.get('filename') or value.get('storedPath') or ''
+        return '\x00IMG:%s\x00' % name
+    if kind == 'math-formula':
+        return '$%s$' % (value.get('latex') or value.get('formula') or '')
+    if kind == 'attachment':
+        return '📎 %s' % (value.get('originalName') or value.get('filename') or '附件')
+    if kind == 'divider':
+        return '\n---\n'
+    if kind in ('sticker', 'stamp'):
+        return ''
+    return ''
+
+
+def _delta_to_markdown(content, resolve_image=None):
+    """Quill Delta JSON → Markdown（标题/列表/待办/引用/代码块 + 行内格式 + 图片/公式）。
+
+    Quill 的行属性挂在**含换行符的那个 op** 上，所以按 op 切行、用换行所在 op 的属性
+    作为整行属性。图片需要调用方提供 resolve_image(文件名) → 相对路径（导出时会把图复制到
+    同级 assets 目录），拿不到路径就退化成文件名文本。
+    """
+    if not content:
+        return ''
+    try:
+        data = json.loads(content)
+    except Exception:
+        return content or ''
+    ops = data.get('ops', []) if isinstance(data, dict) else data
+    if not isinstance(ops, list):
+        return ''
+
+    lines, cur = [], {'pieces': [], 'attrs': {}}
+    for op in ops:
+        if not isinstance(op, dict):
+            continue
+        ins, attrs = op.get('insert'), op.get('attributes') or {}
+        if isinstance(ins, dict):
+            kind = next(iter(ins))
+            cur['pieces'].append((_md_embed(kind, ins[kind]), {'raw': True}))
+            continue
+        if not isinstance(ins, str):
+            continue
+        parts = ins.split('\n')
+        for i, part in enumerate(parts):
+            if part:
+                cur['pieces'].append((part, attrs))
+            if i < len(parts) - 1:
+                cur['attrs'] = attrs
+                lines.append(cur)
+                cur = {'pieces': [], 'attrs': {}}
+    if cur['pieces']:
+        lines.append(cur)
+
+    out = []
+    code_buf = []          # 连续的多行代码块要合并成一个 ``` 块
+
+    def _flush_code():
+        if code_buf:
+            out.append('```\n' + '\n'.join(code_buf) + '\n```')
+            code_buf.clear()
+
+    for line in lines:
+        attrs = line['attrs'] or {}
+        body = ''.join(t if a.get('raw') else _md_inline([(t, a)])
+                       for t, a in line['pieces'])
+        if attrs.get('code-block'):
+            # Quill 把多行代码块编码成**一个** op（内部含换行）并带 code-block 属性，
+            # 所以按行看会看到连续多行都带该属性——必须合并成一个围栏块。
+            code_buf.append(''.join(t for t, _ in line['pieces']))
+            continue
+        _flush_code()
+        prefix = ''
+        header = attrs.get('header')
+        lst = attrs.get('list')
+        if header:
+            prefix = '#' * int(header) + ' '
+        elif lst == 'ordered':
+            prefix = '1. '
+        elif lst == 'bullet':
+            prefix = '- '
+        elif lst == 'checked':
+            prefix = '- [x] '
+        elif lst == 'unchecked':
+            prefix = '- [ ] '
+        elif attrs.get('blockquote'):
+            prefix = '> '
+        out.append(prefix + body)
+    _flush_code()
+    md = '\n'.join(out).rstrip() + '\n'
+    if resolve_image:
+        def _sub(m):
+            path = resolve_image(m.group(1))
+            return ('![](%s)' % path) if path else _md_inline_escape(m.group(1))
+        md = re.sub('\x00IMG:(.*?)\x00', _sub, md)
+    else:
+        md = re.sub('\x00IMG:(.*?)\x00', lambda m: _md_inline_escape(m.group(1)), md)
+    return md
+
+
+_MD_HEADING = re.compile(r'^(#{1,6})\s+(.*)$')
+_MD_UL = re.compile(r'^\s*[-*+]\s+(.*)$')
+_MD_TODO = re.compile(r'^\s*[-*+]\s+\[([ xX])\]\s*(.*)$')
+_MD_OL = re.compile(r'^\s*\d+[.)]\s+(.*)$')
+_MD_QUOTE = re.compile(r'^\s*>\s?(.*)$')
+_MD_FENCE = re.compile(r'^\s*```')
+
+
+def _md_parse_inline(text):
+    """Markdown 行内 → Delta ops。支持 **粗** / *斜* / ~~删~~ / `码` / [文字](链接)。"""
+    ops, i, n = [], 0, len(text)
+    buf = []
+
+    def flush(attrs=None):
+        if buf:
+            ops.append({'insert': ''.join(buf)} if not attrs else
+                       {'insert': ''.join(buf), 'attributes': attrs})
+            buf.clear()
+
+    while i < n:
+        ch = text[i]
+        if ch == '\\' and i + 1 < n:
+            buf.append(text[i + 1]); i += 2; continue
+        if text.startswith('**', i):
+            end = text.find('**', i + 2)
+            if end > 0:
+                inner = text[i + 2:end]
+                flush()
+                sub = _md_parse_inline(inner)
+                for op in sub:
+                    a = dict(op.get('attributes') or {}); a['bold'] = True
+                    ops.append({'insert': op['insert'], 'attributes': a})
+                i = end + 2; continue
+        if ch == '`':
+            end = text.find('`', i + 1)
+            if end > 0:
+                flush()
+                ops.append({'insert': text[i + 1:end], 'attributes': {'code': True}})
+                i = end + 1; continue
+        if text.startswith('~~', i):
+            end = text.find('~~', i + 2)
+            if end > 0:
+                flush()
+                ops.append({'insert': text[i + 2:end], 'attributes': {'strike': True}})
+                i = end + 2; continue
+        if ch in '*_':
+            end = text.find(ch, i + 1)
+            if end > 0:
+                flush()
+                ops.append({'insert': text[i + 1:end], 'attributes': {'italic': True}})
+                i = end + 1; continue
+        if ch == '[':
+            m = re.match(r'\[(.*?)\]\((.*?)\)', text[i:])
+            if m:
+                flush()
+                ops.append({'insert': m.group(1), 'attributes': {'link': m.group(2)}})
+                i += m.end(); continue
+        buf.append(ch); i += 1
+    flush()
+    return ops or [{'insert': ''}]
+
+
+def markdown_to_delta(md_text):
+    """Markdown → Quill Delta JSON（标题/列表/待办/引用/代码块/水平线 + 行内格式）。
+
+    只做常用子集：解析不出来的行当普通段落，不会丢内容（宁可少格式，不可少字）。
+    """
+    lines = (md_text or '').replace('\r\n', '\n').replace('\r', '\n').split('\n')
+    ops, i = [], 0
+    while i < len(lines):
+        line = lines[i]
+        if _MD_FENCE.match(line):
+            i += 1
+            block = []
+            while i < len(lines) and not _MD_FENCE.match(lines[i]):
+                block.append(lines[i]); i += 1
+            i += 1
+            ops.append({'insert': '\n'.join(block) + '\n',
+                        'attributes': {'code-block': True}})
+            continue
+        if line.strip() in ('---', '***', '___'):
+            ops.append({'insert': '\n'})       # 水平线：Quill 里退化为空行
+            i += 1; continue
+        m = _MD_HEADING.match(line)
+        if m:
+            ops.extend(_md_parse_inline(m.group(2)))
+            ops.append({'insert': '\n', 'attributes': {'header': len(m.group(1))}})
+            i += 1; continue
+        m = _MD_TODO.match(line)
+        if m:
+            ops.extend(_md_parse_inline(m.group(2)))
+            ops.append({'insert': '\n',
+                        'attributes': {'list': 'checked' if m.group(1).lower() == 'x' else 'unchecked'}})
+            i += 1; continue
+        m = _MD_UL.match(line)
+        if m:
+            ops.extend(_md_parse_inline(m.group(1)))
+            ops.append({'insert': '\n', 'attributes': {'list': 'bullet'}})
+            i += 1; continue
+        m = _MD_OL.match(line)
+        if m:
+            ops.extend(_md_parse_inline(m.group(1)))
+            ops.append({'insert': '\n', 'attributes': {'list': 'ordered'}})
+            i += 1; continue
+        m = _MD_QUOTE.match(line)
+        if m:
+            ops.extend(_md_parse_inline(m.group(1)))
+            ops.append({'insert': '\n', 'attributes': {'blockquote': True}})
+            i += 1; continue
+        if line.strip():
+            ops.extend(_md_parse_inline(line))
+        ops.append({'insert': '\n'})
+        i += 1
+    return json.dumps({'ops': ops}, ensure_ascii=False)
 
 
 def backup_database():
@@ -997,6 +1295,7 @@ class Api:
         """全文搜索：≥3 字符且 FTS5 可用走 trigram；否则 LIKE 回退（标题 + 明文笔记正文）。
         加密笔记任何情况下只搜标题。
 
+        支持范围前缀：`tag:数学` / `notebook:课程A`（或 `nb:`）/ `in:trash`，可与关键词组合。
         返回 {'ids': [...], 'title_hits': [...], 'snippets': {note_id: 片段}}
         snippets 是命中处 ±40 字的明文片段，供列表显示「为什么这条命中了」并高亮关键词；
         标题命中（正文里找不到关键词）时退化为正文开头。加密笔记恒为空串——密文/明文都不过桥。
@@ -1004,6 +1303,31 @@ class Api:
         q = (query or '').strip()
         if not q:
             return {'ids': [], 'title_hits': [], 'snippets': {}}
+        text, scope = _parse_search_scope(q)
+        if scope:
+            return self._search_in_scope(text, scope, q)
+        return self._search_plain(q)
+
+    def _search_in_scope(self, text, scope, raw):
+        """范围搜索：先拿范围内的候选，再与关键词命中集求交（无关键词则整个范围都算命中）"""
+        scoped = _scope_note_ids(scope)
+        if not text:
+            ids = scoped
+            hits = []
+        elif scope.get('trash'):
+            # 回收站不在 FTS 索引里，只能用标题 LIKE
+            found = set(_trash_title_ids(text))
+            ids = [i for i in scoped if i in found]
+            hits = list(ids)
+        else:
+            res = self._search_plain(text)
+            found = set(res['ids'])
+            ids = [i for i in scoped if i in found]
+            hits = [i for i in ids if i in set(res['title_hits'])]
+        return {'ids': ids, 'title_hits': hits, 'snippets': self._snippets_for(ids, text or '')}
+
+    def _search_plain(self, q):
+        """不带范围前缀的关键词搜索（原逻辑）"""
         if FTS_AVAILABLE and len(q) >= 3:
             try:
                 phrase = '"' + q.replace('"', '""') + '"'
@@ -1764,6 +2088,76 @@ class Api:
                 shutil.rmtree(tmp, ignore_errors=True)
         except Exception:
             applog.get_logger().exception("按范围导出失败")
+            return None
+
+    def export_note_markdown(self, note_id, save_path):
+        """导出单篇为 Markdown：图片复制到同级 `<文件名>.assets/` 并写成相对路径。
+
+        为什么要复制图片：正文里的图片存在 attachments/<note_id>/ 下，只写绝对路径的 .md
+        换台机器就全断图；复制到同级目录后整个文件夹可以整体带走。
+        加密笔记只在已解锁时可导出（与复制笔记同一条规则）。
+        """
+        try:
+            row = conn.execute("SELECT * FROM notes WHERE id = ? AND deleted_at IS NULL",
+                               (note_id,)).fetchone()
+            if not row:
+                return False
+            note = dict(row)
+            content = note.get('content') or ''
+            if note.get('password_hash'):
+                dek = _unlocked_deks.get(note_id)
+                if dek is None:
+                    return False
+                content = _decrypt_content(dek, content, note_id) or ''
+            base = os.path.splitext(save_path)[0]
+            assets_dir = base + '.assets'
+            used = {}
+
+            def resolve(name):
+                if not name:
+                    return ''
+                src = os.path.join(ATTACH_DIR, note_id, name)
+                if not os.path.isfile(src):
+                    return ''
+                if not os.path.isdir(assets_dir):
+                    os.makedirs(assets_dir, exist_ok=True)
+                dest = os.path.join(assets_dir, name)
+                if name not in used:
+                    shutil.copy2(src, dest)
+                    used[name] = True
+                return os.path.basename(assets_dir) + '/' + name
+
+            md = _delta_to_markdown(content, resolve_image=resolve)
+            title = note.get('title') or '未命名笔记'
+            with open(save_path, 'w', encoding='utf-8') as f:
+                if not md.lstrip().startswith('#'):
+                    f.write('# %s\n\n' % title)     # 标题补成一级标题，导出即可读
+                f.write(md)
+            return True
+        except Exception:
+            applog.get_logger().exception("Markdown 导出失败")
+            return False
+
+    def import_markdown(self, md_text, title=None, notebook_id=None):
+        """把 Markdown 文本导入为一篇新笔记，返回新笔记。"""
+        try:
+            content = markdown_to_delta(md_text)
+            if not title:
+                for line in (md_text or '').splitlines():
+                    if line.strip():
+                        title = re.sub(r'^#{1,6}\s*', '', line.strip())[:60]
+                        break
+            nid = str(uuid.uuid4())
+            conn.execute(
+                "INSERT INTO notes (id, title, content, notebook_id, sort_order) "
+                "VALUES (?, ?, ?, ?, ?)",
+                (nid, title or '导入的笔记', content, notebook_id or None,
+                 _next_sort_order('notes')))
+            _fts_sync(nid, title or '导入的笔记', content)
+            conn.commit()
+            return self.notes_get(nid)
+        except Exception:
+            applog.get_logger().exception("Markdown 导入失败")
             return None
 
     def export_note(self, title, html_content, format_type, save_path):

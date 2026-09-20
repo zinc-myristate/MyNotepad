@@ -394,7 +394,16 @@ class AppApi:
             'tray': (self.backend.settings_get(TRAY_KEY) or '1') != '0',
             'autostart': desktop.autostart_enabled(),
             'autostart_supported': desktop.autostart_supported(),
+            'hotkey': (self.backend.settings_get(HOTKEY_KEY) or '0') == '1',
+            'hotkey_supported': sys.platform.startswith('win'),
         }
+
+    def set_hotkey_enabled(self, enabled):
+        self.backend.settings_set(HOTKEY_KEY, '1' if enabled else '0')
+        apply = _HOTKEY_CTL.get('apply')
+        if apply is not None:
+            return apply(bool(enabled))     # 立即生效，返回是否真的注册上了
+        return bool(enabled)
 
     def set_tray_enabled(self, enabled):
         self.backend.settings_set(TRAY_KEY, '1' if enabled else '0')
@@ -469,6 +478,38 @@ class AppApi:
         if self.backend.export_all_to_zip(save_path):
             return save_path
         return None
+
+    def export_markdown(self, note_id, title=''):
+        """导出单篇为 Markdown（图片会复制到同级 .assets 目录）"""
+        import tkinter.filedialog
+        save_path = tkinter.filedialog.asksaveasfilename(
+            title="导出为 Markdown",
+            defaultextension='.md',
+            filetypes=[('Markdown', '*.md')],
+            initialfile='%s.md' % (title or '笔记'))
+        if not save_path:
+            return None
+        if self.backend.export_note_markdown(note_id, save_path):
+            return save_path
+        return None
+
+    def import_markdown_dialog(self):
+        """选择 .md 文件导入为新笔记，返回新笔记或 None"""
+        import tkinter.filedialog
+        path = tkinter.filedialog.askopenfilename(
+            title="导入 Markdown", filetypes=[('Markdown', '*.md'), ('所有文件', '*.*')])
+        if not path:
+            return None
+        try:
+            with open(path, encoding='utf-8') as f:
+                text = f.read()
+        except Exception:
+            try:
+                with open(path, encoding='gbk', errors='replace') as f:
+                    text = f.read()
+            except Exception:
+                return None
+        return self.backend.import_markdown(text)
 
     def export_scope(self, notebook_id=None, tag_id=None, label=''):
         """按笔记本/标签导出为可当库打开的 zip。返回 (保存路径, 笔记数) 或 None"""
@@ -930,9 +971,11 @@ def _clamp_window_geometry(w, h, x=None, y=None):
 # window_x/window_y，但没有任何代码读它们（那些残留值可能是过期甚至屏外的），刻意不读。
 _WIN_GEOM_KEY = 'window_geometry'
 TRAY_KEY = 'tray_enabled'      # '1'（默认）= 关闭窗口时驻留托盘
-# 托盘控制器：AppApi.set_tray_enabled 只能看到桥接层，托盘对象在下面创建，
-# 用这个字典做一次「后注册回调」（启动时还没创建 → 设置只落库，启动时读取即可）。
+HOTKEY_KEY = 'quick_hotkey'    # '1' = 启用全局快速记录热键（默认关，避免抢占系统热键）
+# 托盘/热键控制器：AppApi 只能看到桥接层，这些对象在下面创建，
+# 用字典做一次「后注册回调」（启动时还没创建 → 设置只落库，启动时读取即可）。
 _TRAY_CTL = {'apply': None}
+_HOTKEY_CTL = {'apply': None}
 
 
 def _load_saved_geometry(backend):
@@ -1131,8 +1174,54 @@ def _apply_tray_setting(enabled):
 
 _TRAY_CTL['apply'] = _apply_tray_setting
 
+
+# ====== 全局快速记录热键 ======
+# 任意界面按 Ctrl+Alt+N：把窗口叫到前台，并新建一篇笔记、把光标放进标题。
+# 用「点新建按钮」而不是另开 API：复用既有的新建链路（列表刷新、编辑器 UI、保存基线都在里面）。
+_hotkey = None
+
+
+def _quick_capture():
+    _show_window()
+    try:
+        window.evaluate_js(
+            "document.getElementById('btn-new-note').click();"
+            "setTimeout(function(){var t=document.getElementById('note-title-input');"
+            "if(t){t.focus();t.select();}},400);")
+    except Exception:
+        try:
+            import applog
+            applog.get_logger().exception("全局热键新建笔记失败")
+        except Exception:
+            pass
+
+
+def _apply_hotkey_setting(enabled):
+    """起/停全局热键，返回最终是否处于启用状态（注册失败会返回 False，前端据此提示）"""
+    global _hotkey
+    if not enabled:
+        if _hotkey is not None:
+            _hotkey.stop()
+            _hotkey = None
+        return False
+    if _hotkey is not None and _hotkey.started:
+        return True
+    hk = desktop.GlobalHotkey(_quick_capture)
+    hk.start()
+    hk.join(timeout=2)          # 等它注册完，好把"是否成功"立刻反馈给界面
+    if hk.started:
+        _hotkey = hk
+        return True
+    return False
+
+
+_HOTKEY_CTL['apply'] = _apply_hotkey_setting
+
 if _tray_is_enabled():
     _start_tray()
+
+if (backend_api.settings_get(HOTKEY_KEY) or '0') == '1':
+    _apply_hotkey_setting(True)
 
 # 关窗兜底：不等防抖的最后输入由 closing 同步落库；启用托盘时关窗 = 隐藏到托盘
 window.events.closing += make_closing_handler(
@@ -1145,6 +1234,8 @@ if os.path.exists(icon_path):
 else:
     webview.start(debug=False)
 
-# webview 退出（真正关闭）：收尾托盘与守护线程
+# webview 退出（真正关闭）：收尾托盘、热键与守护线程
 _state['quitting'] = True
 _stop_tray()
+if _hotkey is not None:
+    _hotkey.stop()

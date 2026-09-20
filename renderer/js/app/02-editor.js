@@ -6,7 +6,7 @@ import { $, $$, closePanel, dom, openPanel, showInfoDialog, showToast, state } f
 import { debouncedSave, flushSave, loadNotes, renderNoteList, setSaveDot } from './03-notes.js';
 import { getCurrentNotebookId, getCurrentNotebookName } from './09-boot.js';
 import { _stickerSyncTimer, getCurrentTagFilter, getCurrentTagName, set_stickerSyncTimer } from './05-shell.js';
-import { unlockedNotes } from './07-formula-security-dnd.js';
+import { unlockedNotes, verifyAndSelectNote } from './07-formula-security-dnd.js';
 import { syncStickersToOverlay } from '../quill/quill-deco.js';
 
 export function initQuill() {
@@ -977,6 +977,34 @@ $$('.export-option').forEach(btn => {
         else if (r) showToast('已导出 ' + r.count + ' 篇笔记', { type: 'success' });
       } catch (err) {
         showToast('导出失败：' + (err.message || err), { type: 'error' });
+      }
+      return;
+    }
+
+    // Markdown：导出当前笔记 / 导入为一篇新笔记
+    if (format === 'md') {
+      if (!state.activeNoteId) { showToast('请先选择一篇笔记', { type: 'warn' }); return; }
+      const note = state.notes.find(n => n.id === state.activeNoteId);
+      try {
+        const p = await window.pywebview.api.export_markdown(
+          state.activeNoteId, (note && note.title) || '笔记');
+        if (p) showToast('Markdown 已导出', { type: 'success' });
+        else showToast('导出失败：加密笔记需要先解锁', { type: 'warn' });
+      } catch (err) {
+        showToast('导出失败：' + (err.message || err), { type: 'error' });
+      }
+      return;
+    }
+    if (format === 'md-import') {
+      try {
+        const note = await window.pywebview.api.import_markdown_dialog();
+        if (note) {
+          await loadNotes();
+          await verifyAndSelectNote(note.id);
+          showToast('已导入「' + (note.title || '导入的笔记') + '」', { type: 'success' });
+        }
+      } catch (err) {
+        showToast('导入失败：' + (err.message || err), { type: 'error' });
       }
       return;
     }

@@ -190,6 +190,74 @@ class Tray:
             pass
 
 
+# ====== 全局快速记录热键 ======
+
+class GlobalHotkey(threading.Thread):
+    """注册一个**系统级**热键（任意程序前台时都能触发），默认 Ctrl+Alt+N。
+
+    为什么要自己开线程跑消息循环：`RegisterHotKey(hwnd=None, ...)` 把 WM_HOTKEY 投递到
+    **调用它的那个线程**的消息队列，没有消息循环就永远收不到；而 pywebview 的主消息循环
+    在别的线程里，借用不了。所以在线程内注册 + GetMessage 循环。
+
+    失败（热键被别的程序占用、非 Windows）返回 started=False，调用方据此提示用户。
+    """
+
+    MOD_ALT, MOD_CONTROL, MOD_SHIFT, MOD_NOREPEAT = 0x0001, 0x0002, 0x0004, 0x4000
+    WM_HOTKEY, WM_QUIT = 0x0312, 0x0012
+    VK_N = 0x4E
+
+    def __init__(self, callback, vk=VK_N, mods=MOD_CONTROL | MOD_ALT):
+        super().__init__(daemon=True)
+        self._callback = callback
+        self._vk = vk
+        self._mods = mods | self.MOD_NOREPEAT
+        self._tid = None
+        self.started = False
+        self.error = ''
+
+    def run(self):
+        if not sys.platform.startswith('win'):
+            self.error = '仅支持 Windows'
+            return
+        try:
+            import ctypes
+            from ctypes import wintypes
+            user32 = ctypes.windll.user32
+            self._tid = ctypes.windll.kernel32.GetCurrentThreadId()
+            if not user32.RegisterHotKey(None, 1, self._mods, self._vk):
+                self.error = '热键已被其他程序占用'
+                self._log('注册全局热键失败（可能被占用）')
+                return
+            self.started = True
+            msg = wintypes.MSG()
+            while user32.GetMessageW(ctypes.byref(msg), None, 0, 0) > 0:
+                if msg.message == self.WM_HOTKEY:
+                    try:
+                        self._callback()
+                    except Exception:
+                        self._log('全局热键回调失败')
+            user32.UnregisterHotKey(None, 1)
+        except Exception:
+            self.error = '注册异常'
+            self._log('全局热键线程异常')
+
+    def stop(self):
+        try:
+            if self._tid:
+                import ctypes
+                ctypes.windll.user32.PostThreadMessageW(self._tid, self.WM_QUIT, 0, 0)
+        except Exception:
+            pass
+
+    @staticmethod
+    def _log(msg):
+        try:
+            import applog
+            applog.get_logger().exception(msg)
+        except Exception:
+            pass
+
+
 # ====== 提醒守护：窗口隐藏时在后端触发 ======
 
 class ReminderWatcher(threading.Thread):

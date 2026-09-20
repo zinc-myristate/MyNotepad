@@ -110,6 +110,27 @@ class TestStaticUI:
         assert '.note-item-preview' in css
         assert 'mark' in css, '搜索命中高亮样式缺失'
 
+    def test_group234_ui_present(self):
+        """本轮新增的入口不能被误删：快速跳转、多选条、按范围导出、Markdown、自动锁定、热键"""
+        html = _index()
+        for needle, what in (
+            ('id="quick-switch-panel"', '快速跳转面板'),
+            ('id="quick-switch-input"', '快速跳转输入框'),
+            ('id="bulk-bar"', '批量操作条'),
+            ('id="bulk-delete"', '批量删除按钮'),
+            ('data-format="zip-notebook"', '按笔记本导出'),
+            ('data-format="zip-tag"', '按标签导出'),
+            ('data-format="md"', 'Markdown 导出'),
+            ('data-format="md-import"', 'Markdown 导入'),
+            ('id="sel-autolock"', '自动锁定下拉'),
+            ('id="chk-hotkey"', '全局热键开关'),
+            ('tag:标签名', '搜索范围语法提示'),
+        ):
+            assert needle in html, '缺少 %s（%s）' % (what, needle)
+        css = _style()
+        for needle in ('.bulk-bar', '.quick-switch-item', '.note-item.selected', '.autolock-row'):
+            assert needle in css, '缺少样式 %s' % needle
+
 
 # ---------- 实机测量（e2e） ----------
 
@@ -230,13 +251,23 @@ def test_search_snippet_highlighted(tmp_path, monkeypatch):
             "__app.dom.searchInput.value = '火龙果';"
             "__app.dom.searchInput.dispatchEvent(new Event('input', {bubbles:true}));")
         time.sleep(1.6)   # > 200ms 防抖 + 桥接往返
-        result.update(json.loads(window.evaluate_js(MEASURE)))
+        # 必须读**命中那篇**的摘要：列表里第一个 .note-item 可能是被搜索隐藏的另一篇
+        result['previewText'] = window.evaluate_js(
+            "var el = document.querySelector('.note-item[data-note-id=\"%s\"] .note-item-preview');"
+            "el ? el.textContent : 'MISSING'" % a)
+        result['previewHtml'] = window.evaluate_js(
+            "var el = document.querySelector('.note-item[data-note-id=\"%s\"] .note-item-preview');"
+            "el ? el.innerHTML : 'MISSING'" % a)
+        result['hidden_b'] = window.evaluate_js(
+            "document.querySelector('.note-item[data-note-id=\"%s\"]')"
+            ".classList.contains('hidden-by-search')" % b)
 
     res = _run(ns, actions)
     assert 'error' not in res, res
     assert '火龙果' in res['previewText'], '命中片段应显示关键词：%r' % res['previewText']
     assert '<mark>火龙果</mark>' in res['previewHtml'], \
         '关键词必须被 <mark> 高亮（且转义安全）：%r' % res['previewHtml']
+    assert res['hidden_b'] is True, '未命中的笔记应被隐藏'
 
 
 @pytest.mark.e2e

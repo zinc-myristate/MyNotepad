@@ -399,20 +399,47 @@ $('#btn-reminder-list').addEventListener('click', async () => {
 async function loadDesktopSettings() {
   const chkTray = $('#chk-tray');
   const chkAuto = $('#chk-autostart');
+  const chkHotkey = $('#chk-hotkey');
   const rowAuto = $('#row-autostart');
+  const rowHotkey = $('#row-hotkey');
   const hint = $('#autostart-hint');
+  const hkHint = $('#hotkey-hint');
   try {
     const st = await window.pywebview.api.desktop_status();
     chkTray.checked = !!st.tray;
     chkAuto.checked = !!st.autostart;
+    chkHotkey.checked = !!st.hotkey;
     const ok = !!st.autostart_supported;
     rowAuto.classList.toggle('disabled', !ok);
     chkAuto.disabled = !ok;
     if (hint) hint.textContent = ok ? '' : '（仅打包版可用）';
+    const hkOk = !!st.hotkey_supported;
+    rowHotkey.classList.toggle('disabled', !hkOk);
+    chkHotkey.disabled = !hkOk;
+    if (hkHint) {
+      hkHint.textContent = hkOk
+        ? '任意界面按 Ctrl+Alt+N：叫出窗口并新建笔记'
+        : '（仅 Windows 可用）';
+    }
   } catch (e) {
     if (hint) hint.textContent = '（读取失败）';
   }
 }
+
+$('#chk-hotkey').addEventListener('change', async (e) => {
+  try {
+    const actual = await window.pywebview.api.set_hotkey_enabled(e.target.checked);
+    if (e.target.checked && !actual) {
+      showToast('Ctrl+Alt+N 注册失败（可能被其他程序占用）', { type: 'warn' });
+      e.target.checked = false;
+    } else {
+      showToast(actual ? '已启用：Ctrl+Alt+N 全局新建笔记' : '已关闭全局热键', { type: 'info' });
+    }
+  } catch (err) {
+    showToast('设置失败：' + err, { type: 'error' });
+    await loadDesktopSettings();
+  }
+});
 
 $('#chk-tray').addEventListener('change', async (e) => {
   try {

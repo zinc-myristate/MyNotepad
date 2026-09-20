@@ -37,7 +37,14 @@ SHORTCUT_NAME = '我的记事本.lnk'
 
 
 def log(msg):
-    print('[build] %s' % msg, flush=True)
+    try:
+        print('[build] %s' % msg, flush=True)
+    except UnicodeEncodeError:
+        # Windows 中文控制台是 GBK。日志里只要有 ✅ 这类字符，print 就会抛
+        # UnicodeEncodeError —— 偏偏收尾那行就是「打包成功」，于是**构建明明成功、
+        # 脚本却以退出码 1 结束**（实测踩到）。这里退化成可编码版本，只丢字符不丢日志。
+        enc = sys.stdout.encoding or 'utf-8'
+        print('[build] %s' % msg.encode(enc, 'replace').decode(enc, 'replace'), flush=True)
 
 
 def human(path):
@@ -276,7 +283,7 @@ def main():
         except Exception as exc:
             log('冒烟失败：%s' % exc)
             return 1
-    log('全部完成 ✅  产物：%s' % EXE)
+    log('全部完成（可执行文件已生成）  产物：%s' % EXE)
     return 0
 
 

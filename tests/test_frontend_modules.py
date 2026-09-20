@@ -98,8 +98,10 @@ def strip_comments_and_strings(src):
 # ---------- 工具：JS 模块的 import / export 抽取 ----------
 
 IDENT = r'[A-Za-z_$][\w$]*'
+# 锚定行首：解析时字符串内容是保留的（模块路径就在引号里），不锚定的话
+# `'md-import'` 这类字符串里的 "import" 会被当成导入语句匹配进来。
 IMPORT_RE = re.compile(
-    r"""import\s*(?:\{([^}]*)\}\s*from\s*)?['"]([^'"]+)['"]""")
+    r"""(?m)^[ \t]*import\s*(?:\{([^}]*)\}\s*from\s*)?['"]([^'"]+)['"]""")
 EXPORT_FN_RE = re.compile(r'export\s+(?:async\s+)?function\s+(' + IDENT + r')')
 EXPORT_CLASS_RE = re.compile(r'export\s+class\s+(' + IDENT + r')')
 EXPORT_VAR_RE = re.compile(r'export\s+(?:const|let|var)\s+')
