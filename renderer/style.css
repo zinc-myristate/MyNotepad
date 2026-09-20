@@ -2587,6 +2587,40 @@ body.adaptive-bg .btn-solid-secondary {
 .reminder-item-btn:hover { background: var(--accent-soft); color: var(--accent-text); }
 .reminder-item-btn.danger:hover { background: #FED7D7; color: #E53E3E; }
 
+/* ====== 批量操作条（多选时出现）====== */
+.bulk-bar {
+  display: flex; align-items: center; flex-wrap: wrap; gap: 6px;
+  margin: 6px 8px; padding: 7px 9px;
+  background: var(--accent-light);
+  border: 1px solid var(--accent-solid);
+  border-radius: var(--radius-sm);
+  font-size: var(--font-size-xs); color: var(--text-primary);
+}
+.bulk-bar.hidden { display: none; }
+#bulk-count { font-weight: 600; margin-right: 2px; }
+.bulk-bar button {
+  padding: 3px 8px; border: 1px solid var(--border-color);
+  background: var(--bg-primary); color: var(--text-primary);
+  border-radius: 5px; cursor: pointer; font-size: var(--font-size-xs);
+  font-family: var(--font-sans);
+}
+.bulk-bar button:hover { border-color: var(--accent); color: var(--accent-text); }
+.bulk-bar button.bulk-danger { border-color: var(--danger); color: var(--danger); }
+.bulk-bar button.bulk-danger:hover { background: var(--danger); color: #fff; }
+#bulk-cancel { margin-left: auto; font-size: 14px; line-height: 1; padding: 2px 7px; }
+.bulk-select {
+  max-width: 96px; padding: 3px 4px; font-size: var(--font-size-xs);
+  font-family: var(--font-sans); color: var(--text-primary);
+  background: var(--bg-primary); border: 1px solid var(--border-color);
+  border-radius: 5px; cursor: pointer;
+}
+/* 多选中的列表项：左侧主题色竖条 + 浅底，和「当前打开」区分开 */
+.note-item.selected {
+  background: var(--accent-light);
+  border-color: var(--accent-solid);
+  box-shadow: inset 3px 0 0 var(--accent-solid);
+}
+
 /* ====== 快速跳转（Ctrl+P）====== */
 .quick-switch-dialog {
   align-self: flex-start;          /* 贴顶部：命令面板的位置习惯 */

@@ -762,7 +762,7 @@ class Api:
         # 加密笔记（无论是否已解锁）一律给空串——列表渲染不参与解锁流程，摘要留给解锁后的编辑区。
         rows = conn.execute(
             "SELECT id, title, bg_type, bg_value, bg_opacity, is_pinned, is_favorite, "
-            "sort_order, created_at, updated_at, content, password_hash "
+            "notebook_id, sort_order, created_at, updated_at, content, password_hash "
             "FROM notes WHERE deleted_at IS NULL "
             "ORDER BY is_pinned DESC, sort_order DESC, updated_at DESC"
         ).fetchall()
@@ -949,6 +949,49 @@ class Api:
         for nid in ids:
             self.notes_purge(nid)
         return len(ids)
+
+    # ----- 批量操作（多选）-----
+    # 都走**一个**桥调用而不是让前端循环 N 次：N 次跨语言往返在大批量下明显卡顿，
+    # 而且失败一半时前端很难给出准确反馈。
+    def notes_delete_many(self, note_ids):
+        """批量移入回收站。逐条复用 notes_delete，保证 FTS/解锁缓存/查询过滤等副作用一致。"""
+        n = 0
+        for nid in (note_ids or []):
+            if nid and self.notes_delete(nid):
+                n += 1
+        return n
+
+    def notes_move_many(self, note_ids, notebook_id=None):
+        """批量移动到笔记本（notebook_id=None/'' → 移出到未分类）。返回改动行数。"""
+        ids = [i for i in (note_ids or []) if i]
+        if not ids:
+            return 0
+        marks = ','.join('?' * len(ids))
+        cur = conn.execute(
+            "UPDATE notes SET notebook_id = ?, updated_at = datetime('now','localtime') "
+            "WHERE id IN (%s) AND deleted_at IS NULL" % marks,
+            [notebook_id or None] + ids)
+        conn.commit()
+        return cur.rowcount
+
+    def notes_add_tag_many(self, note_ids, tag_id):
+        """批量打同一个标签（已关联的自动跳过）。返回新增关联数。"""
+        ids = [i for i in (note_ids or []) if i]
+        if not ids or not tag_id:
+            return 0
+        # 标签必须真实存在：note_tags.tag_id 有外键，传个不存在的 id 会直接抛 IntegrityError
+        if not conn.execute("SELECT 1 FROM tags WHERE id = ?", (tag_id,)).fetchone():
+            return 0
+        marks = ','.join('?' * len(ids))
+        live = [r['id'] for r in conn.execute(
+            "SELECT id FROM notes WHERE id IN (%s) AND deleted_at IS NULL" % marks, ids).fetchall()]
+        added = 0
+        for nid in live:
+            cur = conn.execute(
+                "INSERT OR IGNORE INTO note_tags (note_id, tag_id) VALUES (?, ?)", (nid, tag_id))
+            added += cur.rowcount
+        conn.commit()
+        return added
 
     def notes_search(self, query):
         """全文搜索：≥3 字符且 FTS5 可用走 trigram；否则 LIKE 回退（标题 + 明文笔记正文）。

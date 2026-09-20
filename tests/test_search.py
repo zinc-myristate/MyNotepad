@@ -192,3 +192,13 @@ class TestPreview:
         api.notes_update(nid, {'title': 'T', 'content': delta('正文')})
         n = [x for x in api.notes_list() if x['id'] == nid][0]
         assert 'content' not in n, 'notes_list 不应把整篇正文发给前端（大 payload + 密文外泄）'
+
+    def test_notes_list_includes_notebook_id(self, api):
+        """回归：notes_list 曾漏掉 notebook_id，导致前端按笔记本筛选永远空列表、
+        下拉里的「N 篇」计数恒为 0（笔记本功能实际不可用）。"""
+        nb = api.notebooks_create('课程')['id']
+        nid = api.notes_create()['id']
+        api.notes_update(nid, {'title': 'T', 'notebook_id': nb})
+        n = [x for x in api.notes_list() if x['id'] == nid][0]
+        assert n.get('notebook_id') == nb, '列表必须带上 notebook_id'
+        assert len([x for x in api.notes_list() if x['notebook_id'] == nb]) == 1

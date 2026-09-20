@@ -265,6 +265,11 @@ class AppApi:
     def notes_create(self):
         return self.backend.notes_create()
     def notes_duplicate(self, note_id): return self.backend.notes_duplicate(note_id)
+    def notes_delete_many(self, note_ids): return self.backend.notes_delete_many(note_ids)
+    def notes_move_many(self, note_ids, notebook_id=None):
+        return self.backend.notes_move_many(note_ids, notebook_id)
+    def notes_add_tag_many(self, note_ids, tag_id):
+        return self.backend.notes_add_tag_many(note_ids, tag_id)
     def notes_update(self, note_id, fields): return self.backend.notes_update(note_id, fields)
     def notes_delete(self, note_id): return self.backend.notes_delete(note_id)
     def notes_trash_list(self): return self.backend.notes_trash_list()

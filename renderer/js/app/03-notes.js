@@ -12,6 +12,7 @@ import { generateNoteCover, loadPaperForNote } from './08-appearance2.js';
 import { updateNotebookCount } from './09-boot.js';
 import { syncStickersToOverlay, syncStickersToQuill } from '../quill/quill-deco.js';
 import { ICONS } from '../shared/icons.js';
+import { clearSelection, extendSelectionTo, isMultiSelecting, toggleSelection } from './12-bulk-actions.js';
 import { debounce, escapeHtml } from '../shared/utils.js';
 
 export async function loadNotes(retryCount = 0) {
@@ -81,7 +82,8 @@ export function renderNoteList() {
   const frag = document.createDocumentFragment();
   state.notes.forEach(note => {
     const item = document.createElement('div');
-    item.className = `note-item${note.id === state.activeNoteId ? ' active' : ''}`;
+    item.className = `note-item${note.id === state.activeNoteId ? ' active' : ''}` +
+      (state.selectedIds.has(note.id) ? ' selected' : '');
     item.dataset.noteId = note.id;
     item.draggable = true;
     // SVG 图标定义（统一取 icons.js，避免循环内重复字符串）
@@ -142,7 +144,13 @@ dom.noteList.addEventListener('click', (e) => {
     return;
   }
   const item = e.target.closest('.note-item');
-  if (item) verifyAndSelectNote(item.dataset.noteId);
+  if (!item) return;
+  const id = item.dataset.noteId;
+  // 多选：Ctrl 点加/减选，Shift 连选，普通点击退出多选态再打开
+  if (e.ctrlKey || e.metaKey) { toggleSelection(id); return; }
+  if (e.shiftKey) { extendSelectionTo(id); return; }
+  if (isMultiSelecting()) clearSelection();
+  verifyAndSelectNote(id);
 });
 
 /** 复制一篇笔记：正文/标签/笔记本/外观 + 附件文件一起复制（后端 notes_duplicate）。

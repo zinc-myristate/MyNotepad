@@ -48,6 +48,7 @@ export const state = {
   noteBgImagePath: null,    // 当前笔记自定义背景图片的绝对路径
   searchQuery: '',          // 当前搜索词（列表摘要据此高亮）
   searchSnippets: {},       // note_id -> 命中片段（后端 notes_search 返回，仅命中集）
+  selectedIds: new Set(),   // 多选批量操作的选中集合（空集 = 非多选态）
 };
 
 // ====== DOM 引用 ======

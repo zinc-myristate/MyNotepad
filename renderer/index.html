@@ -47,6 +47,20 @@
       新建笔记
     </button>
 
+    <!-- 批量操作条：只多选时出现（默认隐藏） -->
+    <div id="bulk-bar" class="bulk-bar hidden">
+      <span id="bulk-count">已选 0 项</span>
+      <button id="bulk-all" title="全选当前列表">全选</button>
+      <select id="bulk-notebook" class="bulk-select" title="移动到笔记本">
+        <option value="__none__">移动到…</option>
+      </select>
+      <select id="bulk-tag" class="bulk-select" title="给所选加标签">
+        <option value="">打标签…</option>
+      </select>
+      <button id="bulk-delete" class="bulk-danger" title="把所选移入回收站">删除</button>
+      <button id="bulk-cancel" title="取消选择（Esc）">×</button>
+    </div>
+
     <!-- 笔记列表 -->
     <nav id="note-list" class="note-list">
       <!-- 加载骨架：模块图与首次取列表期间显示，renderNoteList() 会整体替换掉。
