@@ -827,7 +827,7 @@ body.adaptive-bg .panel-dialog {
   position: relative;
   z-index: 2;
   display: grid;
-  grid-template-rows: auto auto auto auto 1fr;
+  grid-template-rows: auto auto auto auto 1fr auto;
   /* 行1:标题  行2:标签  行3:字体  行4:工具栏  行5:编辑器(占满剩余空间) */
   /* 关键：列必须显式给一个可收缩的最小值。默认 auto 会被「工具栏 26 个按钮的固有宽度
      (826px)」撑住，窗口窄于此时整列溢出，再被 .editor-area 的 overflow:hidden 裁掉——
@@ -838,6 +838,135 @@ body.adaptive-bg .panel-dialog {
   background: transparent;
   overflow: hidden;
 }
+
+/* ====== 编辑器状态栏（第 8 轮）====== */
+.editor-status {
+  grid-row: 6;
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 4px 40px;
+  min-height: 26px;
+  border-top: 1px solid var(--border-light, rgba(0,0,0,0.08));
+  font-size: var(--font-size-xs, 12px);
+  color: var(--text-muted);
+}
+.editor-status.hidden { display: none; }
+.status-spacer { flex: 1; }
+.status-format { color: var(--accent-text); }
+.status-btn {
+  border: 1px solid var(--border-light, rgba(0,0,0,0.1));
+  background: transparent; color: var(--text-muted); cursor: pointer;
+  border-radius: 10px; padding: 1px 9px; font-size: var(--font-size-xs, 12px);
+}
+.status-btn:hover, .status-btn.active { color: var(--accent-text); border-color: var(--accent-text); }
+
+/* 无笔记（含删除/锁定后隐藏编辑区）时，这三个都不该留在屏幕上显旧内容 */
+body.no-active-note .editor-status,
+body.no-active-note .find-bar,
+body.no-active-note .outline-drawer { display: none !important; }
+
+/* ====== 查找 / 替换条 ====== */
+.find-bar {
+  position: absolute;
+  top: 8px; right: 18px; z-index: 40;
+  display: flex; flex-direction: column; gap: 4px;
+  padding: 6px 8px; border-radius: 10px;
+  background: var(--glass-bg-strong, rgba(255,255,255,0.96));
+  border: 1px solid var(--border-light, rgba(0,0,0,0.12));
+  box-shadow: 0 4px 16px rgba(0,0,0,0.12);
+}
+.find-bar.hidden { display: none; }
+.find-row { display: flex; align-items: center; gap: 6px; }
+.find-row.hidden { display: none; }
+.find-input {
+  width: 190px; height: 26px; padding: 0 8px; border-radius: 6px;
+  border: 1px solid var(--border-light, rgba(0,0,0,0.14));
+  background: var(--bg-editor, transparent); color: var(--text-primary);
+  font-size: var(--font-size-xs, 12px); outline: none;
+}
+.find-input:focus { border-color: var(--accent-text); }
+.find-count { min-width: 44px; text-align: center; color: var(--text-muted); font-size: 11px; }
+.find-case-label { display: flex; align-items: center; gap: 2px; font-size: 11px; color: var(--text-muted); }
+.find-btn {
+  height: 26px; min-width: 26px; padding: 0 7px; cursor: pointer;
+  border: 1px solid var(--border-light, rgba(0,0,0,0.1)); border-radius: 6px;
+  background: transparent; color: var(--text-primary); font-size: var(--font-size-xs, 12px);
+}
+.find-btn:hover { border-color: var(--accent-text); color: var(--accent-text); }
+.cm-find-hit { background: rgba(255, 214, 0, 0.35); border-radius: 2px; }
+
+/* ====== 大纲抽屉 ====== */
+.outline-drawer {
+  position: absolute; top: 56px; right: 14px; bottom: 40px; z-index: 35;
+  width: 260px; display: flex; flex-direction: column;
+  border-radius: 12px; overflow: hidden;
+  background: var(--glass-bg-strong, rgba(255,255,255,0.97));
+  border: 1px solid var(--border-light, rgba(0,0,0,0.12));
+  box-shadow: 0 6px 24px rgba(0,0,0,0.14);
+}
+.outline-drawer.hidden { display: none; }
+.outline-head {
+  display: flex; align-items: center; justify-content: space-between;
+  padding: 6px 10px; font-size: var(--font-size-xs, 12px); color: var(--text-muted);
+  border-bottom: 1px solid var(--border-light, rgba(0,0,0,0.08));
+}
+.outline-list { flex: 1; overflow: auto; padding: 6px 4px; }
+.outline-item {
+  display: flex; align-items: center; gap: 6px; padding: 3px 8px;
+  border-radius: 6px; cursor: pointer; font-size: 13px; color: var(--text-primary);
+}
+.outline-item:hover { background: var(--glass-bg-strong, rgba(0,0,0,0.06)); }
+.outline-item.active { background: var(--accent-light); color: var(--accent-text); font-weight: 600; }
+.outline-dot { width: 4px; height: 4px; border-radius: 50%; background: var(--text-muted); flex: 0 0 auto; }
+.outline-text { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.outline-empty { padding: 18px 12px; color: var(--text-muted); font-size: var(--font-size-xs, 12px); line-height: 1.7; }
+.outline-empty code { background: var(--glass-bg-strong, rgba(0,0,0,0.05)); padding: 1px 4px; border-radius: 4px; }
+
+/* Quill 代码块：Snow 主题自带深色底（#23241f），在纸质笔记本里太突兀，
+   而且与 Markdown 预览的代码块长得不一样；统一成本应用的主题变量后，
+   下面那套 hljs 配色才能在两个编辑器里都用同一份。 */
+.ql-editor .ql-code-block-container {
+  background: var(--glass-bg-strong, rgba(0,0,0,0.05)) !important;
+  color: var(--text-primary);
+  border-radius: 8px;
+  padding: 10px 12px;
+  font-family: var(--font-mono, Consolas, monospace);
+}
+/* 语言下拉（Quill syntax 模块挂的 <select>，类名 ql-ui → 绝对定位在代码块右上角） */
+.ql-editor .ql-code-block-container .ql-ui {
+  background: var(--glass-bg-strong, rgba(0,0,0,0.05));
+  color: var(--text-muted);
+  border: 1px solid var(--border-light, rgba(0,0,0,0.12));
+  border-radius: 4px;
+  font-size: 11px;
+}
+
+/* ====== 代码块语法高亮（highlight.js 的类名 → 主题变量）======
+   为什么不用官方的 github.min.css：它把颜色写死，跟本应用的 4 套主题 + 深色对不上。
+   这里只映射 hljs 实际会产出的十几个类名到 --hl-*，主题切换自动跟随。 */
+:root {
+  --hl-keyword: #A626A4; --hl-string: #50A14F; --hl-comment: #8A8A8A;
+  --hl-number: #986801; --hl-title: #4078F2; --hl-type: #C18401;
+  --hl-meta: #986801; --hl-var: #E45649; --hl-addition: #50A14F; --hl-deletion: #E45649;
+}
+body[data-theme="dark"] {
+  --hl-keyword: #C678DD; --hl-string: #98C379; --hl-comment: #7F848E;
+  --hl-number: #D19A66; --hl-title: #61AFEF; --hl-type: #E5C07B;
+  --hl-meta: #D19A66; --hl-var: #E06C75; --hl-addition: #98C379; --hl-deletion: #E06C75;
+}
+.hljs-keyword, .hljs-selector-tag, .hljs-literal, .hljs-built_in, .hljs-name { color: var(--hl-keyword); }
+.hljs-string, .hljs-attr, .hljs-template-variable, .hljs-regexp { color: var(--hl-string); }
+.hljs-comment, .hljs-quote { color: var(--hl-comment); font-style: italic; }
+.hljs-number, .hljs-symbol, .hljs-bullet, .hljs-link { color: var(--hl-number); }
+.hljs-title, .hljs-section, .hljs-selector-id, .hljs-selector-class { color: var(--hl-title); }
+.hljs-type, .hljs-class .hljs-title, .hljs-doctag { color: var(--hl-type); }
+.hljs-meta, .hljs-tag { color: var(--hl-meta); }
+.hljs-variable, .hljs-params, .hljs-property { color: var(--hl-var); }
+.hljs-addition { color: var(--hl-addition); }
+.hljs-deletion { color: var(--hl-deletion); }
+.hljs-emphasis { font-style: italic; }
+.hljs-strong { font-weight: 700; }
 
 /* ====== 侧栏：已保存的视图 ====== */
 .saved-searches { padding: 4px 10px 6px; }

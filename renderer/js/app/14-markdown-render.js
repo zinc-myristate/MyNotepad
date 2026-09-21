@@ -35,7 +35,7 @@ const ALLOWED_STYLE = new Set([
   'font-style', 'text-align', 'text-decoration', 'vertical-align', 'line-height',
 ]);
 // class 白名单前缀：应用自己的样式类绝不能被用户内容借走
-const ALLOWED_CLASS_PREFIX = ['md-', 'divider-', 'sticker', 'katex', 'math'];
+const ALLOWED_CLASS_PREFIX = ['md-', 'divider-', 'sticker', 'katex', 'math', 'hljs'];
 
 let _md = null;
 
@@ -45,6 +45,7 @@ function md() {
     html: true,          // 允许内嵌 HTML（第 6 轮决策：用它保留颜色/字号/字体）
     linkify: false,      // 不自动把裸 URL 变链接：记事本里出现的网址原文更该保持原样
     breaks: false,       // 单个换行不当 <br>（Markdown 语义：空行才分段）
+    highlight: highlightCode,   // ```lang 代码块 → hljs 着色（无 hljs 时返回空串=退化为纯文本）
   });
   installTaskList(_md);
   installSanitizer();
@@ -160,6 +161,20 @@ function renderMath(store) {
       return '<code>' + escapeAttr(item.tex) + '</code>';
     }
   });
+}
+
+/** 代码块高亮：markdown-it 的 highlight 钩子要返回**完整**的 <pre><code>，
+ *  否则它自己再包一层。语言未知时返回空串 → markdown-it 走默认转义（安全）。 */
+function highlightCode(code, lang) {
+  const hljs = window.hljs;
+  if (!hljs || !lang) return '';
+  try {
+    if (!hljs.getLanguage(lang)) return '';
+    const html = hljs.highlight(code, { language: lang, ignoreIllegals: true }).value;
+    return '<pre class="hljs"><code class="language-' + escapeAttr(lang) + '">' + html + '</code></pre>';
+  } catch (e) {
+    return '';
+  }
 }
 
 function escapeAttr(s) {

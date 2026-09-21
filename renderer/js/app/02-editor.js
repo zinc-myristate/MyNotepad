@@ -10,14 +10,32 @@ import { unlockedNotes, verifyAndSelectNote } from './07-formula-security-dnd.js
 import { syncStickersToOverlay } from '../quill/quill-deco.js';
 import { markdownExportHtml } from './14-markdown-render.js';
 import { getMarkdownContent } from './13-markdown-editor.js';
+import { updateStatusBar } from './21-status-bar.js';
+import { refreshOutline, syncOutlineActive } from './22-outline.js';
+import { refreshFindIfOpen } from './23-find-bar.js';
 
 export function initQuill() {
   const quill = new Quill('#quill-editor', {
     theme: 'snow',
     placeholder: '开始写点什么…',
     modules: {
-      toolbar: '#editor-toolbar'
+      toolbar: '#editor-toolbar',
+      // 代码块语法高亮：Quill 自带 syntax 模块（打包版早已注册），它依赖全局 hljs。
+      // hljs 没加载成功就**不启用**该模块——宁可没有高亮，也不要让编辑器报错。
+      syntax: !!window.hljs
     }
+  });
+
+  // 状态栏 / 大纲 / 查找的刷新挂在这里（Quill 侧只有一个入口，避免到处撒监听）
+  quill.on('text-change', () => {
+    if (state.isLoading) return;
+    updateStatusBar();
+    refreshOutline();
+    refreshFindIfOpen();
+  });
+  quill.on('selection-change', () => {
+    updateStatusBar();
+    syncOutlineActive();
   });
 
   // 开启 WebView2 内置拼写检查：Quill 生成的 .ql-editor 默认没有 spellcheck 属性，

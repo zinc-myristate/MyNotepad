@@ -4,6 +4,7 @@ import { notesStore } from './01b-store.js';
 import { clearVoiceTemp, isVoiceRecording, stopVoiceRecording } from './02-editor.js';
 import { confirmDeleteNote, createNewNote, flushSave, renderNoteList, saveCurrentNote } from './03-notes.js';
 import { escapeHtml } from '../shared/utils.js';
+import { openFindBar } from './23-find-bar.js';
 
 // ====== 窗口关闭前保存 ======
 export let _intervals = [];
@@ -56,11 +57,9 @@ document.addEventListener('keydown', async (e) => {
     const el = document.activeElement;
     const inEditor = el && (el.isContentEditable
       || (el.closest && el.closest('.CodeMirror, .ql-editor')));
-    if (!inEditor) {
-      e.preventDefault();
-      dom.searchInput.focus();
-      dom.searchInput.select();
-    }
+    e.preventDefault();
+    if (inEditor) openFindBar(true);      // 笔记内查找替换（第 8 轮接上）
+    else { dom.searchInput.focus(); dom.searchInput.select(); }
   }
   // Ctrl+D 删除当前笔记（输入字段内不接管）
   if (e.ctrlKey && e.key === 'd' && !inTypingField()) {

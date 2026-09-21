@@ -12,6 +12,9 @@ import { dom, $, state } from './01-core.js';
 import { debouncedSave, setSaveDot } from './03-notes.js';
 import { bindPreviewLinks, hydrateMarkdownAssets, renderMarkdown } from './14-markdown-render.js';
 import { applyMarkdownAction } from './17-markdown-actions.js';
+import { updateStatusBar } from './21-status-bar.js';
+import { refreshOutline, syncOutlineActive } from './22-outline.js';
+import { refreshFindIfOpen } from './23-find-bar.js';
 
 const PREVIEW_DELAY = 180;      // 预览渲染节流（毫秒）
 
@@ -56,7 +59,11 @@ export function initMarkdownEditor() {
     setSaveDot('dirty');
     debouncedSave();
     schedulePreview();
+    updateStatusBar();
+    refreshOutline();
+    refreshFindIfOpen();
   });
+  cm.on('cursorActivity', () => { updateStatusBar(); syncOutlineActive(); });
   cm.on('scroll', () => syncScroll('source'));
   const pane = document.getElementById('md-preview-pane');
   if (pane) pane.addEventListener('scroll', () => syncScroll('preview'));

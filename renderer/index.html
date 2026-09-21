@@ -299,7 +299,43 @@
       </div>
       <!-- 贴纸浮动覆盖层 -->
       <div id="sticker-overlay" class="sticker-overlay"></div>
+
+      <!-- 编辑器状态栏：字数 / 结构 / 大纲入口（第 8 轮） -->
+      <div id="editor-status" class="editor-status hidden">
+        <span id="status-text" class="status-text"></span>
+        <span class="status-spacer"></span>
+        <span id="status-format" class="status-format"></span>
+        <button id="btn-outline" class="status-btn" title="大纲（标题导航）">大纲</button>
       </div>
+      </div>
+
+      <!-- 查找 / 替换条（两种编辑器共用） -->
+      <div id="find-bar" class="find-bar hidden">
+        <div class="find-row">
+          <input id="find-input" class="find-input" type="text" placeholder="查找…" spellcheck="false">
+          <span id="find-count" class="find-count"></span>
+          <label class="find-case-label" title="区分大小写">
+            <input id="find-case" type="checkbox"> Aa
+          </label>
+          <button id="find-prev" class="find-btn" title="上一个 (Shift+Enter)">↑</button>
+          <button id="find-next" class="find-btn" title="下一个 (Enter)">↓</button>
+          <button id="find-close" class="find-btn" title="关闭 (Esc)">×</button>
+        </div>
+        <div id="find-replace-row" class="find-row hidden">
+          <input id="find-replace-input" class="find-input" type="text" placeholder="替换为…" spellcheck="false">
+          <button id="find-replace-one" class="find-btn" title="替换当前">替换</button>
+          <button id="find-replace-all" class="find-btn" title="全部替换">全部</button>
+        </div>
+      </div>
+
+      <!-- 大纲抽屉 -->
+      <aside id="outline-drawer" class="outline-drawer hidden">
+        <div class="outline-head">
+          <span>大纲</span>
+          <button id="outline-close" class="find-btn" title="关闭">×</button>
+        </div>
+        <div id="outline-list" class="outline-list"></div>
+      </aside>
 
       <!-- 无笔记时显示 -->
 
@@ -1038,6 +1074,10 @@
 (function () {
   // 第三方 UMD：先加载，模块图按全局使用（Markdown 相关三个库同样离线自带，不联网）
   var CLASSIC = [
+    // highlight.js **必须排在 quill.js 之前**：Quill 的 syntax 模块在**自己加载的那一刻**
+    // 就把 window.hljs 抄进了默认配置（`Q.DEFAULTS={hljs:window.hljs,...}`），之后再出现就晚了，
+    // 构造 Quill 会直接抛 "Syntax module requires highlight.js"。
+    'vendor/highlight.min.js',
     'quill.js', 'katex/katex.min.js',
     'vendor/markdown-it.min.js', 'vendor/purify.min.js',
     'vendor/codemirror.js', 'vendor/codemirror-markdown.js',

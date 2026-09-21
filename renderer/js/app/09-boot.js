@@ -8,6 +8,9 @@ import { initNoteFormatBadge } from './15-note-format.js';
 import { initMarkdownToolbar } from './16-markdown-toolbar.js';
 import { initTodoPanel } from './18-todo-panel.js';
 import { initSavedSearches } from './20-saved-searches.js';
+import { initStatusBar } from './21-status-bar.js';
+import { initOutline } from './22-outline.js';
+import { initFindBar } from './23-find-bar.js';
 import { loadNotes, previewHtmlFor, renderNoteList } from './03-notes.js';
 import { loadSettings } from './04-appearance.js';
 import { loadTagFilter } from './05-shell.js';
@@ -248,6 +251,9 @@ async function initApp() {
   initMarkdownToolbar();  // Markdown 工具栏（加粗/列表/待办/表格/图片/附件…）
   initTodoPanel();        // 跨笔记待办清单
   initSavedSearches();    // 侧栏「视图」区（保存的搜索）
+  initStatusBar();        // 状态栏（字数统计）
+  initOutline();          // 大纲抽屉
+  initFindBar();          // 笔记内查找替换
   // 字体/字号下拉同步
   syncFontSizeDisplay();
 

@@ -308,6 +308,10 @@ export function showEditorUI() {
   if (mdPane) mdPane.classList.toggle('hidden', !isMd);
   dom.noNoteHint.classList.add('hidden');
   dom.titleInput.classList.remove('hidden');
+  // 状态栏 / 查找条 / 大纲在"无笔记"时用 CSS 隐藏（见 style.css）。
+  // 做成 body 上的一个类而不是在这里 import 那三个模块：01-core 是叶子模块，
+  // 反过来 import 会形成环；而「无笔记」本来就是整个编辑区的一种状态。
+  document.body.classList.remove('no-active-note');
 }
 export function hideEditorUI() {
   const tb = document.querySelector('.ql-toolbar');
@@ -321,5 +325,6 @@ export function hideEditorUI() {
   if (mdPane) mdPane.classList.add('hidden');
   dom.noNoteHint.classList.remove('hidden');
   dom.titleInput.classList.add('hidden');
+  document.body.classList.add('no-active-note');
 }
 

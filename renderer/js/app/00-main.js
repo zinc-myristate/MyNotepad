@@ -40,6 +40,9 @@ import './17-markdown-actions.js';
 import './18-todo-panel.js';
 import './19-command-panel.js';
 import './20-saved-searches.js';
+import './21-status-bar.js';
+import './22-outline.js';
+import './23-find-bar.js';
 import '../quill/quill-deco.js';
 
 // ----- 对外接口 -----
