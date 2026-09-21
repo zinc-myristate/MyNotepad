@@ -9,20 +9,35 @@ def delta(text):
 
 
 @pytest.fixture
-def seeded(api):
-    """三篇笔记：普通中文、普通英文、加密"""
-    a = api.notes_create()['id']
-    api.notes_update(a, {'title': '工作计划', 'content': delta('明天开会讨论项目进度安排')})
-    b = api.notes_create()['id']
-    api.notes_update(b, {'title': 'Meeting Notes', 'content': delta('discuss the quarterly roadmap')})
-    c = api.notes_create()['id']
-    api.notes_update(c, {'title': '私密日记', 'content': delta('这是绝密内容不该被搜到')})
+def seeded(delta_note, api):
+    """三篇 delta 笔记：普通中文、普通英文、加密"""
+    a = delta_note('工作计划', delta('明天开会讨论项目进度安排'))
+    b = delta_note('Meeting Notes', delta('discuss the quarterly roadmap'))
+    c = delta_note('私密日记', delta('这是绝密内容不该被搜到'))
     api.note_set_password(c, 'secret123')
     return {'cn': a, 'en': b, 'enc': c}
 
 
 def ids(result):
     return set(result['ids'])
+
+
+@pytest.fixture
+def delta_note(api, backend_mod):
+    """建一篇**显式 delta 格式**的笔记。
+
+    第 6 轮起 notes_create 默认 'md'（Markdown 文本），而本文件大量用例构造的是
+    Quill Delta JSON —— 那些是「Delta 时代」的行为契约，必须显式声明格式；否则
+    md 解析器会把 JSON 当成 Markdown 正文，测出来的结论没有意义。
+    """
+    def make(title='', content=''):
+        nid = api.notes_create()['id']
+        backend_mod.conn.execute("UPDATE notes SET format = 'delta' WHERE id = ?", (nid,))
+        backend_mod.conn.commit()
+        api.notes_update(nid, {'title': title, 'content': content})
+        return nid
+
+    return make
 
 
 class TestSearch:
@@ -132,9 +147,8 @@ class TestSnippets:
         assert '项目进度' in snip
         assert '明天开会' in snip, '片段应带上下文，便于判断是否是想要的笔记'
 
-    def test_snippet_adds_ellipsis_when_truncated(self, api):
-        nid = api.notes_create()['id']
-        api.notes_update(nid, {'title': '长文', 'content': delta('开头' + '填充' * 60 + '目标词' + '后续' * 60)})
+    def test_snippet_adds_ellipsis_when_truncated(self, api, delta_note):
+        nid = delta_note('长文', delta('开头' + '填充' * 60 + '目标词' + '后续' * 60))
         snip = api.notes_search('目标词')['snippets'][nid]
         assert '目标词' in snip
         assert snip.startswith('…') and snip.endswith('…'), '两侧被截断时应加省略号'
@@ -158,38 +172,33 @@ class TestSnippets:
 class TestPreview:
     """列表摘要（notes_list 的 preview 字段）：正文纯文本、加密/坏数据不外泄"""
 
-    def test_preview_is_plaintext_not_delta(self, api):
-        nid = api.notes_create()['id']
-        api.notes_update(nid, {'title': 'T', 'content': delta('第一行正文\n第二行正文')})
+    def test_preview_is_plaintext_not_delta(self, api, delta_note):
+        nid = delta_note('T', delta('第一行正文\n第二行正文'))
         n = [x for x in api.notes_list() if x['id'] == nid][0]
         assert n['preview'] == '第一行正文 第二行正文'
         assert 'ops' not in n['preview']
 
-    def test_preview_truncated(self, api, backend_mod):
-        nid = api.notes_create()['id']
-        api.notes_update(nid, {'title': 'T', 'content': delta('字' * 500)})
+    def test_preview_truncated(self, api, backend_mod, delta_note):
+        nid = delta_note('T', delta('字' * 500))
         n = [x for x in api.notes_list() if x['id'] == nid][0]
         assert len(n['preview']) == backend_mod.PREVIEW_MAX
 
-    def test_preview_empty_for_encrypted(self, api):
-        nid = api.notes_create()['id']
-        api.notes_update(nid, {'title': 'T', 'content': delta('绝密正文')})
+    def test_preview_empty_for_encrypted(self, api, delta_note):
+        nid = delta_note('T', delta('绝密正文'))
         api.note_set_password(nid, 'secret123')
         n = [x for x in api.notes_list() if x['id'] == nid][0]
         assert n['preview'] == '', '加密笔记不能把明文/密文摘要送到前端'
         assert n['has_password'] == 1
 
-    def test_preview_skips_embeds_and_bad_json(self, api):
-        nid = api.notes_create()['id']
-        api.notes_update(nid, {'title': 'T', 'content': '{"ops":[{"insert":{"image":"x"}},{"insert":"文字"}]}'})
+    def test_preview_skips_embeds_and_bad_json(self, api, delta_note):
+        nid = delta_note('T', '{"ops":[{"insert":{"image":"x"}},{"insert":"文字"}]}')
         assert [x for x in api.notes_list() if x['id'] == nid][0]['preview'] == '文字'
         api.notes_update(nid, {'title': 'T', 'content': '不是JSON'})
         assert [x for x in api.notes_list() if x['id'] == nid][0]['preview'] == '', \
             '坏数据不能把原始 JSON 当摘要显示'
 
-    def test_notes_list_does_not_ship_content(self, api):
-        nid = api.notes_create()['id']
-        api.notes_update(nid, {'title': 'T', 'content': delta('正文')})
+    def test_notes_list_does_not_ship_content(self, api, delta_note):
+        nid = delta_note('T', delta('正文'))
         n = [x for x in api.notes_list() if x['id'] == nid][0]
         assert 'content' not in n, 'notes_list 不应把整篇正文发给前端（大 payload + 密文外泄）'
 

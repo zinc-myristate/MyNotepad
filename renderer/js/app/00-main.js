@@ -32,6 +32,8 @@ import './09-boot.js';
 import './10-trash.js';
 import './11-quick-switch.js';
 import './12-bulk-actions.js';
+import './13-markdown-editor.js';
+import './14-markdown-render.js';
 import '../quill/quill-deco.js';
 
 // ----- 对外接口 -----

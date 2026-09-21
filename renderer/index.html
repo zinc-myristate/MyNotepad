@@ -6,6 +6,7 @@
   <title>我的记事本</title>
   <link rel="stylesheet" href="quill.snow.css">
   <link rel="stylesheet" href="katex/katex.min.css">
+  <link rel="stylesheet" href="vendor/codemirror.css">
   <link rel="stylesheet" href="style.css">
 </head>
 <body data-theme="white">
@@ -246,9 +247,18 @@
         </span>
       </div>
 
-      <!-- Quill 编辑器 -->
+      <!-- Quill 编辑器（Delta 笔记；与下面的 Markdown 双栏共用最后一行网格） -->
       <div id="quill-editor" class="quill-editor">
         <!-- Quill 会在这里初始化 -->
+      </div>
+      <!-- Markdown 编辑器：左源码 + 右实时预览（新建笔记默认走这里） -->
+      <div id="md-editor" class="md-editor hidden">
+        <div id="md-source-pane" class="md-pane md-source-pane">
+          <textarea id="md-source" spellcheck="false" placeholder="开始写 Markdown…（支持 # 标题、- 列表、- [ ] 待办、$公式$、![](图片)）"></textarea>
+        </div>
+        <div id="md-preview-pane" class="md-pane md-preview-pane">
+          <div id="md-preview" class="md-preview"></div>
+        </div>
       </div>
       <!-- 贴纸浮动覆盖层 -->
       <div id="sticker-overlay" class="sticker-overlay"></div>
@@ -974,7 +984,13 @@
      重试次数记在 sessionStorage（reload 后仍在），超过上限就报出具体失败原因。 -->
 <script>
 (function () {
-  var CLASSIC = ['quill.js', 'katex/katex.min.js'];   // 第三方 UMD：先加载，模块图按全局使用
+  // 第三方 UMD：先加载，模块图按全局使用（Markdown 相关三个库同样离线自带，不联网）
+  var CLASSIC = [
+    'quill.js', 'katex/katex.min.js',
+    'vendor/markdown-it.min.js', 'vendor/purify.min.js',
+    'vendor/codemirror.js', 'vendor/codemirror-markdown.js',
+    'vendor/codemirror-continuelist.js'
+  ];
   var ENTRY = './js/app/00-main.js';                  // 应用模块图唯一入口
   var MAX_TRY = 4;                                    // 单个经典脚本的最大尝试次数
   var MAX_RELOAD = window.__appBootMaxRetry || 4;     // 模块图失败时的整页重试上限

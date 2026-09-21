@@ -2,6 +2,9 @@
 
 // ====== ESM 依赖（原先靠全局作用域与加载顺序隐式依赖，现显式声明）======
 import { $, dom, hideEditorUI, openPanel, reportError, saveIndicatorTimer, setSaveIndicatorTimer, showConfirmAsync, showEditorUI, showToast, state } from './01-core.js';
+import {
+  getMarkdownContent, setMarkdownContent, setMarkdownReadOnly, setMarkdownVisible,
+} from './13-markdown-editor.js';
 import { notesStore } from './01b-store.js';
 import { isVoiceRecording, stopVoiceRecording, toggleFavoriteNote, togglePinNote } from './02-editor.js';
 import { applyNoteBackground } from './04-appearance.js';
@@ -235,19 +238,29 @@ export async function selectNote(noteId) {
     // 如果笔记已加密且未解锁，不加载内容，显示密码验证面板
     if (note.is_encrypted) {
       state.activeNoteId = note.id;
+      state.noteFormat = note.format === 'md' ? 'md' : 'delta';
       state.currentContent = '';
       state.currentTitle = note.title || '';
       setSaveDot('saved');  // 加密锁定态不闪
       dom.titleInput.value = note.title || '';
       dom.titleInput.classList.remove('hidden');
       dom.titleInput.readOnly = true;  // 加密未解锁时禁止编辑标题
-      document.querySelector('.ql-toolbar')?.classList.remove('hidden');
-      dom.quillEditor.classList.remove('hidden');
-      dom.noNoteHint.classList.add('hidden');
-      if (state.quill) {
-        state.quill.setContents([]);
-        state.quill.enable(false);
+      if (state.noteFormat === 'md') {
+        // 锁定态：显示空的只读源码栏，别让用户以为内容丢了
+        setMarkdownVisible(true);
+        setMarkdownContent('');
+        setMarkdownReadOnly(true);
+        document.querySelector('.ql-toolbar')?.classList.add('hidden');
+        dom.quillEditor.classList.add('hidden');
+      } else {
+        document.querySelector('.ql-toolbar')?.classList.remove('hidden');
+        dom.quillEditor.classList.remove('hidden');
+        if (state.quill) {
+          state.quill.setContents([]);
+          state.quill.enable(false);
+        }
       }
+      dom.noNoteHint.classList.add('hidden');
       updateNoteListItem(noteId);
       state.isLoading = false;
       // 弹出密码验证面板
@@ -260,31 +273,39 @@ export async function selectNote(noteId) {
     }
 
     state.activeNoteId = note.id;
+    state.noteFormat = note.format === 'md' ? 'md' : 'delta';
     state.currentContent = note.content || '';
     state.currentTitle = note.title || '';
     setSaveDot('saved');
 
-    // 显示编辑器，隐藏空提示
+    // 显示编辑器，隐藏空提示（按格式决定显示 Quill 还是 Markdown 双栏）
     showEditorUI();
 
     // 设置标题
     dom.titleInput.value = note.title || '';
     dom.titleInput.readOnly = false;  // 解锁后允许编辑标题
 
-    // 设置编辑器内容
-    if (state.quill) {
-      state.quill.enable(true);
-      if (note.content) {
-        // Quill 内容可能是 HTML 或 Delta
-        try {
-          const delta = JSON.parse(note.content);
-          state.quill.setContents(delta);
-        } catch {
-          // 如果不是 JSON，作为 HTML 处理
-          state.quill.setText(note.content);
+    // 设置编辑器内容：按 format 分流，这是双轨唯一的分叉点
+    if (state.noteFormat === 'md') {
+      setMarkdownVisible(true);
+      setMarkdownReadOnly(false);
+      setMarkdownContent(note.content || '');
+    } else {
+      setMarkdownVisible(false);
+      if (state.quill) {
+        state.quill.enable(true);
+        if (note.content) {
+          // Quill 内容可能是 HTML 或 Delta
+          try {
+            const delta = JSON.parse(note.content);
+            state.quill.setContents(delta);
+          } catch {
+            // 如果不是 JSON，作为 HTML 处理
+            state.quill.setText(note.content);
+          }
+        } else {
+          state.quill.setContents([]);
         }
-      } else {
-        state.quill.setContents([]);
       }
     }
 
@@ -330,6 +351,13 @@ export async function createNewNote() {
   }
 }
 
+/** 取当前编辑器里的正文 —— **唯一**读正文的地方（保存、关窗快照、手动保存都走它）。
+ *  Markdown 笔记存原始文本，Delta 笔记存序列化后的 Delta JSON。 */
+function currentEditorContent() {
+  if (state.noteFormat === 'md') return getMarkdownContent();
+  return state.quill ? JSON.stringify(state.quill.getContents()) : '';
+}
+
 // ====== 保存状态小圆点（灰=已保存 / 主题色呼吸=未保存或保存中 / 红=保存失败） ======
 export function setSaveDot(s) {
   const d = document.getElementById('save-dot');
@@ -344,7 +372,8 @@ export async function saveCurrentNote() {
   // 期间可能有新输入；且旧保存完成后会更新基线，跳过会让新改动失去触发时机）
   if (state._savePromise) await state._savePromise;
   if (!state.activeNoteId) return;
-  if (state.quill && !state.quill.isEnabled()) return; // 加密未解锁时编辑器禁用，防止空内容覆盖
+  // 加密未解锁时编辑器禁用，防止空内容覆盖（Markdown 笔记走只读源码，不存在这个状态）
+  if (state.noteFormat !== 'md' && state.quill && !state.quill.isEnabled()) return;
   const noteId = state.activeNoteId;
   const note = state.notes.find(n => n.id === noteId);
   if (note && note.has_password && !unlockedNotes[noteId]) return;
@@ -355,7 +384,7 @@ export async function saveCurrentNote() {
       if (typeof syncStickersToQuill === 'function') syncStickersToQuill();
 
       const title = dom.titleInput.value.trim() || '未命名笔记';
-      const content = state.quill ? JSON.stringify(state.quill.getContents()) : '';
+      const content = currentEditorContent();
       // 去重基线用 currentTitle/currentContent，不能用 state.notes（标题输入处理器为刷新列表
       // 已提前更新 state.notes[].title，拿它比较会误判"无变化"导致纯标题修改永不落库）
       if (title === state.currentTitle && content === state.currentContent) {
@@ -403,13 +432,16 @@ window.addEventListener('beforeunload', () => {
 // 必须保持同步、镜像 saveCurrentNote 的全部守卫。
 window.__getUnsavedSnapshot = function () {
   try {
-    if (!state.activeNoteId || !state.quill) return null;
-    if (!state.quill.isEnabled()) return null;                      // 加密锁定态
+    if (!state.activeNoteId) return null;
+    if (state.noteFormat !== 'md') {
+      if (!state.quill) return null;
+      if (!state.quill.isEnabled()) return null;                    // 加密锁定态
+    }
     const note = state.notes.find(n => n.id === state.activeNoteId);
     if (note && note.has_password && !unlockedNotes[state.activeNoteId]) return null;
-    if (typeof syncStickersToQuill === 'function') syncStickersToQuill();
+    if (state.noteFormat !== 'md' && typeof syncStickersToQuill === 'function') syncStickersToQuill();
     const title = dom.titleInput.value.trim() || '未命名笔记';
-    const content = JSON.stringify(state.quill.getContents());
+    const content = currentEditorContent();
     if (title === state.currentTitle && content === state.currentContent) return null; // 无未存改动
     return JSON.stringify({ noteId: state.activeNoteId, title: title, content: content });
   } catch (e) {

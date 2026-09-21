@@ -6,7 +6,7 @@ import threading
 import time
 
 import pytest
-from conftest import PROJECT_ROOT, load_app_partial
+from conftest import PROJECT_ROOT, load_app_partial, make_delta_note
 
 pytestmark = pytest.mark.e2e
 
@@ -125,7 +125,8 @@ def test_image_dict_embed_renders_and_persists(tmp_path, monkeypatch):
     import base64
 
     import backend
-    nid = backend.api.notes_create()['id']
+    # 这条链路走的是 Quill（NoteImageBlot），必须显式 delta 格式
+    nid = make_delta_note(backend)
     # Python 侧落盘一张 1x1 PNG（与生产插入路径一致）
     png = base64.b64decode(
         'iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mP8z8BQDwAEhQGAhKmMIQAAAABJRU5ErkJggg==')

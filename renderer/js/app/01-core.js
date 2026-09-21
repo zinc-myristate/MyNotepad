@@ -41,6 +41,9 @@ export const state = {
   currentContent: '',       // 当前笔记的 HTML 内容（用于比较是否变化）
   currentTitle: '',         // 当前笔记已落库的标题（保存去重基线，独立于 state.notes 的即时 UI 更新）
   quill: null,
+  // 当前笔记的正文格式：'delta'（Quill Delta JSON，历史笔记）或 'md'（Markdown 文本）。
+  // 这是前端的**唯一格式判据**：编辑器分流、保存取值、存档基线全看它。
+  noteFormat: 'md',
   isLoading: false,
   isSaving: false,
   currentTheme: 'white',
@@ -292,11 +295,15 @@ export function showToast(msg, { type = 'info', duration = 2500 } = {}) {
 
 // ====== 编辑器 UI 显隐 ======
 export function showEditorUI() {
+  const isMd = state.noteFormat === 'md';
+  // Quill 工具栏与字体/字号栏只对 Delta 笔记有意义；Markdown 笔记用源码 + 预览
   const tb = document.querySelector('.ql-toolbar');
-  if (tb) tb.classList.remove('hidden');
+  if (tb) tb.classList.toggle('hidden', isMd);
   const fsb = $('#font-size-bar');
-  if (fsb) fsb.style.display = 'flex';
-  dom.quillEditor.classList.remove('hidden');
+  if (fsb) fsb.style.display = isMd ? 'none' : 'flex';
+  dom.quillEditor.classList.toggle('hidden', isMd);
+  const mdPane = $('#md-editor');
+  if (mdPane) mdPane.classList.toggle('hidden', !isMd);
   dom.noNoteHint.classList.add('hidden');
   dom.titleInput.classList.remove('hidden');
 }
@@ -306,6 +313,8 @@ export function hideEditorUI() {
   const fsb = $('#font-size-bar');
   if (fsb) fsb.style.display = 'none';
   dom.quillEditor.classList.add('hidden');
+  const mdPane = $('#md-editor');
+  if (mdPane) mdPane.classList.add('hidden');
   dom.noNoteHint.classList.remove('hidden');
   dom.titleInput.classList.add('hidden');
 }

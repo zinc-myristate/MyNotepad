@@ -146,6 +146,13 @@ try: conn.execute("ALTER TABLE notes ADD COLUMN enc_dek TEXT")  # 内容加密�
 except Exception: pass
 try: conn.execute("ALTER TABLE notes ADD COLUMN deleted_at TEXT")  # 回收站：软删除时间，NULL=正常
 except Exception: pass
+# 正文格式：'delta'（Quill Delta JSON，历史笔记）或 'md'（Markdown 文本，新笔记默认）。
+# 双轨并存：**唯一的格式判据**就是这个字段——摘要/搜索索引/导出/编辑器分流全看它。
+try: conn.execute("ALTER TABLE notes ADD COLUMN format TEXT NOT NULL DEFAULT 'delta'")
+except Exception: pass
+# 从 Delta 转成 Markdown 时留下的原始正文（回滚用；NULL = 没转换过）
+try: conn.execute("ALTER TABLE notes ADD COLUMN delta_backup TEXT")
+except Exception: pass
 # 索引必须在 ALTER 之后单独建（不能合并进 executescript 的 CREATE TABLE 流程）
 try: conn.execute("CREATE INDEX IF NOT EXISTS idx_notes_deleted ON notes(deleted_at)")
 except Exception: pass
@@ -175,6 +182,9 @@ conn.executescript("""
     );
     CREATE INDEX IF NOT EXISTS idx_versions_note ON versions(note_id);
 """)
+# 历史版本也要记格式：否则「Markdown 笔记恢复一个 Delta 版本」会得到一篇读不出来的正文
+try: conn.execute("ALTER TABLE versions ADD COLUMN format TEXT NOT NULL DEFAULT 'delta'")
+except Exception: pass
 # 笔记本表扩展字段（必须在 CREATE TABLE 之后）
 try: conn.execute("ALTER TABLE notebooks ADD COLUMN color TEXT DEFAULT '#7D8A6E'")
 except Exception: pass
@@ -812,16 +822,59 @@ def _delta_to_text(content):
         text = content
     return text[:100_000]
 
+_MD_SCRIPT = re.compile(r'<(script|style)\b.*?</\1>', re.I | re.S)
+_MD_IMAGE = re.compile(r'!\[([^\]]*)\]\([^)]*\)')
+_MD_LINK = re.compile(r'\[([^\]]*)\]\([^)]*\)')
+_MD_TAG = re.compile(r'<[^>]+>')
+_MD_INLINE = re.compile(r'`{1,3}|~{2}|\*{1,3}')
+# 行内标记**直接删掉**，不能替换成空格：`这是**正文**内容` 若变成「这是正文 内容」，
+# 用户搜「正文内容」就永远搜不到（FTS trigram 匹配的是连续子串）。
+# 下划线故意不处理：CommonMark 里词内下划线本就不是强调（`my_var` 不该变成 `myvar`）。
+_MD_BLOCK = re.compile(
+    r'^\s*>+\s*'                               # 引用
+    r'|^\s*[-*+]\s+(\[[ xX]\]\s*)?'            # 列表 / 待办
+    r'|^\s*\d+[.)]\s+'                         # 有序列表
+    r'|^#{1,6}\s+', re.M)                      # 标题
+_MD_ENTITIES = (('&nbsp;', ' '), ('&lt;', '<'), ('&gt;', '>'),
+                ('&quot;', '"'), ('&#39;', "'"), ('&amp;', '&'))
+
+
+def _markdown_to_text(md):
+    """Markdown → 纯文本（搜索索引 / 列表摘要用）。
+
+    顺序有讲究：先摘掉 script/style 整段，再把图片/链接换成它们的文字，最后才去标签——
+    反过来会把 `<img alt="说明">` 的尖括号内容切成半截。
+    """
+    if not md:
+        return ''
+    text = _MD_SCRIPT.sub(' ', md)
+    text = _MD_IMAGE.sub(lambda m: m.group(1), text)
+    text = _MD_LINK.sub(lambda m: m.group(1), text)
+    text = _MD_TAG.sub(' ', text)              # 白名单内嵌 HTML（span/u/hr…）只留文字
+    text = _MD_INLINE.sub('', text)            # 行内标记不留空格（否则会切断连续子串）
+    text = _MD_BLOCK.sub(' ', text)            # 块级前缀换成空格，避免把两行粘成一个词
+    for ent, ch in _MD_ENTITIES:               # &amp; 必须最后解，否则 &amp;lt; 会解成 <
+        text = text.replace(ent, ch)
+    return text[:100_000]
+
+
+def note_plain_text(content, fmt='delta'):
+    """按 format 取正文纯文本 —— 所有需要「读正文」的地方都走这里，别再各自判断"""
+    return _markdown_to_text(content) if fmt == 'md' else _delta_to_text(content)
+
+
 PREVIEW_MAX = 120      # 列表摘要最长字符数（列表里只有一行，再多也是被省略号截掉）
 
-def _preview_text(content, limit=PREVIEW_MAX):
-    """Quill Delta JSON → 单行摘要（列表显示用）。
+def _preview_text(content, limit=PREVIEW_MAX, fmt='delta'):
+    """正文 → 单行摘要（列表显示用）。Markdown 笔记剥掉标记，Delta 笔记走原逻辑。
 
     与 _delta_to_text 的区别：解析失败返回**空串**而不是原始 JSON——摘要位置显示一坨
     `{"ops":[...` 比不显示更糟。取够 limit*2 个字符就停，不必遍历全部 ops。
     """
     if not content:
         return ''
+    if fmt == 'md':
+        return ' '.join(_markdown_to_text(content).split())[:limit]
     try:
         data = json.loads(content)
     except Exception:
@@ -841,13 +894,13 @@ def _preview_text(content, limit=PREVIEW_MAX):
                 break
     return ' '.join(''.join(parts).split())[:limit]   # 折叠换行与连续空白
 
-def _fts_sync(note_id, title, plain_content):
+def _fts_sync(note_id, title, plain_content, fmt='delta'):
     """重写单条 FTS 行。plain_content=None（加密笔记）时 body 恒空——索引绝不落加密明文。"""
     if not FTS_AVAILABLE:
         return
     try:
         conn.execute("DELETE FROM notes_fts WHERE note_id = ?", (note_id,))
-        body = _delta_to_text(plain_content) if plain_content is not None else ''
+        body = note_plain_text(plain_content, fmt) if plain_content is not None else ''
         conn.execute("INSERT INTO notes_fts (note_id, title, body) VALUES (?, ?, ?)",
                      (note_id, title or '', body))
     except Exception:
@@ -856,11 +909,12 @@ def _fts_sync(note_id, title, plain_content):
 def _fts_sync_from_row(note_id):
     """从 notes 表当前行重建 FTS 行（加密笔记 body 空，明文笔记提取正文）"""
     row = conn.execute(
-        "SELECT title, content, password_hash FROM notes WHERE id = ?", (note_id,)
+        "SELECT title, content, password_hash, format FROM notes WHERE id = ?", (note_id,)
     ).fetchone()
     if not row:
         return
-    _fts_sync(note_id, row['title'], None if row['password_hash'] else row['content'])
+    _fts_sync(note_id, row['title'], None if row['password_hash'] else row['content'],
+              row['format'] or 'delta')
 
 def _fts_delete(note_id):
     if not FTS_AVAILABLE:
@@ -1060,7 +1114,7 @@ class Api:
         # 加密笔记（无论是否已解锁）一律给空串——列表渲染不参与解锁流程，摘要留给解锁后的编辑区。
         rows = conn.execute(
             "SELECT id, title, bg_type, bg_value, bg_opacity, is_pinned, is_favorite, "
-            "notebook_id, sort_order, created_at, updated_at, content, password_hash "
+            "notebook_id, sort_order, created_at, updated_at, content, password_hash, format "
             "FROM notes WHERE deleted_at IS NULL "
             "ORDER BY is_pinned DESC, sort_order DESC, updated_at DESC"
         ).fetchall()
@@ -1068,9 +1122,10 @@ class Api:
         for r in rows:
             d = dict(r)
             raw = d.pop('content', '') or ''
+            fmt = d.get('format') or 'delta'
             has_pwd = bool(d.pop('password_hash', None))
             d['has_password'] = 1 if has_pwd else 0
-            d['preview'] = '' if has_pwd else _preview_text(raw)
+            d['preview'] = '' if has_pwd else _preview_text(raw, fmt=fmt)
             out.append(d)
         return out
 
@@ -1127,14 +1182,15 @@ class Api:
         nid = str(uuid.uuid4())
         max_order = _next_sort_order('notes')
         title = (src.get('title') or '未命名笔记') + ' 副本'
+        fmt = src.get('format') or 'delta'
         conn.execute(
             "INSERT INTO notes (id, title, content, bg_type, bg_value, bg_opacity, bg_zoom, "
             "bg_pos_x, bg_pos_y, notebook_id, paper_style, paper_color, cover_type, cover_value, "
-            "sort_order) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
+            "sort_order, format) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
             (nid, title, content, src.get('bg_type'), src.get('bg_value'), src.get('bg_opacity'),
              src.get('bg_zoom'), src.get('bg_pos_x'), src.get('bg_pos_y'), src.get('notebook_id'),
              src.get('paper_style'), src.get('paper_color'), src.get('cover_type'),
-             src.get('cover_value'), max_order)
+             src.get('cover_value'), max_order, fmt)
         )
         # 标签一起复制
         for r in conn.execute("SELECT tag_id FROM note_tags WHERE note_id = ?", (note_id,)).fetchall():
@@ -1159,17 +1215,19 @@ class Api:
                     (str(uuid.uuid4()), nid, a['filename'], a['original_name'], a['mime_type'],
                      a['file_size'], a['type'])
                 )
-        _fts_sync(nid, title, content)
+        _fts_sync(nid, title, content, fmt)
         conn.commit()
         return self.notes_get(nid)
 
     def notes_create(self):
+        # 新笔记默认 Markdown（第 6 轮起的双轨策略）；历史笔记保持 delta，按需转换
         nid = str(uuid.uuid4())
         conn.execute(
-            "INSERT INTO notes (id, title, content, sort_order) VALUES (?, '未命名笔记', '', ?)",
+            "INSERT INTO notes (id, title, content, sort_order, format) "
+            "VALUES (?, '未命名笔记', '', ?, 'md')",
             (nid, _next_sort_order('notes'))
         )
-        _fts_sync(nid, '未命名笔记', '')
+        _fts_sync(nid, '未命名笔记', '', 'md')
         conn.commit()
         return self.notes_get(nid)
 
@@ -1362,14 +1420,14 @@ class Api:
         out = {}
         marks = ','.join('?' * len(note_ids))
         rows = conn.execute(
-            f"SELECT id, content, password_hash FROM notes WHERE id IN ({marks})",
+            f"SELECT id, content, password_hash, format FROM notes WHERE id IN ({marks})",
             list(note_ids)).fetchall()
         ql = q.lower()
         for r in rows:
             if r['password_hash']:
                 out[r['id']] = ''      # 加密笔记不外泄任何正文片段
                 continue
-            text = ' '.join(_delta_to_text(r['content']).split())
+            text = ' '.join(note_plain_text(r['content'], r['format'] or 'delta').split())
             i = text.lower().find(ql)
             if i < 0:
                 out[r['id']] = text[:width * 2]        # 标题命中：给正文开头
@@ -1593,8 +1651,9 @@ class Api:
             return None  # 笔记已加密且未解锁，拒绝恢复
         # 版本与正文共用同一 DEK 且 AAD 均为 note_id，密文可直接拷贝，无需解密重加密
         conn.execute(
-            "UPDATE notes SET title = ?, content = ?, updated_at = datetime('now','localtime') WHERE id = ?",
-            (ver['title'], ver['content'], ver['note_id'])
+            "UPDATE notes SET title = ?, content = ?, format = ?, "
+            "updated_at = datetime('now','localtime') WHERE id = ?",
+            (ver['title'], ver['content'], ver.get('format') or 'delta', ver['note_id'])
         )
         _fts_sync_from_row(ver['note_id'])
         conn.commit()
@@ -1614,7 +1673,8 @@ class Api:
 
     def versions_create(self, note_id, title, content):
         # 加密笔记：必须已在后端解锁，版本内容加密后入库
-        parent = conn.execute("SELECT password_hash FROM notes WHERE id = ?", (note_id,)).fetchone()
+        parent = conn.execute("SELECT password_hash, format FROM notes WHERE id = ?",
+                              (note_id,)).fetchone()
         dek = None
         if parent and parent['password_hash']:
             dek = _unlocked_deks.get(note_id)
@@ -1634,8 +1694,9 @@ class Api:
         store_content = _encrypt_content(dek, content, note_id) if dek is not None else content
         vid = str(uuid.uuid4())
         conn.execute(
-            "INSERT INTO versions (id, note_id, title, content) VALUES (?, ?, ?, ?)",
-            (vid, note_id, title, store_content)
+            "INSERT INTO versions (id, note_id, title, content, format) VALUES (?, ?, ?, ?, ?)",
+            (vid, note_id, title, store_content,
+             (parent['format'] if parent else None) or 'delta')
         )
         # 清理旧版本（保留最新 50 个）
         conn.execute("""

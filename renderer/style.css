@@ -839,6 +839,100 @@ body.adaptive-bg .panel-dialog {
   overflow: hidden;
 }
 
+/* ====== Markdown 编辑器（源码 + 实时预览双栏） ======
+   与 #quill-editor 共用网格最后一行：两者都显式落在第 5 行，靠 hidden 类二选一显示，
+   否则新增一个网格子元素会落到隐式行、把整块布局顶乱。 */
+.md-editor {
+  grid-row: 5;
+  display: flex;
+  min-height: 0;
+  overflow: hidden;
+  border-top: 1px solid var(--border-light, rgba(0,0,0,0.08));
+}
+.md-editor.hidden { display: none; }
+.md-pane { min-width: 0; overflow: auto; }
+.md-source-pane { flex: 1 1 50%; border-right: 1px solid var(--border-light, rgba(0,0,0,0.08)); }
+.md-preview-pane { flex: 1 1 50%; background: transparent; }
+.md-source-pane .CodeMirror {
+  height: 100%;
+  background: transparent;
+  color: var(--text-primary);
+  font-family: var(--font-mono, Consolas, "Courier New", monospace);
+  font-size: 14px;
+  line-height: 1.7;
+}
+.md-source-pane .CodeMirror-scroll { padding: 18px 22px; }
+.md-source-pane textarea {
+  width: 100%; height: 100%; border: 0; outline: none; resize: none;
+  background: transparent; color: var(--text-primary); padding: 18px 22px;
+  font-family: var(--font-mono, Consolas, monospace); font-size: 14px; line-height: 1.7;
+}
+/* CodeMirror 语法着色：跟随主题变量，4 套主题 + 深色都不需要单独写一份 */
+.md-source-pane .cm-header { color: var(--accent-text); font-weight: 700; }
+.md-source-pane .cm-strong { font-weight: 700; }
+.md-source-pane .cm-em { font-style: italic; }
+.md-source-pane .cm-link, .md-source-pane .cm-url { color: var(--accent-text); }
+.md-source-pane .cm-quote { color: var(--text-muted); font-style: italic; }
+.md-source-pane .cm-comment { color: var(--text-muted); }
+.md-source-pane .cm-variable-2 { color: var(--text-primary); }
+
+.md-preview {
+  padding: 20px 26px 60px;
+  line-height: 1.85;
+  color: var(--text-primary);
+  word-wrap: break-word;
+}
+.md-preview > :first-child { margin-top: 0; }
+.md-preview h1, .md-preview h2, .md-preview h3,
+.md-preview h4, .md-preview h5, .md-preview h6 { color: var(--text-primary); line-height: 1.35; margin: 1.2em 0 0.5em; }
+.md-preview h1 { font-size: 1.7em; border-bottom: 2px solid var(--border-light, rgba(0,0,0,0.08)); padding-bottom: 6px; }
+.md-preview h2 { font-size: 1.4em; }
+.md-preview h3 { font-size: 1.2em; }
+.md-preview p { margin: 0.6em 0; }
+.md-preview ul, .md-preview ol { padding-left: 1.6em; margin: 0.6em 0; }
+.md-preview blockquote {
+  margin: 0.8em 0; padding: 2px 14px; color: var(--text-muted);
+  border-left: 3px solid var(--accent-light, rgba(0,0,0,0.12));
+}
+.md-preview code {
+  background: var(--glass-bg-strong, rgba(0,0,0,0.05));
+  padding: 1px 5px; border-radius: 4px; font-size: 0.92em;
+  font-family: var(--font-mono, Consolas, monospace);
+}
+.md-preview pre {
+  background: var(--glass-bg-strong, rgba(0,0,0,0.05));
+  padding: 12px 14px; border-radius: 8px; overflow-x: auto;
+}
+.md-preview pre code { background: none; padding: 0; }
+.md-preview hr { border: 0; border-top: 1px solid var(--border-light, rgba(0,0,0,0.12)); margin: 1.4em 0; }
+.md-preview a { color: var(--accent-text); text-decoration: none; border-bottom: 1px solid currentColor; }
+.md-preview img { max-width: 100%; border-radius: 8px; }
+.md-preview img[data-md-broken] {
+  min-width: 120px; min-height: 40px; border: 1px dashed var(--danger, #C0392B);
+  display: inline-block; color: var(--danger, #C0392B); font-size: 12px;
+}
+.md-preview table { border-collapse: collapse; margin: 0.8em 0; }
+.md-preview th, .md-preview td { border: 1px solid var(--border-light, rgba(0,0,0,0.12)); padding: 6px 10px; }
+.md-preview .md-task { list-style: none; margin-left: -1.4em; }
+.md-preview .md-task-box {
+  display: inline-block; width: 13px; height: 13px; margin-right: 7px;
+  border: 1.5px solid var(--accent-text); border-radius: 3px; vertical-align: -1px;
+}
+.md-preview .md-task-done { color: var(--text-muted); text-decoration: line-through; }
+.md-preview .md-task-done .md-task-box { background: var(--accent-solid, var(--accent-text)); }
+.md-preview .md-attachment {
+  display: inline-block; padding: 2px 10px; border-radius: 6px;
+  background: var(--glass-bg-strong, rgba(0,0,0,0.05)); border-bottom: 0; cursor: pointer;
+}
+.md-preview .divider-1, .md-preview .divider-2, .md-preview .divider-3 { border-top-width: 2px; }
+.md-fallback { white-space: pre-wrap; font-family: var(--font-mono, monospace); }
+
+/* 窄窗口：预览让位给源码（写作优先），低于 700px 只留一栏 */
+@media (max-width: 700px) {
+  .md-preview-pane { display: none; }
+  .md-source-pane { flex: 1 1 100%; border-right: 0; }
+}
+
 /* 无笔记提示 — 绝对定位覆盖编辑区 */
 .no-note-hint {
   position: absolute;

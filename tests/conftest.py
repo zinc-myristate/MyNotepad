@@ -37,6 +37,24 @@ def api(backend_mod):
     return backend_mod.api
 
 
+def make_delta_note(backend, title='', content='', notebook_id=None):
+    """建一篇**显式 delta 格式**的笔记。
+
+    第 6 轮起 notes_create 默认 'md'（Markdown 文本），凡是测试 Quill 行为
+    （工具栏、Delta 行内格式、嵌图、贴纸…）的用例都必须显式声明 format='delta'，
+    否则内容会被 Markdown 编辑器接管，断言看到的是空编辑器。
+    """
+    note = backend.api.notes_create()
+    nid = note['id']
+    backend.conn.execute("UPDATE notes SET format = 'delta' WHERE id = ?", (nid,))
+    backend.conn.commit()
+    fields = {'title': title, 'content': content}
+    if notebook_id:
+        fields['notebook_id'] = notebook_id
+    backend.api.notes_update(nid, fields)
+    return nid
+
+
 def load_app_partial(monkeypatch, tmp_path):
     """加载 app.pyw 的「创建窗口之前」部分（含图像处理函数与 AppApi/api），不启动 GUI。"""
     monkeypatch.setenv('MYNOTEPAD_DATA_DIR', str(tmp_path))

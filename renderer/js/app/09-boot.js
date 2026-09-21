@@ -3,6 +3,7 @@
 import { $, closePanel, dom, hideEditorUI, openPanel, showConfirmAsync, showInputDialog, showToast, state } from './01-core.js';
 import { notesStore } from './01b-store.js';
 import { initQuill, syncFontSizeDisplay } from './02-editor.js';
+import { initMarkdownEditor } from './13-markdown-editor.js';
 import { loadNotes, previewHtmlFor, renderNoteList } from './03-notes.js';
 import { loadSettings } from './04-appearance.js';
 import { loadTagFilter } from './05-shell.js';
@@ -238,6 +239,7 @@ dom.btnSearchClear.addEventListener('click', () => {
 async function initApp() {
   // 初始化 Quill
   initQuill();
+  initMarkdownEditor();   // Markdown 笔记的源码 + 预览双栏（与 Quill 二选一显示）
   // 字体/字号下拉同步
   syncFontSizeDisplay();
 

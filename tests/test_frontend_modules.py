@@ -35,11 +35,26 @@ def strip_code(src, blank_strings=True):
     """
     out = []
     i, n = 0, len(src)
-    mode = 'code'          # code | line | block | sq | dq | tpl
+    mode = 'code'          # code | line | block | sq | dq | tpl | regex
     stack = []
+    # 正则字面量的判定：/ 前面是运算符/分隔符（而不是标识符或数字）时才当成正则开始。
+    # 为什么必须处理：`/\$\$([\s\S]+?)\$\$/g` 里的 $ 会被误判成「用了 01-core 的 $ 却没 import」。
+    regex_prev = set('=(,:[!&|?{;+*-%^~<>') | {'return', 'typeof', 'case', 'in', 'of', 'new'}
+    prev_word = ''
     while i < n:
         c = src[i]
         nxt = src[i + 1] if i + 1 < n else ''
+        if mode == 'regex':
+            if c == '\\':
+                out.append('  '); i += 2; continue
+            if c == '[':
+                # 字符类里的 / 不算结束（/[a/]/ 是合法的）
+                while i < n and src[i] != ']':
+                    out.append('\n' if src[i] == '\n' else ' '); i += 1
+                continue
+            if c == '/':
+                mode = 'code'; out.append(' '); i += 1; continue
+            out.append('\n' if c == '\n' else ' '); i += 1; continue
         if mode == 'line':
             if c == '\n':
                 mode = 'code'; out.append('\n')
@@ -72,6 +87,17 @@ def strip_code(src, blank_strings=True):
             mode = 'line'; out.append('  '); i += 2; continue
         if c == '/' and nxt == '*':
             mode = 'block'; out.append('  '); i += 2; continue
+        if c == '/':
+            prev_sig = ''
+            for ch in reversed(out):
+                if not ch.isspace():
+                    prev_sig = ch
+                    break
+            if not out or prev_sig in regex_prev or prev_word in regex_prev:
+                mode = 'regex'
+                out.append(' ')
+                i += 1
+                continue
         if c in "'\"`":
             out.append(' ' if blank_strings else c)
             mode = {'\'': 'sq', '"': 'dq', '`': 'tpl'}[c]
@@ -79,6 +105,8 @@ def strip_code(src, blank_strings=True):
                 stack.append('tpl')
             i += 1
             continue
+        m = re.match(r'[A-Za-z_$][\w$]*', src[i:])
+        prev_word = m.group(0) if m else ('' if c.isspace() else prev_word)
         if c == '{':
             stack.append('brace'); out.append(c); i += 1; continue
         if c == '}':

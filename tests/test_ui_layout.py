@@ -13,7 +13,7 @@ import threading
 import time
 
 import pytest
-from conftest import PROJECT_ROOT, load_app_partial
+from conftest import PROJECT_ROOT, load_app_partial, make_delta_note
 
 STYLE = os.path.join(PROJECT_ROOT, 'renderer', 'style.css')
 INDEX = os.path.join(PROJECT_ROOT, 'renderer', 'index.html')
@@ -203,8 +203,8 @@ def test_no_toolbar_or_editor_clipping_at_small_widths(tmp_path, monkeypatch):
     """窄窗口（含应用允许的最小 900×600）不得裁切编辑器或把工具栏按钮挤出屏幕"""
     ns = load_app_partial(monkeypatch, tmp_path)
     import backend
-    nid = backend.api.notes_create()['id']
-    backend.api.notes_update(nid, {'title': '裁切测试', 'content': '{"ops":[{"insert":"正文\\n"}]}'})
+    # 工具栏 26 个按钮是 Quill 的（Markdown 笔记不显示工具栏），所以这里要 delta 笔记
+    make_delta_note(backend, '裁切测试', '{"ops":[{"insert":"正文\\n"}]}')
     out = {}
 
     def actions(window, result):
