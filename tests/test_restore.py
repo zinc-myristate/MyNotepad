@@ -8,8 +8,23 @@ import os
 import sqlite3
 import sys
 
+import pytest
+
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 import restore  # noqa: E402
+
+
+@pytest.fixture
+def _app_not_running(monkeypatch):
+    """把"应用是否在运行"降级为 False（需要这个前提的测试类自己声明 autouse）。
+
+    `restore.app_running()` 查的是**全局互斥体**，所以开发机上只要开着这个记事本，
+    所有 happy-path 恢复测试都会以"应用正在运行，拒绝恢复"失败（实测：应用一开，
+    4 项恢复测试全挂——测试因此依赖"用户恰好没开应用"这种环境状态，属于测试自身的缺陷）。
+    "拒绝恢复"那条路径由 test_refuses_while_app_running 自己改成 True 来覆盖；
+    真互斥体行为由 TestAppRunningGuard 直接验证（它不套这个 fixture）。
+    """
+    monkeypatch.setattr(restore, 'app_running', lambda: False)
 
 
 def _mk_note(backend, title, content='{"ops":[{"insert":"x\\n"}]}'):
@@ -52,6 +67,10 @@ class TestListBackups:
 
 
 class TestRestoreHappyPath:
+    @pytest.fixture(autouse=True)
+    def _no_app(self, _app_not_running):
+        """这些用例关心的是恢复逻辑本身，前提是"应用没在运行"。"""
+
     def test_restores_purged_notes(self, api, backend_mod, tmp_path):
         """核心场景：备份 → 彻底删除（回收站也清掉）→ 恢复 → 笔记回来"""
         a = _mk_note(backend_mod, '要保住的笔记')
@@ -91,6 +110,10 @@ class TestRestoreHappyPath:
 
 class TestRestoreRefuses:
     """失败路径：一律不能改动当前库"""
+
+    @pytest.fixture(autouse=True)
+    def _no_app(self, _app_not_running):
+        """"应用在运行"这条路径由 test_refuses_while_app_running 自己改成 True。"""
 
     def test_missing_backup(self, api, backend_mod, tmp_path):
         _mk_note(backend_mod, '甲')
@@ -133,6 +156,41 @@ class TestRestoreRefuses:
             '取消时不该留下快照'
 
 
+class TestAppRunningGuard:
+    """这道闸本身也要验：它变了（互斥体改名/函数被架空）恢复就有在应用运行时乱覆盖的风险。
+
+    这一组**不套** `_app_not_running` fixture —— 它要看的正是真实互斥体。
+    """
+
+    def test_app_running_reads_the_real_mutex(self):
+        """持有同名互斥体时必须判定为"应用在运行"。
+
+        两种环境都成立：本机开着应用（互斥体已被别人持有 → OpenMutexW 成功）或没开
+        （我们自己创建 → 成功）。"关掉句柄后应为 False"只在本次由我们创建时断言，
+        否则用户正开着应用的话这条断言本身就不成立。
+        """
+        import ctypes
+        kernel32 = ctypes.windll.kernel32
+        was_running = restore.app_running()
+        handle = kernel32.CreateMutexW(None, True, restore.MUTEX_NAME)
+        try:
+            assert restore.app_running() is True, '持有互斥体时必须判定为"应用在运行"'
+        finally:
+            if handle:
+                kernel32.CloseHandle(handle)
+        if not was_running:
+            assert restore.app_running() is False, '句柄关掉后应判定为"没在运行"'
+
+    def test_mutex_name_matches_app(self):
+        """restore.py 与 app.pyw 的互斥体名必须一致，否则"应用在运行"这道闸形同虚设。"""
+        root = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+        with open(os.path.join(root, 'app.pyw'), encoding='utf-8') as f:
+            src = f.read()
+        assert 'CreateMutexW' in src, 'app.pyw 应当还有单实例互斥体'
+        assert '"%s"' % restore.MUTEX_NAME in src or "'%s'" % restore.MUTEX_NAME in src, \
+            'app.pyw 的互斥体名与 restore.MUTEX_NAME 不一致（恢复时的"应用在运行"判断会失效）'
+
+
 class TestDataDirPick:
     def test_explicit_wins(self, tmp_path):
         d, why = restore.pick_data_dir(str(tmp_path))
@@ -154,6 +212,10 @@ class TestDataDirPick:
 
 
 class TestMainCli:
+    @pytest.fixture(autouse=True)
+    def _no_app(self, _app_not_running):
+        """真实执行 main() 的用例同样需要"应用没在运行"这个前提。"""
+
     def test_list_and_no_source(self, api, backend_mod, tmp_path, capsys):
         _mk_note(backend_mod, '甲')
         backend_mod.backup_database()

@@ -32,7 +32,7 @@
 | 数据库 | SQLite（`data/notes.db`，FTS5 trigram 全文索引） |
 | 加密 | `cryptography`（AES-256-GCM） |
 | 打包 | PyInstaller（`MyNotepad.spec`） |
-| 测试 | pytest（257 单测 + 23 无头 E2E） |
+| 测试 | pytest（262 单测 + 23 无头 E2E） |
 
 ## 快速开始
 
@@ -69,7 +69,7 @@ pyinstaller MyNotepad.spec   # 产物在 dist/MyNotepad/
 ## 测试
 
 ```bash
-py -3.14 -m pytest                 # 257 单测（自动隔离临时数据目录）
+py -3.14 -m pytest                 # 262 单测（自动隔离临时数据目录）
 py -3.14 -m pytest -m e2e          # 23 无头 pywebview 端到端
 python -m ruff check .             # 代码检查（配置见 pyproject.toml）
 ```

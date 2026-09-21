@@ -95,12 +95,30 @@ export function reportError(message, stack, source) {
     window.pywebview.api.log_error(String(message || ''), String(stack || ''), String(source || 'js'));
   } catch (e) { /* 上报失败静默 */ }
 }
+
+// 异常必须**看得见**：桥接调用被拒绝时，以前只在 error.log 里留痕，界面上毫无反应，
+// 用户看到的就是"点了没反应"（真实案例：tkinter.filedialog 导入被删，插入图片/附件/
+// 更换图标/选择背景四个功能同时静默失效，用户只能靠猜）。这里补一条 Toast，
+// 带节流与会话上限，避免报错风暴刷屏。
+let _errToastCount = 0;
+let _lastErrToastAt = 0;
+function notifyError(message) {
+  const now = Date.now();
+  if (_errToastCount >= 5 || now - _lastErrToastAt < 15000) return;
+  _errToastCount++;
+  _lastErrToastAt = now;
+  showToast('操作失败：' + message, { type: 'error', duration: 5000 });
+}
+
 window.onerror = (msg, src, line, col, err) => {
   reportError(msg, (err && err.stack) || (src + ':' + line + ':' + col), 'window.onerror');
+  notifyError(msg);
 };
 window.addEventListener('unhandledrejection', (e) => {
   const r = e.reason;
-  reportError((r && r.message) || String(r), (r && r.stack) || '', 'unhandledrejection');
+  const message = (r && r.message) || String(r);
+  reportError(message, (r && r.stack) || '', 'unhandledrejection');
+  notifyError(message);
 });
 
 // ====== 面板管理 ======

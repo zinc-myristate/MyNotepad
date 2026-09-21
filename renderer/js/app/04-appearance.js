@@ -258,7 +258,13 @@ $$('input[name="note-bg-type"]').forEach(radio => {
 
 // 选择全局背景图片
 $('#btn-pick-global-bg').addEventListener('click', async () => {
-  const result = await window.pywebview.api.pick_background();
+  let result;
+  try {
+    result = await window.pywebview.api.pick_background();
+  } catch (err) {
+    showToast('选择背景图片失败：' + (err && err.message ? err.message : err), { type: 'error' });
+    return;
+  }
   if (!result) return;
 
   const filePath = result.path;
@@ -279,7 +285,13 @@ $('#btn-pick-note-bg').addEventListener('click', async () => {
     return;
   }
 
-  const result = await window.pywebview.api.pick_background();
+  let result;
+  try {
+    result = await window.pywebview.api.pick_background();
+  } catch (err) {
+    showToast('选择背景图片失败：' + (err && err.message ? err.message : err), { type: 'error' });
+    return;
+  }
   if (!result) return;
 
   const filePath = result.path;
@@ -496,7 +508,11 @@ dom.btnChangeIcon.addEventListener('click', async () => {
     } else {
       _showIconMsg(result.error || '选择失败', true);
     }
-  } catch(e) { _showIconMsg('操作失败', true); }
+  } catch(e) {
+    // 面板这时还没打开，只在面板里写字等于没提示 —— 必须弹 Toast 才看得见
+    _showIconMsg('操作失败：' + (e && e.message ? e.message : e), true);
+    showToast('更换图标失败：' + (e && e.message ? e.message : e), { type: 'error' });
+  }
   finally { _iconChanging = false; }
 });
 

@@ -343,9 +343,14 @@ $('#btn-insert-image').addEventListener('click', async () => {
     showToast('请先选择或新建一篇笔记', { type: 'warn' });
     return;
   }
-  const filePath = await window.pywebview.api.pick_image();
-  if (filePath) {
-    await insertImageFromPath(filePath);
+  // 失败要说出来：桥接调用被拒绝时原来什么也不显示，用户只会觉得"按钮坏了"
+  try {
+    const filePath = await window.pywebview.api.pick_image();
+    if (filePath) {
+      await insertImageFromPath(filePath);
+    }
+  } catch (err) {
+    showToast('选择图片失败：' + (err && err.message ? err.message : err), { type: 'error' });
   }
 });
 
@@ -354,10 +359,14 @@ $('#btn-insert-attachment').addEventListener('click', async () => {
     showToast('请先选择或新建一篇笔记', { type: 'warn' });
     return;
   }
-  const filePath = await window.pywebview.api.pick_attachment();
-  if (filePath) {
-    const fileName = filePath.split(/[/\\]/).pop();
-    await insertAttachmentFromPath(filePath, fileName);
+  try {
+    const filePath = await window.pywebview.api.pick_attachment();
+    if (filePath) {
+      const fileName = filePath.split(/[/\\]/).pop();
+      await insertAttachmentFromPath(filePath, fileName);
+    }
+  } catch (err) {
+    showToast('选择附件失败：' + (err && err.message ? err.message : err), { type: 'error' });
   }
 });
 

@@ -27,6 +27,10 @@ from datetime import datetime
 
 ROOT = os.path.dirname(os.path.abspath(__file__))
 BACKUP_PREFIX = 'notes-'
+# 与 app.pyw 里 CreateMutexW 用的名字**必须一致**：app_running() 靠它判断"应用是否在运行"。
+# 改名是个静默故障点（改名后这个判断恒为 False，恢复会在应用运行时照做），
+# 所以 tests/test_restore.py 有一条测试专门核对两边同名。
+MUTEX_NAME = 'MyNotepad_SingleInstance_Mutex'
 
 
 # ====== 数据目录探测 ======
@@ -127,8 +131,7 @@ def app_running():
     try:
         import ctypes
         SYNCHRONIZE = 0x00100000
-        h = ctypes.windll.kernel32.OpenMutexW(SYNCHRONIZE, False,
-                                             "MyNotepad_SingleInstance_Mutex")
+        h = ctypes.windll.kernel32.OpenMutexW(SYNCHRONIZE, False, MUTEX_NAME)
         if h:
             ctypes.windll.kernel32.CloseHandle(h)
             return True

@@ -19,6 +19,14 @@ if sys.platform == 'win32':
     _subprocess.Popen = _popen_nowindow
 
 import webview
+# 必须在**模块级**导入 filedialog 子模块：`import tkinter.messagebox` 不会把 filedialog 挂到
+# tkinter 上，而下面 pick_image_file / pick_attachment_file / pick_background_file 以及
+# AppApi.pick_and_preview_icon 都用 `tkinter.filedialog.xxx` 这种**属性访问**（名字没被用到），
+# 于是它很容易被当成"未使用导入"删掉 —— 156c20f 那一轮就是这么删的，后果是
+# 插入图片 / 插入附件 / 更换图标 / 选择背景 四个功能全部静默失效（点了没反应，
+# 异常只落在 error.log：AttributeError: module 'tkinter' has no attribute 'filedialog'）。
+# 删之前请先看 tests/test_module_imports.py —— 它会直接判定失败。
+import tkinter.filedialog
 import tkinter.messagebox
 import desktop          # 托盘常驻 / 开机自启 / 提醒守护（见 desktop.py）
 import json
