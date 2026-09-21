@@ -3,6 +3,7 @@
 // （Obsidian 能做是因为它编辑的就是 Markdown 源码）。真想要清爽可以等"专注模式"。
 
 import { $, state } from './01-core.js';
+import { slugify } from '../shared/utils.js';
 
 let _headings = [];
 let _visible = false;
@@ -125,10 +126,27 @@ export function syncOutlineActive() {
   if (idx >= 0) markActive(idx);
 }
 
+/** 按小节名跳转（`[[标题#小节]]` 与链接抽屉共用）。先精确比标题文字，再退到 slug 比对。 */
+export function jumpToHeadingByName(name) {
+  buildOutline();
+  const want = String(name || '').trim().toLowerCase();
+  if (!want) return false;
+  const wantSlug = slugify(want);
+  let idx = _headings.findIndex((h) => String(h.text || '').trim().toLowerCase() === want);
+  if (idx < 0) idx = _headings.findIndex((h) => slugify(h.text) === wantSlug);
+  if (idx < 0) return false;
+  jumpTo(idx);
+  return true;
+}
+
 export function toggleOutline(force) {
   const drawer = $('#outline-drawer');
   if (!drawer) return;
   _visible = force === undefined ? !_visible : !!force;
+  // 大纲与链接抽屉是**同一侧的参考面板**：同时打开只会互相压住，所以开一个就关另一个。
+  // 用自定义事件而不是互相 import：两个模块本来就互相需要（链接要按小节跳转），
+  // 再加一条 import 就成环了。
+  if (_visible) document.dispatchEvent(new CustomEvent('myapp:outline-opened'));
   drawer.classList.toggle('hidden', !_visible);
   const btn = $('#btn-outline');
   if (btn) btn.classList.toggle('active', _visible);
@@ -141,6 +159,7 @@ export function isOutlineVisible() {
 
 export function initOutline() {
   $('#btn-outline')?.addEventListener('click', () => toggleOutline());
+  document.addEventListener('myapp:links-opened', () => toggleOutline(false));
   $('#outline-close')?.addEventListener('click', () => toggleOutline(false));
   $('#outline-list')?.addEventListener('click', (ev) => {
     const item = ev.target.closest('[data-outline]');

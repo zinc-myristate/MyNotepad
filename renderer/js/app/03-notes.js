@@ -9,6 +9,8 @@ import { syncFormatBadge } from './15-note-format.js';
 import { updateStatusBar } from './21-status-bar.js';
 import { refreshOutline } from './22-outline.js';
 import { refreshFindIfOpen } from './23-find-bar.js';
+import { refreshPropBar } from './24-properties.js';
+import { refreshLinksIfOpen } from './25-links.js';
 import { notesStore } from './01b-store.js';
 import { isVoiceRecording, stopVoiceRecording, toggleFavoriteNote, togglePinNote } from './02-editor.js';
 import { applyNoteBackground } from './04-appearance.js';
@@ -335,6 +337,8 @@ export async function selectNote(noteId) {
   updateStatusBar();     // 切笔记时数字必须立刻跟着变，不能等下一次输入
   refreshOutline();
   refreshFindIfOpen();   // 查找条开着时，旧笔记的高亮/下标必须重算（正文已经换了）
+  refreshPropBar();
+  refreshLinksIfOpen();  // 链接抽屉开着才查库（每切一次笔记都问一遍后端没必要）
 }
 
 /** 强制重载当前笔记（格式转换后必须走它：selectNote 对"同一篇"会直接 return） */

@@ -9,6 +9,7 @@
 //   3) 链接只允许 http/https/mailto/attachments 相对路径，事件属性全部剥掉。
 
 import { state } from './01-core.js';
+import { slugify, splitFrontMatter } from '../shared/utils.js';
 
 const MATH_BLOCK = /\$\$([\s\S]+?)\$\$/g;
 const MATH_INLINE = /\$([^$\n]+?)\$/g;
@@ -27,7 +28,9 @@ const ALLOWED_TAGS = [
 ];
 const ALLOWED_ATTR = [
   'class', 'style', 'href', 'title', 'alt', 'src', 'colspan', 'rowspan', 'align',
+  'id',                       // 只放行我们自己生成的标题锚点，见 installSanitizer 的前缀过滤
   'data-md-src', 'data-md-attach', 'data-md-file', 'data-md-broken',
+  'data-wikilink', 'data-heading', 'data-alias',
   'aria-hidden', 'mathvariant', 'encoding', 'display',
 ];
 const ALLOWED_STYLE = new Set([
@@ -48,8 +51,75 @@ function md() {
     highlight: highlightCode,   // ```lang 代码块 → hljs 着色（无 hljs 时返回空串=退化为纯文本）
   });
   installTaskList(_md);
+  installHeadingIds(_md);
+  installWikilinks(_md);
   installSanitizer();
   return _md;
+}
+
+/** 给每个标题加 `id="md-h-<slug>"`：`[[标题#小节]]` 的定位与"跳到预览里的那一节"都要它 */
+function installHeadingIds(instance) {
+  instance.core.ruler.after('inline', 'md_heading_ids', (state2) => {
+    const used = Object.create(null);
+    state2.tokens.forEach((tok, i) => {
+      if (tok.type !== 'heading_open') return;
+      const inline = state2.tokens[i + 1];
+      let slug = slugify((inline && inline.content) || '') || 'section';
+      if (used[slug] !== undefined) { used[slug] += 1; slug = slug + '-' + used[slug]; } else used[slug] = 0;
+      tok.attrSet('id', 'md-h-' + slug);
+    });
+  });
+}
+
+const WIKILINK_RE = /\[\[([^\]|#]*)(?:#([^\]|]+))?(?:\|([^\]]*))?\]\]/g;
+
+/** 造一个 Token：本版 markdown-it 的 Token **没有** setContent（实机踩到），直接赋值 content */
+function makeToken(state2, type, content) {
+  const tok = new state2.Token(type, '', 0);
+  tok.content = content;
+  return tok;
+}
+
+function wikilinkHtml(title, heading, alias) {
+  // 标签文字：别名 > 标题 > `#小节`（同篇内跳转时标题是空的）
+  const label = alias || title || ('#' + (heading || ''));
+  const attrs = ' class="md-wikilink" data-wikilink="' + escapeAttr(title) + '"'
+    + (heading ? ' data-heading="' + escapeAttr(heading) + '"' : '')
+    + (alias ? ' data-alias="' + escapeAttr(alias) + '"' : '');
+  return '<a' + attrs + '>' + escapeAttr(label) + '</a>';
+}
+
+/** 双链内联规则：`[[标题#小节|别名]]` → <a data-wikilink>。
+ *
+ *  做成 core 规则改写 text token（而不是自定义 inline 规则）：inline 链这时已经处理完
+ *  强调/行内代码/链接，我们只在**纯文本**里替换，规则短、也不容易和别的插件抢位置。
+ *  `[[…]]` 落在行内代码里时是 code_inline token，天然不会被替换（与 Obsidian 一致）。 */
+function installWikilinks(instance) {
+  instance.core.ruler.after('inline', 'md_wikilinks', (state2) => {
+    for (const tok of state2.tokens) {
+      if (tok.type !== 'inline' || !Array.isArray(tok.children)) continue;
+      if (!tok.children.some((c) => c.type === 'text' && c.content.indexOf('[[') >= 0)) continue;
+      const out = [];
+      for (const child of tok.children) {
+        if (child.type !== 'text' || child.content.indexOf('[[') < 0) { out.push(child); continue; }
+        const src = child.content;
+        let last = 0;
+        let m;
+        WIKILINK_RE.lastIndex = 0;
+        while ((m = WIKILINK_RE.exec(src)) !== null) {
+          const title = (m[1] || '').trim();
+          const heading = (m[2] || '').trim();
+          const alias = (m[3] || '').trim();
+          if (!title && !heading) continue;          // `[[]]` / `[[|x]]` 原样留着
+          if (m.index > last) out.push(makeToken(state2, 'text', src.slice(last, m.index)));
+          out.push(makeToken(state2, 'html_inline', wikilinkHtml(title, heading, alias)));
+          last = m.index + m[0].length;
+        }
+        if (last < src.length) out.push(makeToken(state2, 'text', src.slice(last)));
+      }
+      tok.children = out;
+    }
+  });
 }
 
 /** GFM 待办清单：markdown-it 默认不认 `- [ ]`，这里把列表项转成带勾选框的 li */
@@ -109,6 +179,12 @@ function installSanitizer() {
         && ALLOWED_CLASS_PREFIX.some((p) => c.toLowerCase().startsWith(p)));
       if (keep.length) node.setAttribute('class', keep.join(' '));
       else node.removeAttribute('class');
+    }
+    if (node.hasAttribute && node.hasAttribute('id')) {
+      // 只放行我们自己生成的标题锚点（md-h-*）。用户内容里的 id 会把 getElementById
+      // 的查找带偏——`<div id="editor-status">` 能直接顶掉状态栏，所以必须按前缀过滤。
+      const vid = node.getAttribute('id') || '';
+      if (!/^md-h-[A-Za-z0-9\u4e00-\u9fff-]+$/.test(vid)) node.removeAttribute('id');
     }
     // 相对路径的图片先摘掉 src：由 hydrateMarkdownAssets 异步换成 data URI，
     // 否则浏览器会去请求 http://127.0.0.1:<port>/attachments/...（那是渲染器目录，必然 404）
@@ -192,8 +268,10 @@ export function renderMarkdown(text, opts = {}) {
   if (!instance) {
     return '<pre class="md-fallback">' + escapeAttr(text) + '</pre>';
   }
+  // front-matter 是**结构化数据**不是正文：预览里由标题下方的属性行显示，
+  // 混进正文只会看起来像一堆乱码（`key: value` 紧跟 `---` 还会被当成 setext 标题）
   const mathStore = [];
-  const prepared = extractMath(text || '', mathStore);
+  const prepared = extractMath(splitFrontMatter(text || '').body, mathStore);
   let html = instance.render(prepared);
   if (window.DOMPurify) {
     html = window.DOMPurify.sanitize(html, {
@@ -257,7 +335,8 @@ export async function hydrateMarkdownAssets(root, noteId) {
 /** 导出用 HTML：渲染 + 把相对路径图片内嵌成 data URI（导出文件换台机器也不会破图）。
  *  为什么导出重新渲染而不是直接抓预览区 innerHTML：预览有 180ms 节流，可能落后于源码。 */
 export async function markdownExportHtml(text, noteId) {
-  const html = renderMarkdown(text, { noteId });
+  const split = splitFrontMatter(text || '');
+  const html = propsTableHtml(split.props) + renderMarkdown(text, { noteId });
   const tmp = document.createElement('div');
   tmp.innerHTML = html;
   for (const img of Array.from(tmp.querySelectorAll('img[data-md-src]'))) {
@@ -283,6 +362,38 @@ export function bindPreviewLinks(root) {
       await window.pywebview.api.file_open(a.getAttribute('href'));
     } catch (e) { /* 忽略 */ }
   });
+}
+
+/** 未创建的链接标红：一次问后端"这些标题存在吗"（每个标题只问一次） */
+export async function hydrateWikilinks(root) {
+  if (!root) return;
+  const links = Array.from(root.querySelectorAll('a[data-wikilink]'));
+  const titles = Array.from(new Set(links.map((a) => a.getAttribute('data-wikilink')).filter(Boolean)));
+  if (!titles.length) return;
+  const missing = new Set();
+  for (const t of titles) {
+    try {
+      const hit = await window.pywebview.api.notes_resolve_link(t);
+      if (!hit) missing.add(t);
+    } catch (e) {
+      return;          // 桥接不可用时不做标记：宁可不标红，也不要满屏红字
+    }
+  }
+  links.forEach((a) => {
+    a.classList.toggle('md-wikilink-missing', missing.has(a.getAttribute('data-wikilink')));
+  });
+}
+
+/** 导出用的属性表（HTML 导出把 front-matter 印成一张小表，别让数据凭空消失） */
+function propsTableHtml(props) {
+  const keys = Object.keys(props || {});
+  if (!keys.length) return '';
+  const rows = keys.map((k) => {
+    const v = props[k];
+    const text = Array.isArray(v) ? v.join('、') : (v === true ? '是' : v === false ? '否' : v);
+    return '<tr><th>' + escapeAttr(k) + '</th><td>' + escapeAttr(text == null ? '' : text) + '</td></tr>';
+  });
+  return '<table class="md-props"><tbody>' + rows.join('') + '</tbody></table>\n';
 }
 
 export function currentNoteId() {

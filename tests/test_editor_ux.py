@@ -143,10 +143,13 @@ def test_no_active_note_hides_editor_extras():
 
 
 def test_status_bar_occupies_its_own_grid_row():
-    """状态栏是 .editor-container 网格的第 6 行；行数不改的话它会盖住编辑区。"""
+    """状态栏是 .editor-container 网格的最后一行；行数不改的话它会盖住编辑区。
+
+    第 9 轮在标签栏后插入了属性行 → 行数 6 → 7，状态栏从第 6 行挪到第 7 行。
+    """
     css = _read('style.css')
-    assert 'grid-template-rows: auto auto auto auto 1fr auto' in css
-    assert re.search(r'\.editor-status\s*\{[^}]*grid-row:\s*6', css)
+    assert 'grid-template-rows: auto auto auto auto auto 1fr auto' in css
+    assert re.search(r'\.editor-status\s*\{[^}]*grid-row:\s*7', css)
 
 
 # ---------------- 统计口径必须与后端逐字符一致 ----------------
@@ -172,6 +175,10 @@ def test_stats_rules_mirror_backend():
     # script/style 的整段匹配：后端用 re.S 的 `.*?`，JS 里只能写 [\s\S]*?（语义相同）
     assert backend._MD_SCRIPT.pattern.replace('.*?', '[\\s\\S]*?') in js, \
         'script/style 剥离规则与后端不一致'
+    # 第 9 轮：属性（front-matter）不算正文，两边必须同时剥。
+    # 状态栏那份镜像不需要捕获组（它只做替换），所以比对时把括号一起去掉。
+    assert backend._FM_RE.pattern.replace('(.*?)', '[\\s\\S]*?') in js, \
+        'front-matter 剥离规则与后端不一致（只改一边会让字数又分叉）'
     for ent, _ch in backend._MD_ENTITIES:
         assert ent in js, '实体解码缺少 %s（与后端 _MD_ENTITIES 不一致）' % ent
     # `&amp;` 必须最后解，否则 `&amp;lt;` 会被解成 `<`

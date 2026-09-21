@@ -134,7 +134,9 @@ def test_typing_renders_preview_and_persists(tmp_path, monkeypatch):
         _set_source(window, body)
         time.sleep(1.6)                              # 预览节流 180ms + 保存防抖 500ms
         html = _preview_html(window)
-        result['h1'] = '<h1>' in html
+        # 第 9 轮起标题带锚点 id（`<h1 id="md-h-标题一">`），所以不能只匹配 `<h1>`
+        result['h1'] = ('<h1' in html) and ('</h1>' in html)
+        result['h1_anchor'] = 'id="md-h-' in html
         result['strong'] = '<strong>' in html
         result['task_done'] = 'md-task-done' in html
         result['blockquote'] = '<blockquote>' in html
@@ -144,7 +146,7 @@ def test_typing_renders_preview_and_persists(tmp_path, monkeypatch):
 
     r = _run(ns, actions)
     assert 'error' not in r, r.get('error')
-    for key in ('h1', 'strong', 'task_done', 'blockquote', 'pre', 'katex'):
+    for key in ('h1', 'h1_anchor', 'strong', 'task_done', 'blockquote', 'pre', 'katex'):
         assert r[key], '预览缺少 %s 的渲染结果' % key
     stored = backend.api.notes_get(nid)['content']
     assert stored == body, '落库内容应与输入逐字符一致（防抖保存链路）'

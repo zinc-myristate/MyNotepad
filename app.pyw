@@ -287,6 +287,29 @@ class AppApi:
     def saved_search_update(self, sid, fields):
         return self.backend.saved_search_update(sid, fields)
     def saved_search_delete(self, sid): return self.backend.saved_search_delete(sid)
+    # 第 9 轮：双链 / 属性 / 表格视图
+    def note_links(self, note_id): return self.backend.note_links(note_id)
+    def notes_resolve_link(self, title): return self.backend.notes_resolve_link(title)
+    def notes_create_from_link(self, title):
+        return self.backend.notes_create_from_link(title)
+    def notes_table(self, note_ids=None): return self.backend.notes_table(note_ids)
+
+    def export_table_csv(self, note_ids=None):
+        """导出表格为 CSV（对话框在这一层，写文件在后端——与其它导出同一条规矩）"""
+        try:
+            import tkinter.filedialog
+            from datetime import datetime
+            save_path = tkinter.filedialog.asksaveasfilename(
+                title="导出表格为 CSV",
+                defaultextension='.csv',
+                filetypes=[('CSV 表格', '*.csv')],
+                initialfile=f"笔记表格-{datetime.now():%Y%m%d-%H%M%S}.csv")
+            if not save_path:
+                return None
+            return self.backend.export_table_csv(note_ids, save_path)
+        except Exception as exc:
+            applog.get_logger().exception("导出 CSV 失败")
+            return {'error': str(exc)}
 
     # 正文格式（Delta ↔ Markdown）双轨：查询状态 / 转换 / 还原原始富文本
     def note_format_info(self, note_id): return self.backend.note_format_info(note_id)

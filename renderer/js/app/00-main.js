@@ -43,6 +43,9 @@ import './20-saved-searches.js';
 import './21-status-bar.js';
 import './22-outline.js';
 import './23-find-bar.js';
+import './24-properties.js';
+import './25-links.js';
+import './26-table-view.js';
 import '../quill/quill-deco.js';
 
 // ----- 对外接口 -----

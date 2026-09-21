@@ -11,6 +11,9 @@ import { initSavedSearches } from './20-saved-searches.js';
 import { initStatusBar } from './21-status-bar.js';
 import { initOutline } from './22-outline.js';
 import { initFindBar } from './23-find-bar.js';
+import { initProperties } from './24-properties.js';
+import { initLinks } from './25-links.js';
+import { initTableView } from './26-table-view.js';
 import { loadNotes, previewHtmlFor, renderNoteList } from './03-notes.js';
 import { loadSettings } from './04-appearance.js';
 import { loadTagFilter } from './05-shell.js';
@@ -254,6 +257,9 @@ async function initApp() {
   initStatusBar();        // 状态栏（字数统计）
   initOutline();          // 大纲抽屉
   initFindBar();          // 笔记内查找替换
+  initProperties();       // 属性行（front-matter）
+  initLinks();            // 双链抽屉
+  initTableView();        // 表格视图
   // 字体/字号下拉同步
   syncFontSizeDisplay();
 

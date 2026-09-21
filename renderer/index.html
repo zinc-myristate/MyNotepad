@@ -117,6 +117,9 @@
       <button id="btn-todos" class="btn-sidebar-footer" title="待办清单（跨笔记）">
         <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><path d="M9 11l3 3L22 4"/><path d="M21 12v7a2 2 0 01-2 2H5a2 2 0 01-2-2V5a2 2 0 012-2h11"/></svg> 待办
       </button>
+      <button id="btn-table-view" class="btn-sidebar-footer" title="表格视图（当前筛选的笔记）">
+        <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="3" y="3" width="18" height="18" rx="2"/><line x1="3" y1="9" x2="21" y2="9"/><line x1="3" y1="15" x2="21" y2="15"/><line x1="9" y1="3" x2="9" y2="21"/></svg> 表格
+      </button>
       <button id="btn-calendar" class="btn-sidebar-footer" title="手帐日历">
         <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><rect x="3" y="4" width="18" height="18" rx="2"/><line x1="16" y1="2" x2="16" y2="6"/><line x1="8" y1="2" x2="8" y2="6"/><line x1="3" y1="10" x2="21" y2="10"/></svg> 日历
       </button>
@@ -162,6 +165,22 @@
       <div id="tag-bar" class="tag-bar hidden">
         <span id="tag-list" class="tag-list"></span>
         <button id="btn-add-tag" class="btn-add-tag" title="添加标签">+ 标签</button>
+      </div>
+
+      <!-- 属性行（第 9 轮）：Markdown 笔记的 front-matter 在这里可视化编辑 -->
+      <div id="prop-block" class="prop-block hidden">
+        <div class="prop-bar">
+          <span id="prop-chips" class="prop-chips"></span>
+          <button id="btn-prop-edit" class="prop-add" title="编辑属性（Markdown 的 front-matter）">+ 属性</button>
+        </div>
+        <div id="prop-editor" class="prop-editor hidden">
+          <div id="prop-rows" class="prop-rows"></div>
+          <div class="prop-editor-foot">
+            <button id="btn-prop-add" class="prop-btn">+ 添加一行</button>
+            <span class="prop-tip">可用 <code>prop:键=值</code> 搜索，例如 <code>prop:状态=进行中</code></span>
+            <button id="btn-prop-done" class="prop-btn prop-btn-primary">完成</button>
+          </div>
+        </div>
       </div>
 
       <!-- 字体字号栏（独立于 Quill 工具栏） -->
@@ -306,6 +325,7 @@
         <span class="status-spacer"></span>
         <span id="status-format" class="status-format"></span>
         <button id="btn-outline" class="status-btn" title="大纲（标题导航）">大纲</button>
+        <button id="btn-links" class="status-btn" title="双链与反向链接">链接</button>
       </div>
       </div>
 
@@ -336,6 +356,32 @@
         </div>
         <div id="outline-list" class="outline-list"></div>
       </aside>
+
+      <!-- 链接抽屉：指向 / 反向链接 / 尚未创建 -->
+      <aside id="links-drawer" class="outline-drawer links-drawer hidden">
+        <div class="outline-head">
+          <span>链接</span>
+          <button id="links-close" class="find-btn" title="关闭">×</button>
+        </div>
+        <div id="links-list" class="links-list"></div>
+      </aside>
+
+      <!-- 表格视图：覆盖整个编辑区（数据 = 当前筛选后的笔记） -->
+      <section id="table-view" class="table-view hidden">
+        <div class="table-view-head">
+          <span class="table-view-title">表格视图</span>
+          <span id="table-view-meta" class="table-view-meta"></span>
+          <span class="status-spacer"></span>
+          <button id="btn-table-csv" class="find-btn">导出 CSV</button>
+          <button id="table-view-close" class="find-btn" title="关闭">×</button>
+        </div>
+        <div class="table-wrap">
+          <table id="table-view-table" class="table-view-table">
+            <thead id="table-view-head"></thead>
+            <tbody id="table-view-body"></tbody>
+          </table>
+        </div>
+      </section>
 
       <!-- 无笔记时显示 -->
 

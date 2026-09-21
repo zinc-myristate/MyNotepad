@@ -10,11 +10,14 @@
 
 import { dom, $, state } from './01-core.js';
 import { debouncedSave, setSaveDot } from './03-notes.js';
-import { bindPreviewLinks, hydrateMarkdownAssets, renderMarkdown } from './14-markdown-render.js';
+import { bindPreviewLinks, hydrateMarkdownAssets, hydrateWikilinks,
+  renderMarkdown } from './14-markdown-render.js';
 import { applyMarkdownAction } from './17-markdown-actions.js';
 import { updateStatusBar } from './21-status-bar.js';
 import { refreshOutline, syncOutlineActive } from './22-outline.js';
 import { refreshFindIfOpen } from './23-find-bar.js';
+import { refreshPropBar } from './24-properties.js';
+import { refreshLinksIfOpen } from './25-links.js';
 
 const PREVIEW_DELAY = 180;      // 预览渲染节流（毫秒）
 
@@ -62,6 +65,8 @@ export function initMarkdownEditor() {
     updateStatusBar();
     refreshOutline();
     refreshFindIfOpen();
+    refreshPropBar();
+    refreshLinksIfOpen();
   });
   cm.on('cursorActivity', () => { updateStatusBar(); syncOutlineActive(); });
   cm.on('scroll', () => syncScroll('source'));
@@ -131,6 +136,7 @@ export function renderPreviewNow() {
   _lastPreviewText = text;
   root.innerHTML = renderMarkdown(text, { noteId: state.activeNoteId });
   hydrateMarkdownAssets(root, state.activeNoteId);
+  hydrateWikilinks(root);
 }
 
 /** 滚动同步：按比例对齐两栏（源码行高与预览块高不成正比，只能近似） */

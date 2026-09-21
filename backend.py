@@ -3,6 +3,7 @@
 处理数据库、文件操作，暴露 API 给前端
 """
 import base64
+import csv
 import functools
 import hashlib
 import hmac
@@ -224,6 +225,20 @@ conn.executescript("""
         FOREIGN KEY (note_id) REFERENCES notes(id) ON DELETE CASCADE
     );
     CREATE INDEX IF NOT EXISTS idx_todos_due ON note_todos(done, due);
+    -- 双链索引（第 9 轮）：源笔记里出现的每个 [[标题#小节|别名]] 一行。
+    -- 刻意**只存标题归一（target_key）不存 target_id**：标题随时会改，物化就等于埋一个
+    -- 必然过期的索引（改完标题反向链接全断）。解析放到查询时 JOIN notes。
+    CREATE TABLE IF NOT EXISTS note_links (
+        src_note_id TEXT NOT NULL,
+        ordinal INTEGER NOT NULL,
+        target_raw TEXT NOT NULL DEFAULT '',
+        target_key TEXT NOT NULL DEFAULT '',
+        heading TEXT,
+        alias TEXT,
+        PRIMARY KEY (src_note_id, ordinal),
+        FOREIGN KEY (src_note_id) REFERENCES notes(id) ON DELETE CASCADE
+    );
+    CREATE INDEX IF NOT EXISTS idx_links_target ON note_links(target_key);
     -- 保存的搜索：侧栏"视图"区的数据源
     CREATE TABLE IF NOT EXISTS saved_searches (
         id TEXT PRIMARY KEY,
@@ -395,6 +410,7 @@ _SCOPE_HAS = {
     'formula': 'd.has_formula = 1',
     'code': 'd.has_code = 1',
     'link': 'd.link_count > 0',
+    'prop': "COALESCE(d.props_json, '{}') NOT IN ('', '{}')",
 }
 
 
@@ -427,8 +443,9 @@ def _parse_search_scope(q):
     """把查询拆成 (自由文本, 范围字典)。
 
     支持：`tag:数学` / `notebook:课程A`（或 `nb:`）/ `in:trash` / `title:关键词` /
-    `is:pinned|favorite|encrypted` / `has:attachment|reminder|todo|formula|code|link` /
+    `is:pinned|favorite|encrypted` / `has:attachment|reminder|todo|formula|code|link|prop` /
     `todo:open|done` / `created:>2026-01-01`（也支持 today/yesterday/7d）/ `updated:<7d` /
+    `prop:状态` / `prop:状态=进行中` / `prop:截止>2026-10-01` / `prop:标签~关键词` /
     `-排除词`（可多个）。任何前缀都可以加 `-` 取反。
 
     不认识的前缀（例如用户真想搜 "a:b"）原样留在自由文本里，不做吞掉。
@@ -459,6 +476,21 @@ def _parse_search_scope(q):
                 scope.setdefault('has', []).append((val.lower(), negate))
             elif key_l == 'todo' and val.lower() in ('open', 'done', '未完成', '已完成'):
                 scope['todo'] = (val.lower(), negate)
+            elif key_l == 'prop' and val:
+                # 运算符**必须显式出现**才会走第一个分支：第一版把它写成可选，于是惰性量词
+                # 在 `状态=进行中` 上直接停在"状"，把剩下的当成值（`prop:` 搜索全部失效）。
+                pm = re.match(r'^([^=<>!~]+?)\s*(>=|<=|!=|=|>|<|~)\s*(.*)$', val)
+                if pm and pm.group(1).strip():
+                    pkey, pop, pval = pm.group(1).strip(), pm.group(2), pm.group(3).strip()
+                else:
+                    pm = re.match(r'^([^=<>!~]+?)\s*$', val)
+                    pkey, pop, pval = (pm.group(1).strip() if pm else ''), None, ''
+                if pkey:
+                    if pop == '!=':            # `!=` 就是"等于"再取反
+                        pop, negate = '=', not negate
+                    scope.setdefault('prop', []).append((pkey, pop, pval, negate))
+                else:
+                    handled = False
             elif key_l in ('created', 'updated') and val:
                 m = re.match(r'^(>=|<=|>|<|=)?(.*)$', val)
                 op = _DATE_OPS.get(m.group(1) or '=', '=')
@@ -1250,6 +1282,9 @@ def _markdown_to_text(md):
     """
     if not md:
         return ''
+    # front-matter（属性）不是正文：摘要、FTS、字数都不该带上它。
+    # 注意 _FM_RE 定义在下面一点（函数体里引用模块级名字，运行时才解析，没问题）。
+    md = _FM_RE.sub('', md, count=1)
     text = _MD_SCRIPT.sub(' ', md)
     text = _MD_IMAGE.sub(lambda m: m.group(1), text)
     text = _MD_LINK.sub(lambda m: m.group(1), text)
@@ -1356,8 +1391,9 @@ if FTS_AVAILABLE:
 _TODO_RE = re.compile(r'^\s*[-*+]\s+\[([ xX])\]\s+(.*)$')
 _DUE_RE = re.compile(r'📅\s*(\d{4}-\d{2}-\d{2})')
 _LINK_RE = re.compile(r'\[\[([^\]|]+)(?:\|[^\]]*)?\]\]')
-_FM_RE = re.compile(r'^---\s*\n(.*?)\n---\s*(?:\n|$)', re.S)
-DERIVED_VERSION = '1'
+_FM_RE = re.compile(r'^---[ \t]*\r?\n(.*?)\r?\n---[ \t]*(?:\r?\n|$)', re.S)
+# '2'：第 9 轮加入 note_links（双链索引）→ 版本号一变，启动时会为存量笔记重建索引
+DERIVED_VERSION = '2'
 WORD_RE = re.compile(r'[\u4e00-\u9fff]|[A-Za-z0-9_]+')
 
 
@@ -1403,6 +1439,130 @@ def parse_front_matter(md_text):
         else:
             props[key] = v.strip('"\'')
     return props
+
+
+# ====== 双链 [[标题#小节|别名]]（第 9 轮）======
+# 单独一条正则而不是复用 _LINK_RE：那条只管计数，口径已被第 7 轮的搜索测试锁死；
+# 这里要把 标题 / 小节 / 别名 三段拆开，改 _LINK_RE 等于顺手改掉别人的口径。
+_WIKILINK_RE = re.compile(r'\[\[([^\]\|#]*)(?:#([^\]\|]+))?(?:\|([^\]]*))?\]\]')
+
+
+def extract_links(content, fmt):
+    """正文 → [(序号, 标题原文, 标题归一, 小节, 别名)]（双链索引的数据源）。
+
+    走 note_plain_text 而不是原始正文：md 与 delta 用同一条口径（与 link_count 一致）。
+    `[[#小节]]`（同篇内跳转）标题为空 → target_key 记空串，反向链接查询会跳过它。
+    """
+    out = []
+    for m in _WIKILINK_RE.finditer(note_plain_text(content, fmt)):
+        raw = (m.group(1) or '').strip()
+        heading = (m.group(2) or '').strip() or None
+        alias = (m.group(3) or '').strip() or None
+        if not raw and not heading:
+            continue
+        out.append((len(out), raw, raw.lower(), heading, alias))
+    return out
+
+
+def _link_context(content, fmt, title, heading, span=42):
+    """反向链接的上下文片段（命中处 ±span 字，换行压成空格）。
+
+    读的是**明文**正文；加密笔记由调用方挡住（根本读不到正文）。
+    """
+    plain = note_plain_text(content, fmt)
+    needle = '[[' + (title or '') + (('#' + heading) if heading else '')
+    at = plain.find(needle)
+    if at < 0:
+        return ''
+    start, end = max(0, at - span), min(len(plain), at + len(needle) + span)
+    body = plain[start:end].replace('\n', ' ').strip()
+    return ('…' if start else '') + body + ('…' if end < len(plain) else '')
+
+
+# ====== 属性（front-matter）查询（第 9 轮）======
+def _prop_norm(key):
+    return (key or '').strip().lower()
+
+
+def _load_props(props_json):
+    try:
+        data = json.loads(props_json or '{}')
+        return data if isinstance(data, dict) else {}
+    except Exception:
+        return {}
+
+
+def _prop_match(props, key, op, val):
+    """单个属性条件。键名大小写不敏感；值是列表时"任一项命中"即算命中。
+
+    op 为 None 表示只要求键存在（`prop:状态`）。比较运算在"两边都能转成数字"时按数字，
+    否则按字符串——ISO 日期的字典序就是时间序，所以 `prop:截止>2026-10-01` 天然成立。
+    """
+    if not props:
+        return False
+    target = None
+    for k, v in props.items():
+        if _prop_norm(k) == _prop_norm(key):
+            target = v
+            break
+    else:
+        return False
+    if op is None:
+        return True
+    values = target if isinstance(target, list) else [target]
+    if op == '~':
+        return any(val.lower() in str(v).lower() for v in values)
+    if op == '=':
+        return any(str(v).strip().lower() == val.lower() for v in values)
+    for v in values:
+        a, b = str(v).strip(), val
+        try:
+            x, y = float(a), float(b)
+        except ValueError:
+            x, y = a, b
+        if op == '>' and x > y:
+            return True
+        if op == '<' and x < y:
+            return True
+        if op == '>=' and x >= y:
+            return True
+        if op == '<=' and x <= y:
+            return True
+    return False
+
+
+def _filter_props(ids, conds):
+    """属性后置过滤（与 `-排除词` 同一条路：候选已被范围收窄，且不必依赖 SQLite 的 JSON1
+    扩展与键名转义）。
+
+    加密 / 读不到属性的笔记：**含正向条件时会被排除**（它确实无法满足），
+    **只有取反条件时保留**（我们无法证明它违反，宁可不排除也不误删——同排除词的政策）。
+    """
+    if not conds or not ids:
+        return ids
+    marks = ','.join('?' * len(ids))
+    props = {}
+    for r in conn.execute(
+            f"SELECT note_id, props_json FROM note_derived WHERE note_id IN ({marks})", list(ids)):
+        props[r['note_id']] = _load_props(r['props_json'])
+    has_positive = any(not negate for _k, _o, _v, negate in conds)
+    out = []
+    for i in ids:
+        p = props.get(i)
+        if p is None or (not p and not has_positive):
+            out.append(i)
+            continue
+        ok = True
+        for key, op, val, negate in conds:
+            hit = _prop_match(p, key, op, val)
+            if negate:
+                hit = not hit
+            if not hit:
+                ok = False
+                break
+        if ok:
+            out.append(i)
+    return out
 
 
 def _todo_lines_md(md_text):
@@ -1516,6 +1676,12 @@ def _refresh_derived(note_id, content=None, fmt=None):
         for idx, text, due, done in todos:
             conn.execute("INSERT INTO note_todos (note_id, idx, text, due, done) VALUES (?,?,?,?,?)",
                          (note_id, idx, text, due, done))
+        # 双链索引与正文同事务重建；加密笔记 content 上面已被置空 → 行被删干净
+        conn.execute("DELETE FROM note_links WHERE src_note_id = ?", (note_id,))
+        for ordinal, raw, key, heading, alias in extract_links(content, fmt):
+            conn.execute(
+                "INSERT INTO note_links (src_note_id, ordinal, target_raw, target_key, heading, alias) "
+                "VALUES (?,?,?,?,?,?)", (note_id, ordinal, raw, key, heading, alias))
     except Exception:
         applog.get_logger().exception("派生索引更新失败")   # 派生失败不能影响保存
 
@@ -2114,6 +2280,7 @@ class Api:
             ids = [i for i in scoped if i in found]
             hits = [i for i in ids if i in set(res['title_hits'])]
         ids = self._filter_excluded(ids, scope.get('exclude'))
+        ids = _filter_props(ids, scope.get('prop'))
         return {'ids': ids, 'title_hits': [i for i in hits if i in set(ids)],
                 'snippets': self._snippets_for(ids, text or '')}
 
@@ -2203,6 +2370,136 @@ class Api:
         _refresh_derived(note_id)
         r = conn.execute("SELECT * FROM note_derived WHERE note_id = ?", (note_id,)).fetchone()
         return dict(r) if r else None
+
+    def note_links(self, note_id):
+        """一篇笔记的链接关系：指向 / 反向链接 / 指向尚不存在的笔记。
+
+        **解析放在查询时**（标题 → 笔记），不物化 target_id：标题随时会改，
+        物化就等于给自己埋一个必然过期的索引——改完标题所有反向链接一起断。
+        """
+        row = conn.execute("SELECT title FROM notes WHERE id = ?", (note_id,)).fetchone()
+        title_key = (row['title'] or '').strip().lower() if row else ''
+        outgoing, missing = [], []
+        for r in conn.execute("SELECT * FROM note_links WHERE src_note_id = ? ORDER BY ordinal",
+                              (note_id,)).fetchall():
+            item = {'title': r['target_raw'], 'heading': r['heading'], 'alias': r['alias'],
+                    'index': r['ordinal'], 'same_note': not r['target_key'], 'target': None}
+            if r['target_key']:
+                t = conn.execute(
+                    "SELECT id, title FROM notes WHERE lower(trim(title)) = ? AND deleted_at IS NULL "
+                    "ORDER BY updated_at DESC LIMIT 1", (r['target_key'],)).fetchone()
+                if t:
+                    item['target'] = {'id': t['id'], 'title': t['title']}
+            if item['target'] is None and not item['same_note']:
+                missing.append(item)
+            outgoing.append(item)
+        backlinks = []
+        if title_key:
+            for r in conn.execute(
+                    "SELECT l.target_raw, l.heading, l.alias, n.id AS src_id, n.title AS src_title, "
+                    "n.updated_at AS src_updated, n.content AS src_content, n.format AS src_format, "
+                    "n.password_hash AS src_pw "
+                    "FROM note_links l JOIN notes n ON n.id = l.src_note_id "
+                    "WHERE l.target_key = ? AND n.deleted_at IS NULL "
+                    "ORDER BY n.updated_at DESC", (title_key,)).fetchall():
+                context = '' if r['src_pw'] else _link_context(
+                    r['src_content'], r['src_format'] or 'delta', r['target_raw'], r['heading'])
+                backlinks.append({'id': r['src_id'], 'title': r['src_title'],
+                                  'updated_at': r['src_updated'], 'heading': r['heading'],
+                                  'alias': r['alias'], 'context': context})
+        return {'outgoing': outgoing, 'backlinks': backlinks, 'missing': missing}
+
+    def notes_resolve_link(self, title):
+        """标题 → 笔记。多条同名时取**最近更新**的那条，并把命中数回报给前端提示。"""
+        key = (title or '').strip().lower()
+        if not key:
+            return None
+        rows = conn.execute(
+            "SELECT id, title FROM notes WHERE lower(trim(title)) = ? AND deleted_at IS NULL "
+            "ORDER BY updated_at DESC", (key,)).fetchall()
+        if not rows:
+            return None
+        return {'id': rows[0]['id'], 'title': rows[0]['title'], 'matches': len(rows)}
+
+    def notes_create_from_link(self, title):
+        """点「未创建的链接」→ 建一篇同名 Markdown 笔记。
+
+        刻意走 notes_create + notes_update 两条既有路径而不是自己拼 INSERT：
+        排序值 / FTS / 派生索引都在里面，少走一步就多一处会漏的地方。
+        """
+        name = (title or '').strip() or '未命名笔记'
+        note = self.notes_create()
+        return self.notes_update(note['id'], {'title': name}) or note
+
+    def notes_table(self, note_ids=None):
+        """表格视图的数据源：**一次**桥调用返回所有行的完整字段。
+
+        为什么不让前端逐篇查：N 次跨语言往返在大库下明显卡顿，且"表格 = 列表所见"
+        这件事应该由调用方传 id 列表来保证（前端传的就是当前筛选后的那批 id）。
+        加密笔记只回标题等元信息（派生数据本来就是空的），**绝不下发 password_hash**。
+        """
+        if note_ids is None:
+            note_ids = [r['id'] for r in conn.execute(
+                "SELECT id FROM notes WHERE deleted_at IS NULL "
+                "ORDER BY is_pinned DESC, sort_order DESC").fetchall()]
+        if not note_ids:
+            return []
+        marks = ','.join('?' * len(note_ids))
+        rows = {}
+        sql = ("SELECT n.id, n.title, n.format, n.created_at, n.updated_at, n.is_pinned, "
+               "n.is_favorite, n.password_hash, nb.name AS notebook, "
+               "COALESCE(d.word_count, 0) AS word_count, COALESCE(d.char_count, 0) AS char_count, "
+               "COALESCE(d.todo_open, 0) AS todo_open, COALESCE(d.todo_total, 0) AS todo_total, "
+               "d.todo_next_due, COALESCE(d.link_count, 0) AS link_count, "
+               "COALESCE(NULLIF(d.props_json, ''), '{}') AS props_json "
+               "FROM notes n LEFT JOIN note_derived d ON d.note_id = n.id "
+               "LEFT JOIN notebooks nb ON nb.id = n.notebook_id "
+               f"WHERE n.deleted_at IS NULL AND n.id IN ({marks})")
+        for r in conn.execute(sql, list(note_ids)).fetchall():
+            rows[r['id']] = {
+                'id': r['id'], 'title': r['title'], 'notebook': r['notebook'] or '',
+                'format': r['format'] or 'delta', 'created_at': r['created_at'],
+                'updated_at': r['updated_at'], 'is_pinned': r['is_pinned'],
+                'is_favorite': r['is_favorite'], 'encrypted': bool(r['password_hash']),
+                'word_count': r['word_count'], 'char_count': r['char_count'],
+                'todo_open': r['todo_open'], 'todo_total': r['todo_total'],
+                'todo_next_due': r['todo_next_due'], 'link_count': r['link_count'],
+                'props': {} if r['password_hash'] else _load_props(r['props_json']),
+                'tags': [],
+            }
+        for r in conn.execute(
+                f"SELECT nt.note_id, t.name FROM note_tags nt JOIN tags t ON t.id = nt.tag_id "
+                f"WHERE nt.note_id IN ({marks}) ORDER BY t.name", list(note_ids)).fetchall():
+            if r['note_id'] in rows:
+                rows[r['note_id']]['tags'].append(r['name'])
+        return [rows[i] for i in note_ids if i in rows]
+
+    def export_table_csv(self, note_ids, save_path):
+        """表格 → CSV（utf-8-sig：带 BOM，Excel 双击打开中文不乱码）。
+
+        属性列取所有行的键并集（排序后），加密笔记的属性列留空。返回写入的行数。
+        """
+        try:
+            rows = self.notes_table(note_ids)
+            if not rows:
+                return 0
+            keys = sorted({k for r in rows for k in (r.get('props') or {})})
+            with open(save_path, 'w', encoding='utf-8-sig', newline='') as fh:
+                writer = csv.writer(fh)
+                writer.writerow(['标题', '笔记本', '标签', '更新时间', '字数',
+                                 '待办(未完成/总数)', '最近到期', '已加密'] + keys)
+                for r in rows:
+                    vals = [r['title'], r['notebook'], '/'.join(r['tags']), r['updated_at'],
+                            r['word_count'], '%d/%d' % (r['todo_open'], r['todo_total']),
+                            r['todo_next_due'] or '', '是' if r['encrypted'] else '']
+                    for k in keys:
+                        v = (r.get('props') or {}).get(k, '')
+                        vals.append('/'.join(str(x) for x in v) if isinstance(v, list) else v)
+                    writer.writerow(vals)
+            return len(rows)
+        except Exception:
+            applog.get_logger().exception("导出表格 CSV 失败")
+            return None
 
     def metrics_bulk(self, note_ids=None):
         """批量指标（表格视图用；不传就全部）"""

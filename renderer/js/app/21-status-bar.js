@@ -26,6 +26,8 @@ export function plainTextForStats(text, fmt) {
   // 与后端 _delta_to_text 拼 op 文本的结果一致，无需再剥。
   if (fmt !== 'md') return String(text);
   let t = String(text);
+  // _FM_RE：属性（front-matter）不是正文，后端 _markdown_to_text 同样先剥它
+  t = t.replace(/^---[ \t]*\r?\n[\s\S]*?\r?\n---[ \t]*(?:\r?\n|$)/, ' ');   // _FM_RE
   t = t.replace(/<(script|style)\b[\s\S]*?<\/\1>/gi, ' ');   // _MD_SCRIPT
   t = t.replace(/!\[([^\]]*)\]\([^)]*\)/g, '$1');            // _MD_IMAGE → alt
   t = t.replace(/\[([^\]]*)\]\([^)]*\)/g, '$1');             // _MD_LINK → 文字

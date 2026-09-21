@@ -827,8 +827,8 @@ body.adaptive-bg .panel-dialog {
   position: relative;
   z-index: 2;
   display: grid;
-  grid-template-rows: auto auto auto auto 1fr auto;
-  /* 行1:标题  行2:标签  行3:字体  行4:工具栏  行5:编辑器(占满剩余空间) */
+  grid-template-rows: auto auto auto auto auto 1fr auto;
+  /* 行1:标题 行2:标签 行3:属性 行4:字体 行5:工具栏 行6:编辑器(占满剩余空间) 行7:状态栏 */
   /* 关键：列必须显式给一个可收缩的最小值。默认 auto 会被「工具栏 26 个按钮的固有宽度
      (826px)」撑住，窗口窄于此时整列溢出，再被 .editor-area 的 overflow:hidden 裁掉——
      实测 900px 窗口下编辑器右侧少 209px、公式/提醒/锁定共 4 个按钮点不到。
@@ -839,9 +839,131 @@ body.adaptive-bg .panel-dialog {
   overflow: hidden;
 }
 
+/* ====== 属性行 / 属性面板（第 9 轮）====== */
+.prop-block { position: relative; display: flex; flex-direction: column; padding: 4px 40px 0; }
+.prop-block.hidden { display: none; }
+.prop-bar { display: flex; align-items: center; gap: 6px; flex-wrap: wrap; min-height: 24px; }
+.prop-chips { display: flex; align-items: center; gap: 6px; flex-wrap: wrap; }
+.prop-chip {
+  display: inline-flex; align-items: center; gap: 5px; cursor: pointer;
+  padding: 1px 9px; border-radius: 10px; font-size: var(--font-size-xs, 12px);
+  background: var(--glass-bg-strong, rgba(0, 0, 0, 0.05)); color: var(--text-primary);
+}
+.prop-chip b { color: var(--text-muted); font-weight: 600; }
+.prop-chip:hover { box-shadow: 0 0 0 1px var(--accent-text); }
+.prop-hint { font-size: var(--font-size-xs, 12px); color: var(--text-muted); }
+.prop-add {
+  border: 1px solid var(--border-light, rgba(0, 0, 0, 0.1)); background: transparent;
+  color: var(--text-muted); cursor: pointer; border-radius: 10px; padding: 1px 9px;
+  font-size: var(--font-size-xs, 12px);
+}
+.prop-add:hover { color: var(--accent-text); border-color: var(--accent-text); }
+.prop-add.prop-convert { color: var(--accent-text); border-color: var(--accent-text); }
+/* 面板绝对定位盖在编辑区上：属性行本身只占一行，展开不该把编辑器挤矮 */
+.prop-editor {
+  position: absolute; top: 100%; left: 40px; right: 40px; z-index: 45;
+  display: flex; flex-direction: column; gap: 6px; padding: 10px;
+  max-height: 46vh; overflow: auto; border-radius: 12px;
+  background: var(--glass-bg-strong, rgba(255, 255, 255, 0.97));
+  border: 1px solid var(--border-light, rgba(0, 0, 0, 0.12));
+  box-shadow: 0 6px 24px rgba(0, 0, 0, 0.14);
+}
+.prop-editor.hidden { display: none; }
+.prop-row { display: flex; align-items: center; gap: 6px; }
+.prop-row input, .prop-row select {
+  height: 28px; padding: 0 8px; border-radius: 6px;
+  border: 1px solid var(--border-light, rgba(0, 0, 0, 0.14));
+  background: var(--bg-editor, transparent); color: var(--text-primary); font-size: 13px;
+}
+.prop-key { width: 130px; }
+.prop-type { width: 78px; }
+.prop-val { flex: 1; }
+.prop-row input[type="checkbox"].prop-val { flex: 0 0 auto; width: 16px; height: 16px; padding: 0; }
+.prop-del {
+  width: 26px; height: 26px; cursor: pointer; border-radius: 6px;
+  border: 1px solid var(--border-light, rgba(0, 0, 0, 0.1));
+  background: transparent; color: var(--text-muted);
+}
+.prop-del:hover { color: var(--danger, #C0392B); border-color: var(--danger, #C0392B); }
+.prop-editor-foot { display: flex; align-items: center; gap: 10px; }
+.prop-tip { flex: 1; font-size: 11px; color: var(--text-muted); }
+.prop-tip code { background: var(--glass-bg-strong, rgba(0, 0, 0, 0.05)); padding: 1px 4px; border-radius: 4px; }
+.prop-btn {
+  height: 28px; padding: 0 10px; cursor: pointer; border-radius: 6px;
+  border: 1px solid var(--border-light, rgba(0, 0, 0, 0.12));
+  background: transparent; color: var(--text-primary); font-size: 12px;
+}
+.prop-btn:hover { border-color: var(--accent-text); color: var(--accent-text); }
+.prop-btn-primary { background: var(--accent-solid, var(--accent)); color: var(--on-accent, #fff); border-color: transparent; }
+
+/* ====== 双链（预览里的 [[链接]]）====== */
+.md-wikilink {
+  color: var(--accent-text); text-decoration: none; cursor: pointer;
+  border-bottom: 1px dashed currentColor;
+}
+.md-wikilink:hover { background: var(--accent-light); }
+.md-wikilink-missing { color: var(--danger, #C0392B); border-bottom-style: dotted; }
+.md-props { border-collapse: collapse; margin: 0 0 1em; font-size: 0.92em; }
+.md-props th, .md-props td {
+  border: 1px solid var(--border-light, rgba(0, 0, 0, 0.12)); padding: 3px 10px; text-align: left;
+}
+.md-props th { color: var(--text-muted); font-weight: 600; }
+
+/* ====== 链接抽屉 ====== */
+.links-list { flex: 1; overflow: auto; padding: 6px 8px; }
+.link-section { margin-bottom: 10px; }
+.link-section-head {
+  display: flex; align-items: center; gap: 6px; padding: 2px 4px 4px;
+  font-size: var(--font-size-xs, 12px); color: var(--text-muted);
+}
+.link-count {
+  background: var(--glass-bg-strong, rgba(0, 0, 0, 0.06)); border-radius: 8px;
+  padding: 0 6px; font-size: 11px;
+}
+.link-item {
+  padding: 4px 8px; border-radius: 6px; cursor: pointer; font-size: 13px; color: var(--text-primary);
+}
+.link-item:hover { background: var(--glass-bg-strong, rgba(0, 0, 0, 0.06)); }
+.link-item[data-link-missing] { color: var(--danger, #C0392B); }
+.link-heading { color: var(--text-muted); font-size: 12px; }
+.link-alias { color: var(--text-muted); font-size: 12px; }
+.link-meta { float: right; color: var(--text-muted); font-size: 11px; }
+.link-context {
+  margin-top: 2px; color: var(--text-muted); font-size: 11px;
+  overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+}
+.link-empty { padding: 8px 10px; color: var(--text-muted); font-size: var(--font-size-xs, 12px); }
+
+/* ====== 表格视图 ====== */
+.table-view {
+  position: absolute; inset: 0; z-index: 60; display: flex; flex-direction: column;
+  background: var(--bg-editor, #fff);
+}
+.table-view.hidden { display: none; }
+.table-view-head {
+  display: flex; align-items: center; gap: 10px; padding: 10px 16px;
+  border-bottom: 1px solid var(--border-light, rgba(0, 0, 0, 0.1));
+}
+.table-view-title { font-size: 14px; font-weight: 600; color: var(--text-primary); }
+.table-view-meta { font-size: var(--font-size-xs, 12px); color: var(--text-muted); }
+.table-wrap { flex: 1; overflow: auto; }
+.table-view-table { border-collapse: collapse; width: 100%; font-size: 13px; }
+.table-view-table th, .table-view-table td {
+  border-bottom: 1px solid var(--border-light, rgba(0, 0, 0, 0.08));
+  padding: 6px 10px; text-align: left; white-space: nowrap;
+}
+.table-view-table th {
+  position: sticky; top: 0; cursor: pointer; user-select: none;
+  background: var(--glass-bg-strong, #fafafa); color: var(--text-muted); font-weight: 600;
+}
+.table-view-table th:hover { color: var(--accent-text); }
+.table-view-table tr.active td { background: var(--accent-light); }
+.table-view-table td.prop-col, .table-view-table th.prop-col { color: var(--accent-text); }
+.table-empty { padding: 24px; color: var(--text-muted); text-align: center; }
+
 /* ====== 编辑器状态栏（第 8 轮）====== */
 .editor-status {
-  grid-row: 6;
+  grid-row: 7;
   display: flex;
   align-items: center;
   gap: 10px;

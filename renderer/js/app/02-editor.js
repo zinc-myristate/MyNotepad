@@ -13,6 +13,8 @@ import { getMarkdownContent } from './13-markdown-editor.js';
 import { updateStatusBar } from './21-status-bar.js';
 import { refreshOutline, syncOutlineActive } from './22-outline.js';
 import { refreshFindIfOpen } from './23-find-bar.js';
+import { refreshPropBar } from './24-properties.js';
+import { refreshLinksIfOpen } from './25-links.js';
 
 export function initQuill() {
   const quill = new Quill('#quill-editor', {
@@ -32,6 +34,8 @@ export function initQuill() {
     updateStatusBar();
     refreshOutline();
     refreshFindIfOpen();
+    refreshPropBar();
+    refreshLinksIfOpen();
   });
   quill.on('selection-change', () => {
     updateStatusBar();
