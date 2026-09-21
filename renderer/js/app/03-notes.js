@@ -5,6 +5,7 @@ import { $, dom, hideEditorUI, openPanel, reportError, saveIndicatorTimer, setSa
 import {
   getMarkdownContent, setMarkdownContent, setMarkdownReadOnly, setMarkdownVisible,
 } from './13-markdown-editor.js';
+import { syncFormatBadge } from './15-note-format.js';
 import { notesStore } from './01b-store.js';
 import { isVoiceRecording, stopVoiceRecording, toggleFavoriteNote, togglePinNote } from './02-editor.js';
 import { applyNoteBackground } from './04-appearance.js';
@@ -285,6 +286,7 @@ export async function selectNote(noteId) {
     dom.titleInput.value = note.title || '';
     dom.titleInput.readOnly = false;  // 解锁后允许编辑标题
 
+    syncFormatBadge();
     // 设置编辑器内容：按 format 分流，这是双轨唯一的分叉点
     if (state.noteFormat === 'md') {
       setMarkdownVisible(true);
@@ -327,6 +329,15 @@ export async function selectNote(noteId) {
   updateLockButton();
 
   updateNoteListItem(noteId);
+}
+
+/** 强制重载当前笔记（格式转换后必须走它：selectNote 对"同一篇"会直接 return） */
+export async function reloadActiveNote() {
+  const id = state.activeNoteId;
+  if (!id) return;
+  state.activeNoteId = null;
+  await loadNotes();
+  await selectNote(id);
 }
 
 export async function createNewNote() {

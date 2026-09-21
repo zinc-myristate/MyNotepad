@@ -239,6 +239,23 @@ export async function hydrateMarkdownAssets(root, noteId) {
   });
 }
 
+/** 导出用 HTML：渲染 + 把相对路径图片内嵌成 data URI（导出文件换台机器也不会破图）。
+ *  为什么导出重新渲染而不是直接抓预览区 innerHTML：预览有 180ms 节流，可能落后于源码。 */
+export async function markdownExportHtml(text, noteId) {
+  const html = renderMarkdown(text, { noteId });
+  const tmp = document.createElement('div');
+  tmp.innerHTML = html;
+  for (const img of Array.from(tmp.querySelectorAll('img[data-md-src]'))) {
+    try {
+      const abs = await resolveAssetPath(img.getAttribute('data-md-src'), noteId);
+      if (!abs) continue;
+      const uri = await window.pywebview.api.read_file_base64(abs);
+      if (uri) img.setAttribute('src', uri);
+    } catch (e) { /* 单张图失败不影响整篇导出 */ }
+  }
+  return tmp.innerHTML;
+}
+
 /** 预览区里的链接点击：交给系统默认程序打开（http/https/本地文件都支持） */
 export function bindPreviewLinks(root) {
   if (!root || root.dataset.mdLinksBound === '1') return;

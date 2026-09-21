@@ -137,46 +137,43 @@ class TestExportToFile:
 
 
 class TestImport:
-    def test_headings_paragraphs_lists(self, api):
+    """第 6 轮起：导入 = 把 Markdown 文本**原样**交给 Markdown 编辑器（不做 Delta 转换）。
+
+    转换路径（markdown_to_delta）由 tests/test_markdown_convert.py 单独覆盖，
+    这里的重点是"一个字都不许改"。
+    """
+
+    def test_import_is_verbatim_markdown(self, api):
         md = ('# 标题\n\n正文一段\n\n## 小节\n\n- 项目一\n- 项目二\n\n1. 第一\n'
               '2. 第二\n\n- [x] 完成\n- [ ] 未完成\n\n> 引用\n\n```\ncode here\n```\n')
         note = api.import_markdown(md)
         assert note and note['title'] == '标题', '标题应取自第一个非空行'
-        ops = json.loads(note['content'])['ops']
-        attrs = [op.get('attributes', {}) for op in ops if isinstance(op.get('insert'), str)]
-        assert any(a.get('header') == 1 for a in attrs)
-        assert any(a.get('header') == 2 for a in attrs)
-        assert any(a.get('list') == 'bullet' for a in attrs)
-        assert any(a.get('list') == 'ordered' for a in attrs)
-        assert any(a.get('list') == 'checked' for a in attrs)
-        assert any(a.get('list') == 'unchecked' for a in attrs)
-        assert any(a.get('blockquote') for a in attrs)
-        assert any(a.get('code-block') for a in attrs)
-        assert 'code here' in to_delta_text(note['content']), '代码块内容不能丢'
+        assert note['format'] == 'md'
+        assert note['content'] == md, '导入必须逐字节保真（不转 Delta、不改写标记）'
 
-    def test_inline_formats(self, api):
-        note = api.import_markdown('有 **粗** 和 *斜* 和 ~~删~~ 和 `码` 和 [链接](https://a.b)\n')
-        ops = json.loads(note['content'])['ops']
-        flags = [op.get('attributes', {}) for op in ops]
-        assert any(f.get('bold') for f in flags)
-        assert any(f.get('italic') for f in flags)
-        assert any(f.get('strike') for f in flags)
-        assert any(f.get('code') for f in flags)
-        assert any(f.get('link') == 'https://a.b' for f in flags)
+    def test_inline_markup_preserved(self, api):
+        md = '有 **粗** 和 *斜* 和 ~~删~~ 和 `码` 和 [链接](https://a.b)\n'
+        note = api.import_markdown(md)
+        assert note['content'] == md
+        assert note['format'] == 'md'
 
-    def test_escaped_chars_survive(self, api):
-        note = api.import_markdown('价格 \\*5\\* 元\n')
-        assert '价格 *5* 元' in to_delta_text(note['content'])
+    def test_inline_html_preserved(self, api):
+        """带内嵌 HTML 的 Markdown（别的软件导出的）也要原样存下来"""
+        md = '前<span style="color: #B8844A">彩色</span>后\n\n<hr class="divider-3">\n'
+        note = api.import_markdown(md)
+        assert note['content'] == md
 
     def test_plain_text_lines_kept(self, api):
         note = api.import_markdown('第一行\n第二行\n\n第四行\n')
-        text = to_delta_text(note['content'])
         for part in ('第一行', '第二行', '第四行'):
-            assert part in text
+            assert part in note['content']
 
     def test_imported_note_is_searchable_and_indexed(self, api):
         note = api.import_markdown('# 导入测试\n\n独特的检索词甲\n')
         assert note['id'] in set(api.notes_search('独特的检索词')['ids'])
+        # 列表摘要也必须是剥掉标记的纯文本（不能把 ## 显示给用户）
+        row = [n for n in api.notes_list() if n['id'] == note['id']][0]
+        assert '导入测试' in row['preview'] and '#' not in row['preview']
 
     def test_import_into_notebook(self, api):
         nb = api.notebooks_create('资料')['id']

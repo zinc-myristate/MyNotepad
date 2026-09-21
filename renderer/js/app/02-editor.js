@@ -8,6 +8,8 @@ import { getCurrentNotebookId, getCurrentNotebookName } from './09-boot.js';
 import { _stickerSyncTimer, getCurrentTagFilter, getCurrentTagName, set_stickerSyncTimer } from './05-shell.js';
 import { unlockedNotes, verifyAndSelectNote } from './07-formula-security-dnd.js';
 import { syncStickersToOverlay } from '../quill/quill-deco.js';
+import { markdownExportHtml } from './14-markdown-render.js';
+import { getMarkdownContent } from './13-markdown-editor.js';
 
 export function initQuill() {
   const quill = new Quill('#quill-editor', {
@@ -1029,7 +1031,13 @@ $$('.export-option').forEach(btn => {
     }
 
     const title = dom.titleInput.value.trim() || '未命名笔记';
-    const htmlContent = state.quill ? await resolveExportImages(state.quill.root.innerHTML) : '';
+    // 导出内容按格式取：Markdown 笔记用渲染后的 HTML（图片内嵌成 data URI），Delta 走原链路
+    let htmlContent = '';
+    if (state.noteFormat === 'md') {
+      htmlContent = await markdownExportHtml(getMarkdownContent(), state.activeNoteId);
+    } else {
+      htmlContent = state.quill ? await resolveExportImages(state.quill.root.innerHTML) : '';
+    }
 
     if (format === 'pdf') {
       showInfoDialog({

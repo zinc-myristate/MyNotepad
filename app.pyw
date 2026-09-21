@@ -273,6 +273,11 @@ class AppApi:
     def notes_create(self):
         return self.backend.notes_create()
     def notes_duplicate(self, note_id): return self.backend.notes_duplicate(note_id)
+    # 正文格式（Delta ↔ Markdown）双轨：查询状态 / 转换 / 还原原始富文本
+    def note_format_info(self, note_id): return self.backend.note_format_info(note_id)
+    def convert_note_format(self, note_id, target):
+        return self.backend.convert_note_format(note_id, target)
+    def restore_delta_backup(self, note_id): return self.backend.restore_delta_backup(note_id)
     def notes_delete_many(self, note_ids): return self.backend.notes_delete_many(note_ids)
     def notes_move_many(self, note_ids, notebook_id=None):
         return self.backend.notes_move_many(note_ids, notebook_id)

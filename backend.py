@@ -403,44 +403,149 @@ def _md_inline_escape(text):
     return ''.join(out)
 
 
+# 字体/字号/颜色在 Markdown 里靠**白名单内嵌 HTML** 保留（第 6 轮决策）：
+# Obsidian/Typora 能渲染；Joplin 官方说明会丢 HTML。取舍写在 CLAUDE.md 的已知限制里。
+_MD_FONT_CLASSES = {'serif': 'md-font-serif', 'monospace': 'md-font-mono', 'cursive': 'md-font-hand'}
+_MD_FONT_BY_CLASS = {v: k for k, v in _MD_FONT_CLASSES.items()}
+_MD_COLOR_RE = re.compile(r'^(#[0-9a-fA-F]{3,8}|rgba?\([\d\s.,%]+\))$')
+_MD_SIZE_RE = re.compile(r'^\d{1,3}(px|em|rem|%)$')
+_MD_SPAN_RE = re.compile(r'^<span([^>]*)>', re.I)
+_MD_STYLE_RE = re.compile(r'style\s*=\s*"([^"]*)"', re.I)
+_MD_CLASS_RE = re.compile(r'class\s*=\s*"([^"]*)"', re.I)
+_MD_HR_RE = re.compile(r'^<hr[^>]*class\s*=\s*"([^"]*)"', re.I)
+_MD_TAG_RE = re.compile(r'</?(?:u|sup|sub|mark|span|hr)\b[^>]*>', re.I)
+_MD_ATX_IMAGE = re.compile(r'^!\[([^\]]*)\]\(([^)]+)\)$')
+_MD_MATH_BLOCK_RE = re.compile(r'^\$\$(.+?)\$\$$')
+_MD_MATH_INLINE_RE = re.compile(r'\$([^$\n]+?)\$')
+
+
+def _style_attrs(style_text):
+    """白名单 style → Delta 属性（只认 color / font-size，其余一律忽略）"""
+    out = {}
+    for decl in (style_text or '').split(';'):
+        if ':' not in decl:
+            continue
+        prop, _, val = decl.partition(':')
+        prop, val = prop.strip().lower(), val.strip()
+        if prop == 'color' and _MD_COLOR_RE.match(val):
+            out['color'] = val
+        elif prop == 'font-size' and _MD_SIZE_RE.match(val):
+            out['size'] = val
+    return out
+
+
+def _delta_to_md_attrs(attrs):
+    """(文本, 行内属性) → Markdown 行内文本；富文本属性用白名单 HTML 包住"""
+    text, attrs = attrs
+    s = _md_inline_escape(text)
+    if attrs.get('code'):
+        s = '`' + text + '`'
+    else:
+        if attrs.get('bold'):
+            s = '**' + s + '**'
+        if attrs.get('italic'):
+            s = '*' + s + '*'
+        if attrs.get('strike'):
+            s = '~~' + s + '~~'
+        if attrs.get('underline'):
+            s = '<u>' + s + '</u>'
+        script = attrs.get('script')
+        if script in ('super', 'sub'):
+            tag = 'sup' if script == 'super' else 'sub'
+            s = '<%s>%s</%s>' % (tag, s, tag)
+        font = attrs.get('myfont') or attrs.get('font')
+        if font in _MD_FONT_CLASSES:
+            s = '<span class="%s">%s</span>' % (_MD_FONT_CLASSES[font], s)
+        styles = []
+        color = attrs.get('color')
+        if color and _MD_COLOR_RE.match(str(color)):
+            styles.append('color: %s' % color)
+        size = attrs.get('size')
+        if size and _MD_SIZE_RE.match(str(size)):
+            styles.append('font-size: %s' % size)
+        if attrs.get('background'):
+            styles.append('background-color: %s' % attrs['background'])
+        if styles:
+            s = '<span style="%s">%s</span>' % ('; '.join(styles), s)
+    if attrs.get('link'):
+        s = '[%s](%s)' % (s, attrs['link'])
+    return s
+
+
 def _md_inline(pieces):
     """(文本, 行内属性) 列表 → Markdown 行内文本"""
-    out = []
-    for text, attrs in pieces:
-        s = _md_inline_escape(text)
-        if attrs.get('code'):
-            s = '`' + text + '`'          # 代码里的元字符不该转义
-        else:
-            if attrs.get('bold'):
-                s = '**' + s + '**'
-            if attrs.get('italic'):
-                s = '*' + s + '*'
-            if attrs.get('strike'):
-                s = '~~' + s + '~~'
-        if attrs.get('link'):
-            s = '[%s](%s)' % (s, attrs['link'])
-        out.append(s)
-    return ''.join(out)
+    return ''.join(_delta_to_md_attrs(p) for p in pieces)
 
 
-def _md_embed(kind, value):
+def _embed_text_fallback(value, depth=0):
+    """未知 embed 的兜底：递归把里面的字符串抽出来，宁可丢结构也不能丢字"""
+    if depth > 4:
+        return ''
+    if isinstance(value, str):
+        return value
+    if isinstance(value, dict):
+        return ' '.join(_embed_text_fallback(v, depth + 1) for v in value.values())
+    if isinstance(value, list):
+        return ' '.join(_embed_text_fallback(v, depth + 1) for v in value)
+    return ''
+
+
+def _md_embed(kind, value, note_id=None, resolve_attachment=None):
     """嵌入对象 → Markdown 片段（图片用占位，真正的路径由调用方替换）"""
+    value = value if isinstance(value, dict) else {}
     if kind == 'image':
         name = value.get('filename') or value.get('storedPath') or ''
         return '\x00IMG:%s\x00' % name
     if kind == 'math-formula':
-        return '$%s$' % (value.get('latex') or value.get('formula') or '')
+        latex = value.get('latex') or value.get('formula') or ''
+        return '$$%s$$' % latex if value.get('display') else '$%s$' % latex
     if kind == 'attachment':
-        return '📎 %s' % (value.get('originalName') or value.get('filename') or '附件')
+        name = value.get('filename') or ''
+        label = value.get('originalName') or name or '附件'
+        if resolve_attachment:
+            href = resolve_attachment(name) or ''
+        elif note_id and name:
+            href = 'attachments/%s/%s' % (note_id, name)
+        else:
+            href = ''
+        return '[📎 %s](%s)' % (label, href) if href else '📎 %s' % label
     if kind == 'divider':
-        return '\n---\n'
+        style = value.get('style') or value.get('type') or 1
+        try:
+            cls = 'divider-%d' % max(1, min(12, int(style)))
+        except (TypeError, ValueError):
+            cls = 'divider-1'
+        # 不要再包换行：行本身由 Delta 的 \n op 负责，自己加换行会在往返时每次多一个空行
+        return '<hr class="%s">' % cls
     if kind in ('sticker', 'stamp'):
+        emoji = value.get('emoji') or value.get('text') or value.get('char') or '🔖'
+        return '<span class="md-sticker">%s</span>' % emoji
+    guess = _embed_text_fallback(value).strip()
+    return guess
+
+
+# Quill 的表格是一组**带行/单元格属性的文本行**：同一行的多行共享 table=<行id>，
+# 单元格之间用 table-cell 区分。这里按行分组拼成 GFM 表格。
+_MD_TABLE_ROW_ATTR = 'table'
+_MD_TABLE_CELL_ATTR = 'table-cell'
+_MD_TABLE_LINE_ATTR = 'table-cell-line'
+
+
+def _rows_to_gfm_table(rows):
+    """[[cell, cell, ...], ...] → GFM 表格文本（首行当表头）"""
+    if not rows:
         return ''
-    return ''
+    width = max(len(r) for r in rows)
+    def fmt(cells):
+        padded = list(cells) + [''] * (width - len(cells))
+        return '| ' + ' | '.join(c.replace('|', '\\|').replace('\n', ' ') for c in padded) + ' |'
+    out = [fmt(rows[0]), '| ' + ' | '.join(['---'] * width) + ' |']
+    out += [fmt(r) for r in rows[1:]]
+    return '\n'.join(out)
 
 
-def _delta_to_markdown(content, resolve_image=None):
-    """Quill Delta JSON → Markdown（标题/列表/待办/引用/代码块 + 行内格式 + 图片/公式）。
+def _delta_to_markdown(content, resolve_image=None, note_id=None, resolve_attachment=None):
+    """Quill Delta JSON → Markdown（标题/列表/待办/引用/代码块/表格 + 行内格式 + 嵌入对象）。
 
     Quill 的行属性挂在**含换行符的那个 op** 上，所以按 op 切行、用换行所在 op 的属性
     作为整行属性。图片需要调用方提供 resolve_image(文件名) → 相对路径（导出时会把图复制到
@@ -463,7 +568,8 @@ def _delta_to_markdown(content, resolve_image=None):
         ins, attrs = op.get('insert'), op.get('attributes') or {}
         if isinstance(ins, dict):
             kind = next(iter(ins))
-            cur['pieces'].append((_md_embed(kind, ins[kind]), {'raw': True}))
+            cur['pieces'].append(
+                (_md_embed(kind, ins[kind], note_id, resolve_attachment), {'raw': True}))
             continue
         if not isinstance(ins, str):
             continue
@@ -480,16 +586,48 @@ def _delta_to_markdown(content, resolve_image=None):
 
     out = []
     code_buf = []          # 连续的多行代码块要合并成一个 ``` 块
+    table_rows, table_cell, table_cell_lines = [], [], []
 
     def _flush_code():
         if code_buf:
             out.append('```\n' + '\n'.join(code_buf) + '\n```')
             code_buf.clear()
 
+    def _flush_cell():
+        if table_cell_lines:
+            table_cell.append('\n'.join(table_cell_lines))
+            table_cell_lines.clear()
+
+    def _flush_table():
+        _flush_cell()
+        if table_cell:
+            table_rows.append(list(table_cell))
+            table_cell.clear()
+        if table_rows:
+            out.append(_rows_to_gfm_table(table_rows))
+            table_rows.clear()
+
     for line in lines:
         attrs = line['attrs'] or {}
         body = ''.join(t if a.get('raw') else _md_inline([(t, a)])
                        for t, a in line['pieces'])
+        if attrs.get(_MD_TABLE_ROW_ATTR):
+            _flush_code()
+            _flush_cell()
+            cell_id = attrs.get(_MD_TABLE_CELL_ATTR)
+            if table_rows and table_cell and cell_id != getattr(_flush_table, '_last_cell', None):
+                pass
+            table_cell_lines.append(body)
+            # 同一行内换单元格：table-cell 变化即分格
+            prev = getattr(_flush_table, '_cell', None)
+            if prev is None:
+                _flush_table._cell = cell_id
+            elif cell_id != prev:
+                _flush_cell()
+                _flush_table._cell = cell_id
+            continue
+        _flush_table()
+        _flush_table._cell = None
         if attrs.get('code-block'):
             # Quill 把多行代码块编码成**一个** op（内部含换行）并带 code-block 属性，
             # 所以按行看会看到连续多行都带该属性——必须合并成一个围栏块。
@@ -512,6 +650,7 @@ def _delta_to_markdown(content, resolve_image=None):
         elif attrs.get('blockquote'):
             prefix = '> '
         out.append(prefix + body)
+    _flush_table()
     _flush_code()
     md = '\n'.join(out).rstrip() + '\n'
     if resolve_image:
@@ -530,56 +669,146 @@ _MD_TODO = re.compile(r'^\s*[-*+]\s+\[([ xX])\]\s*(.*)$')
 _MD_OL = re.compile(r'^\s*\d+[.)]\s+(.*)$')
 _MD_QUOTE = re.compile(r'^\s*>\s?(.*)$')
 _MD_FENCE = re.compile(r'^\s*```')
+_MD_TABLE_SEP = re.compile(r'^\s*\|?\s*:?-{2,}:?\s*(\|\s*:?-{2,}:?\s*)+\|?\s*$')
 
 
-def _md_parse_inline(text):
-    """Markdown 行内 → Delta ops。支持 **粗** / *斜* / ~~删~~ / `码` / [文字](链接)。"""
+def _md_split_table_row(line):
+    cells = line.strip().strip('|').split('|')
+    return [c.strip() for c in cells]
+
+
+def _md_merge(base, extra):
+    """合并属性（extra 覆盖 base）；值一律是标量，便于直接当 Delta attributes 用"""
+    out = dict(base)
+    out.update(extra)
+    return out
+
+
+def _md_parse_inline(text, base=None, _depth=0):
+    """Markdown 行内 → Delta ops。
+
+    支持：**粗** / *斜* / ~~删~~ / `码` / [文字](链接) / $公式$，
+    以及本应用导出的白名单内嵌 HTML（<u>/<sup>/<sub>/<mark>/<span style|class>）。
+
+    属性用**扁平字典**在递归里传递（不是就地压栈）：早期版本把 `**粗**` 交给
+    递归调用后只在自己这层压栈，结果子调用产生的 ops 完全没带上 bold ——
+    「加粗转一圈就没了」，且往返测试才发现。现在把当前属性直接传给子调用。
+    """
+    if _depth > 8:
+        return [{'insert': text}]
     ops, i, n = [], 0, len(text)
+    base_attrs = dict(base or {})
     buf = []
 
-    def flush(attrs=None):
-        if buf:
-            ops.append({'insert': ''.join(buf)} if not attrs else
-                       {'insert': ''.join(buf), 'attributes': attrs})
-            buf.clear()
+    def flush(extra=None):
+        if not buf:
+            return
+        attrs = _md_merge(base_attrs, extra or {})
+        ops.append({'insert': ''.join(buf), 'attributes': attrs} if attrs
+                   else {'insert': ''.join(buf)})
+        buf.clear()
 
     while i < n:
         ch = text[i]
         if ch == '\\' and i + 1 < n:
             buf.append(text[i + 1]); i += 2; continue
-        if text.startswith('**', i):
-            end = text.find('**', i + 2)
-            if end > 0:
-                inner = text[i + 2:end]
+        if ch == '$':
+            m = _MD_MATH_INLINE_RE.match(text, i)
+            if m and m.group(1).strip():
                 flush()
-                sub = _md_parse_inline(inner)
-                for op in sub:
-                    a = dict(op.get('attributes') or {}); a['bold'] = True
-                    ops.append({'insert': op['insert'], 'attributes': a})
-                i = end + 2; continue
+                ops.append({'insert': {'math-formula': {'latex': m.group(1).strip(),
+                                                        'display': False}}})
+                i = m.end(); continue
+        close = re.match(r'</(u|sup|sub|mark|span)>', text[i:], re.I)
+        if close:
+            # 闭合标签由递归层处理（子调用不会看到它），这里只是兜底：当普通文本
+            buf.append(text[i:i + close.end()]); i += close.end(); continue
+        if text[i:i + 3].lower() == '<u>':
+            end = re.search(r'</u>', text[i:], re.I)
+            if end:
+                flush()
+                ops.extend(_md_parse_inline(text[i + 3:i + end.start()],
+                                            _md_merge(base_attrs, {'underline': True}), _depth + 1))
+                i += end.end(); continue
+        m = re.match(r'<(sup|sub)>(.*?)</\1>', text[i:], re.I | re.S)
+        if m:
+            flush()
+            tag = m.group(1).lower()
+            ops.extend(_md_parse_inline(m.group(2), _md_merge(
+                base_attrs, {'script': 'super' if tag == 'sup' else 'sub'}), _depth + 1))
+            i += m.end(); continue
+        m = re.match(r'<mark>(.*?)</mark>', text[i:], re.I | re.S)
+        if m:
+            flush()
+            ops.extend(_md_parse_inline(m.group(1),
+                                        _md_merge(base_attrs, {'background': '#FFF3A3'}), _depth + 1))
+            i += m.end(); continue
+        m = _MD_SPAN_RE.match(text[i:])
+        if m:
+            attrs = {}
+            style = _MD_STYLE_RE.search(m.group(1) or '')
+            if style:
+                attrs.update(_style_attrs(style.group(1)))
+            cls = _MD_CLASS_RE.search(m.group(1) or '')
+            if cls:
+                for name in cls.group(1).split():
+                    if name in _MD_FONT_BY_CLASS:
+                        attrs['myfont'] = _MD_FONT_BY_CLASS[name]
+            end = re.search(r'</span>', text[i:], re.I)
+            if end:
+                flush()
+                ops.extend(_md_parse_inline(text[i + m.end():i + end.start()],
+                                            _md_merge(base_attrs, attrs), _depth + 1))
+                i += end.end(); continue
+            i += m.end(); continue
         if ch == '`':
             end = text.find('`', i + 1)
             if end > 0:
                 flush()
-                ops.append({'insert': text[i + 1:end], 'attributes': {'code': True}})
+                ops.append({'insert': text[i + 1:end],
+                            'attributes': _md_merge(base_attrs, {'code': True})})
                 i = end + 1; continue
         if text.startswith('~~', i):
             end = text.find('~~', i + 2)
             if end > 0:
                 flush()
-                ops.append({'insert': text[i + 2:end], 'attributes': {'strike': True}})
+                ops.extend(_md_parse_inline(text[i + 2:end],
+                                            _md_merge(base_attrs, {'strike': True}), _depth + 1))
+                i = end + 2; continue
+        if text.startswith('**', i):
+            end = text.find('**', i + 2)
+            if end > 0:
+                flush()
+                ops.extend(_md_parse_inline(text[i + 2:end],
+                                            _md_merge(base_attrs, {'bold': True}), _depth + 1))
                 i = end + 2; continue
         if ch in '*_':
             end = text.find(ch, i + 1)
-            if end > 0:
+            if end > i + 1:
                 flush()
-                ops.append({'insert': text[i + 1:end], 'attributes': {'italic': True}})
+                ops.extend(_md_parse_inline(text[i + 1:end],
+                                            _md_merge(base_attrs, {'italic': True}), _depth + 1))
                 i = end + 1; continue
+        m = _MD_ATX_IMAGE.match(text[i:])
+        if m:
+            flush()
+            src = m.group(2)
+            name = src.split('/')[-1]
+            ops.append({'insert': {'image': {'filename': name, 'storedPath': src}}})
+            i += m.end(); continue
         if ch == '[':
             m = re.match(r'\[(.*?)\]\((.*?)\)', text[i:])
             if m:
                 flush()
-                ops.append({'insert': m.group(1), 'attributes': {'link': m.group(2)}})
+                href, label = m.group(2), m.group(1)
+                if href.startswith('attachments/') and label.startswith('📎'):
+                    ops.append({'insert': {'attachment': {
+                        'filename': href.split('/')[-1],
+                        'originalName': label.replace('📎', '').strip() or href.split('/')[-1],
+                        'storedPath': href}}})
+                else:
+                    ops.append({'insert': label,
+                                'attributes': _md_merge(base_attrs, {'link': href})})
                 i += m.end(); continue
         buf.append(ch); i += 1
     flush()
@@ -587,7 +816,7 @@ def _md_parse_inline(text):
 
 
 def markdown_to_delta(md_text):
-    """Markdown → Quill Delta JSON（标题/列表/待办/引用/代码块/水平线 + 行内格式）。
+    """Markdown → Quill Delta JSON（标题/列表/待办/引用/代码块/表格/公式 + 行内格式）。
 
     只做常用子集：解析不出来的行当普通段落，不会丢内容（宁可少格式，不可少字）。
     """
@@ -604,8 +833,39 @@ def markdown_to_delta(md_text):
             ops.append({'insert': '\n'.join(block) + '\n',
                         'attributes': {'code-block': True}})
             continue
+        m = _MD_HR_RE.match(line.strip())
+        if m:
+            style = 1
+            cm = re.match(r'divider-(\d+)', m.group(1) or '')
+            if cm:
+                style = int(cm.group(1))
+            ops.append({'insert': {'divider': {'style': style}}})
+            ops.append({'insert': '\n'})
+            i += 1; continue
         if line.strip() in ('---', '***', '___'):
             ops.append({'insert': '\n'})       # 水平线：Quill 里退化为空行
+            i += 1; continue
+        # GFM 表格：表头 + 分隔行 + 数据行 → Quill 表格属性行
+        if ('|' in line and i + 1 < len(lines) and _MD_TABLE_SEP.match(lines[i + 1])):
+            header = _md_split_table_row(line)
+            i += 2
+            rows = [header]
+            while i < len(lines) and '|' in lines[i] and lines[i].strip():
+                rows.append(_md_split_table_row(lines[i]))
+                i += 1
+            import uuid as _uuid
+            for row in rows:
+                row_id = _uuid.uuid4().hex[:8]
+                for c, cell in enumerate(row):
+                    cell_id = '%s-%d' % (row_id, c)
+                    ops.extend(_md_parse_inline(cell))
+                    ops.append({'insert': '\n', 'attributes': {
+                        'table': row_id, 'table-cell': cell_id, 'table-cell-line': 'last'}})
+            continue
+        m = _MD_MATH_BLOCK_RE.match(line.strip())
+        if m:
+            ops.append({'insert': {'math-formula': {'latex': m.group(1).strip(), 'display': True}}})
+            ops.append({'insert': '\n'})
             i += 1; continue
         m = _MD_HEADING.match(line)
         if m:
@@ -1128,6 +1388,141 @@ class Api:
             d['preview'] = '' if has_pwd else _preview_text(raw, fmt=fmt)
             out.append(d)
         return out
+
+    # ----- 正文格式转换（Delta ↔ Markdown，双轨的"搬家"通道）-----
+    def _fmt_plain(self, content, fmt):
+        return note_plain_text(content, fmt)
+
+    @staticmethod
+    def _is_subsequence(old_text, new_text):
+        """旧正文的可见字符是否**按顺序**出现在新正文里（内容守恒校验）。
+
+        为什么用子序列而不是相等：Markdown 会引入额外字符（表格分隔行、`📎` 前缀、
+        HTML 标签的文字…），要求相等必然误报；而"一个字都不能少、顺序不能乱"恰好是
+        转换必须保住的底线。空白一律忽略（缩进/换行在两种格式里本来就会变）。
+        """
+        old = [c for c in (old_text or '') if not c.isspace()]
+        if not old:
+            return True
+        new = [c for c in (new_text or '') if not c.isspace()]
+        it = iter(new)
+        return all(any(c == n for n in it) for c in old)
+
+    def note_format_info(self, note_id):
+        """给前端决定"格式徽标"的文案：当前格式、是否有可还原的原始富文本、能否转换"""
+        row = conn.execute(
+            "SELECT format, delta_backup, password_hash FROM notes "
+            "WHERE id = ? AND deleted_at IS NULL", (note_id,)).fetchone()
+        if not row:
+            return None
+        has_pwd = bool(row['password_hash'])
+        locked = has_pwd and note_id not in _unlocked_deks
+        return {
+            'format': row['format'] or 'delta',
+            'has_delta_backup': bool(row['delta_backup']),
+            'encrypted': has_pwd,
+            'locked': locked,
+            'can_convert': not locked,
+        }
+
+    def convert_note_format(self, note_id, target):
+        """把一篇笔记在 Delta ↔ Markdown 之间转换。
+
+        安全设计（转换会改写正文，必须留足后路）：
+          1. 先建**历史版本快照**（用户能在「历史版本」里回到转换前）；
+          2. 转成 Markdown 时把原 Delta 存进 notes.delta_backup（可一键还原原始富文本）；
+          3. **内容守恒校验**：原正文的可见字符必须按顺序出现在新正文里，否则拒绝转换、
+             原样返回错误（宁可不让转，也不能悄悄丢字）；
+          4. 单事务提交，异常回滚。
+
+        返回 {'ok': True, ...} / {'ok': False, 'error': ...}
+        """
+        if target not in ('md', 'delta'):
+            return {'ok': False, 'error': '目标格式不合法'}
+        row = conn.execute("SELECT * FROM notes WHERE id = ? AND deleted_at IS NULL",
+                           (note_id,)).fetchone()
+        if not row:
+            return {'ok': False, 'error': '笔记不存在'}
+        note = dict(row)
+        cur = note.get('format') or 'delta'
+        if cur == target:
+            return {'ok': True, 'format': target, 'unchanged': True}
+        dek = None
+        if note.get('password_hash'):
+            dek = _unlocked_deks.get(note_id)
+            if dek is None:
+                return {'ok': False, 'error': '加密笔记需先解锁再转换格式'}
+            content = _decrypt_content(dek, note['content'] or '', note_id)
+        else:
+            content = note['content'] or ''
+        if content.startswith(ENC_PREFIX) or content is None:
+            return {'ok': False, 'error': '正文无法解密，拒绝转换'}
+
+        try:
+            if target == 'md':
+                new_content = _delta_to_markdown(
+                    content, note_id=note_id,
+                    resolve_image=lambda name: 'attachments/%s/%s' % (note_id, name))
+            else:
+                new_content = markdown_to_delta(content)
+        except Exception:
+            applog.get_logger().exception('格式转换失败')
+            return {'ok': False, 'error': '转换过程出错，笔记未改动'}
+
+        old_plain = self._fmt_plain(content, cur)
+        new_plain = self._fmt_plain(new_content, target)
+        if not self._is_subsequence(old_plain, new_plain):
+            return {'ok': False, 'error': '转换会丢内容，已中止（笔记未改动）'}
+
+        self.versions_create(note_id, note['title'], content)   # 先留快照
+        store = _encrypt_content(dek, new_content, note_id) if dek is not None else new_content
+        backup = None
+        if target == 'md':
+            # 原 Delta 留一份（加密笔记同样用 DEK 加密，AAD 是 note_id，可直接拷回）
+            backup = _encrypt_content(dek, content, note_id) if dek is not None else content
+        else:
+            # 转回 Delta 时**保留**原有的原始正文备份：那是唯一的无损回退路径，
+            # 只有显式调用 restore_delta_backup 才清掉它（用户可能只是想"取回富文本"再看一眼）。
+            backup = note.get('delta_backup')
+        try:
+            conn.execute(
+                "UPDATE notes SET content = ?, format = ?, delta_backup = ?, "
+                "updated_at = datetime('now','localtime') WHERE id = ?",
+                (store, target, backup, note_id))
+            conn.commit()
+        except Exception:
+            conn.rollback()
+            applog.get_logger().exception('格式转换写库失败')
+            return {'ok': False, 'error': '写库失败，笔记未改动'}
+        _fts_sync_from_row(note_id)
+        return {'ok': True, 'format': target,
+                'plain_len': len(new_plain), 'backup_saved': backup is not None}
+
+    def restore_delta_backup(self, note_id):
+        """还原转换前的原始 Delta（无损回退）。没有备份时返回错误。"""
+        row = conn.execute("SELECT * FROM notes WHERE id = ? AND deleted_at IS NULL",
+                           (note_id,)).fetchone()
+        if not row:
+            return {'ok': False, 'error': '笔记不存在'}
+        note = dict(row)
+        backup = note.get('delta_backup')
+        if not backup:
+            return {'ok': False, 'error': '这篇笔记没有可还原的原始富文本'}
+        if note.get('password_hash') and note_id not in _unlocked_deks:
+            return {'ok': False, 'error': '加密笔记需先解锁'}
+        self.versions_create(note_id, note['title'], note['content'] or '')
+        try:
+            conn.execute(
+                "UPDATE notes SET content = ?, format = 'delta', delta_backup = NULL, "
+                "updated_at = datetime('now','localtime') WHERE id = ?",
+                (backup, note_id))
+            conn.commit()
+        except Exception:
+            conn.rollback()
+            applog.get_logger().exception('还原原始富文本失败')
+            return {'ok': False, 'error': '写库失败，笔记未改动'}
+        _fts_sync_from_row(note_id)
+        return {'ok': True, 'format': 'delta'}
 
     def notes_get(self, note_id, unlocked=False):
         """获取笔记详情。加密笔记仅当后端已解锁（DEK 在缓存）时返回明文内容。
@@ -2200,21 +2595,26 @@ class Api:
             return False
 
     def import_markdown(self, md_text, title=None, notebook_id=None):
-        """把 Markdown 文本导入为一篇新笔记，返回新笔记。"""
+        """把 Markdown 文本导入为一篇新笔记（**原样保存，不做转换**），返回新笔记。
+
+        第 6 轮起 Markdown 是原生格式：导入就是"把这份文本交给 Markdown 编辑器"，
+        因此逐字节保存——转成 Delta 反而会引入有损转换（贴纸/分割线/内联 HTML 那些）。
+        需要富文本时用户可以自己点格式徽标转换。
+        """
         try:
-            content = markdown_to_delta(md_text)
+            text = md_text or ''
             if not title:
-                for line in (md_text or '').splitlines():
+                for line in text.splitlines():
                     if line.strip():
                         title = re.sub(r'^#{1,6}\s*', '', line.strip())[:60]
                         break
             nid = str(uuid.uuid4())
             conn.execute(
-                "INSERT INTO notes (id, title, content, notebook_id, sort_order) "
-                "VALUES (?, ?, ?, ?, ?)",
-                (nid, title or '导入的笔记', content, notebook_id or None,
+                "INSERT INTO notes (id, title, content, notebook_id, sort_order, format) "
+                "VALUES (?, ?, ?, ?, ?, 'md')",
+                (nid, title or '导入的笔记', text, notebook_id or None,
                  _next_sort_order('notes')))
-            _fts_sync(nid, title or '导入的笔记', content)
+            _fts_sync(nid, title or '导入的笔记', text, 'md')
             conn.commit()
             return self.notes_get(nid)
         except Exception:

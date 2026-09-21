@@ -4,6 +4,7 @@ import { $, closePanel, dom, hideEditorUI, openPanel, showConfirmAsync, showInpu
 import { notesStore } from './01b-store.js';
 import { initQuill, syncFontSizeDisplay } from './02-editor.js';
 import { initMarkdownEditor } from './13-markdown-editor.js';
+import { initNoteFormatBadge } from './15-note-format.js';
 import { loadNotes, previewHtmlFor, renderNoteList } from './03-notes.js';
 import { loadSettings } from './04-appearance.js';
 import { loadTagFilter } from './05-shell.js';
@@ -240,6 +241,7 @@ async function initApp() {
   // 初始化 Quill
   initQuill();
   initMarkdownEditor();   // Markdown 笔记的源码 + 预览双栏（与 Quill 二选一显示）
+  initNoteFormatBadge();  // 标题栏的格式徽标：Markdown ⇄ 富文本 互转
   // 字体/字号下拉同步
   syncFontSizeDisplay();
 

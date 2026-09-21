@@ -839,6 +839,35 @@ body.adaptive-bg .panel-dialog {
   overflow: hidden;
 }
 
+/* 正文格式徽标：点一下可以 Markdown ⇄ 富文本 互转（转换前会留版本快照） */
+.note-format-badge {
+  flex: 0 0 auto;
+  height: 22px;
+  padding: 0 8px;
+  border: 1px solid var(--accent-text);
+  border-radius: 11px;
+  background: transparent;
+  color: var(--accent-text);
+  font-size: var(--font-size-xs, 12px);
+  font-weight: 600;
+  letter-spacing: 0.3px;
+  cursor: pointer;
+  transition: background var(--transition, 0.2s), color var(--transition, 0.2s);
+}
+.note-format-badge:hover { background: var(--accent-text); color: var(--on-accent, #fff); }
+.note-format-badge.hidden { display: none; }
+.note-format-badge.is-delta { border-color: var(--text-muted); color: var(--text-muted); }
+.note-format-badge.is-delta:hover { background: var(--text-muted); color: var(--on-accent, #fff); }
+
+/* 打印：Markdown 笔记只打预览栏（源码栏/侧边栏/工具栏都不该出现在纸上） */
+@media print {
+  #sidebar, .ql-toolbar, #font-size-bar, #tag-bar, .title-style-btns,
+  .md-source-pane, #sticker-overlay, .note-format-badge { display: none !important; }
+  .md-editor { display: block !important; border: 0; }
+  .md-preview-pane { display: block !important; overflow: visible; height: auto; }
+  .md-preview { padding: 0; }
+}
+
 /* ====== Markdown 编辑器（源码 + 实时预览双栏） ======
    与 #quill-editor 共用网格最后一行：两者都显式落在第 5 行，靠 hidden 类二选一显示，
    否则新增一个网格子元素会落到隐式行、把整块布局顶乱。 */
