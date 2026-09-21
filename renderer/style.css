@@ -839,6 +839,71 @@ body.adaptive-bg .panel-dialog {
   overflow: hidden;
 }
 
+/* ====== 侧栏：已保存的视图 ====== */
+.saved-searches { padding: 4px 10px 6px; }
+.saved-searches.hidden { display: none; }
+.ss-head { display: flex; align-items: center; justify-content: space-between; padding: 2px 4px; }
+.ss-title { font-size: var(--font-size-xs, 12px); color: var(--text-muted); letter-spacing: 0.5px; }
+.ss-add {
+  width: 20px; height: 20px; line-height: 1; border: 0; border-radius: 5px;
+  background: transparent; color: var(--text-muted); cursor: pointer; font-size: 15px;
+}
+.ss-add:hover { background: var(--glass-bg-strong, rgba(0,0,0,0.06)); color: var(--accent-text); }
+.ss-list { display: flex; flex-direction: column; gap: 2px; }
+.ss-item {
+  display: flex; align-items: center; gap: 6px; padding: 4px 8px; border-radius: 6px;
+  font-size: var(--font-size-xs, 12px); color: var(--text-primary); cursor: pointer;
+}
+.ss-item:hover { background: var(--glass-bg-strong, rgba(0,0,0,0.06)); }
+.ss-item.active { background: var(--accent-light); color: var(--accent-text); font-weight: 600; }
+.ss-name { flex: 1; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.ss-count { color: var(--text-muted); font-size: 11px; }
+.ss-more {
+  border: 0; background: transparent; color: var(--text-muted); cursor: pointer;
+  padding: 0 2px; opacity: 0; transition: opacity var(--transition, 0.2s);
+}
+.ss-item:hover .ss-more { opacity: 1; }
+
+/* ====== 待办面板 ====== */
+.todo-tabs { display: flex; gap: 4px; flex-wrap: wrap; margin-bottom: 10px; }
+.todo-tab {
+  padding: 4px 10px; border: 1px solid var(--border-light, rgba(0,0,0,0.1));
+  border-radius: 14px; background: transparent; color: var(--text-primary);
+  font-size: var(--font-size-xs, 12px); cursor: pointer;
+}
+.todo-tab:hover { border-color: var(--accent-text); color: var(--accent-text); }
+.todo-tab.active { background: var(--accent-solid, var(--accent-text)); color: var(--on-accent, #fff); border-color: transparent; }
+.todo-tab-count { opacity: 0.75; }
+.todo-list { max-height: 52vh; overflow: auto; display: flex; flex-direction: column; gap: 2px; }
+.todo-item { display: flex; align-items: flex-start; gap: 10px; padding: 7px 8px; border-radius: 8px; }
+.todo-item:hover { background: var(--glass-bg-strong, rgba(0,0,0,0.05)); }
+.todo-check {
+  flex: 0 0 auto; width: 16px; height: 16px; margin-top: 2px; border-radius: 4px;
+  border: 1.6px solid var(--accent-text); background: transparent; cursor: pointer;
+}
+.todo-check:hover { background: var(--accent-light); }
+.todo-item.done .todo-check { background: var(--accent-solid, var(--accent-text)); border-color: transparent; }
+.todo-main { flex: 1; min-width: 0; }
+.todo-text { color: var(--text-primary); font-size: 14px; }
+.todo-item.done .todo-text { color: var(--text-muted); text-decoration: line-through; }
+.todo-meta { display: flex; gap: 10px; margin-top: 2px; font-size: var(--font-size-xs, 12px); color: var(--text-muted); }
+.todo-note { cursor: pointer; }
+.todo-note:hover { color: var(--accent-text); text-decoration: underline; }
+.todo-due.overdue { color: var(--danger, #C0392B); font-weight: 600; }
+.todo-empty { padding: 24px 8px; text-align: center; color: var(--text-muted); }
+.todo-hint { margin: 12px 0 0; font-size: var(--font-size-xs, 12px); color: var(--text-muted); }
+.todo-hint code { background: var(--glass-bg-strong, rgba(0,0,0,0.05)); padding: 1px 5px; border-radius: 4px; }
+.tag-manager-count { color: var(--text-muted); font-size: 11px; min-width: 18px; text-align: right; }
+.tag-depth-1 { margin-left: 10px; }
+.tag-depth-2 { margin-left: 20px; }
+.tag-depth-3 { margin-left: 30px; }
+
+/* ====== 命令面板（Ctrl+P 的 `>` 模式） ====== */
+.quick-switch-item .qs-kind {
+  font-size: 10px; padding: 1px 6px; border-radius: 8px; margin-right: 8px;
+  background: var(--accent-light); color: var(--accent-text);
+}
+
 /* Markdown 工具栏：与 Quill 工具栏同占第 4 行网格（两者二选一显示） */
 .md-toolbar {
   grid-row: 4;

@@ -35,6 +35,30 @@ export function syncFormatBadge() {
   el.title = isMd ? '正文是 Markdown —— 点击可转为富文本' : '正文是富文本 —— 点击可转为 Markdown';
 }
 
+/** 供命令面板等其它入口复用：自动判断"无损还原"还是"有损转换"。
+ *  抽出来的理由：转换有两条路径，任何新入口都不该自己判断，否则迟早出现"某处点了会丢格式"。
+ */
+export async function convertActiveNote(to) {
+  const noteId = state.activeNoteId;
+  if (!noteId) return { ok: false, error: '没有选中的笔记' };
+  let info = null;
+  try {
+    info = await window.pywebview.api.note_format_info(noteId);
+  } catch (err) {
+    return { ok: false, error: '读取笔记格式失败' };
+  }
+  if (!info) return { ok: false, error: '笔记不存在' };
+  if (info.locked) return { ok: false, error: '加密笔记需要先解锁' };
+  const r = (to === 'delta' && info.has_delta_backup)
+    ? await window.pywebview.api.restore_delta_backup(noteId)
+    : await window.pywebview.api.convert_note_format(noteId, to);
+  if (r && r.ok && !r.unchanged) {
+    await reloadActiveNote();
+    syncFormatBadge();
+  }
+  return r;
+}
+
 async function onClick() {
   if (_busy || !state.activeNoteId) return;
   const noteId = state.activeNoteId;

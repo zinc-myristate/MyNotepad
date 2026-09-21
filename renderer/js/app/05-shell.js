@@ -1,5 +1,5 @@
 // ====== ESM 依赖（原先靠全局作用域与加载顺序隐式依赖，现显式声明）======
-import { $, closePanel, dom, openPanel, showConfirmAsync, state } from './01-core.js';
+import { $, closePanel, dom, openPanel, showConfirmAsync, showInputDialog, showToast, state } from './01-core.js';
 import { notesStore } from './01b-store.js';
 import { clearVoiceTemp, isVoiceRecording, stopVoiceRecording } from './02-editor.js';
 import { confirmDeleteNote, createNewNote, flushSave, renderNoteList, saveCurrentNote } from './03-notes.js';
@@ -50,11 +50,17 @@ document.addEventListener('keydown', async (e) => {
     e.preventDefault();
     await flushSave();
   }
-  // Ctrl+F 聚焦搜索框
+  // Ctrl+F：焦点在编辑器里 → 让位给「笔记内查找」（第 8 轮接上）；否则聚焦侧栏搜索。
+  // 必须放在默认行为之前判断，否则编辑器里按 Ctrl+F 永远只能搜列表。
   if (e.ctrlKey && e.key === 'f') {
-    e.preventDefault();
-    dom.searchInput.focus();
-    dom.searchInput.select();
+    const el = document.activeElement;
+    const inEditor = el && (el.isContentEditable
+      || (el.closest && el.closest('.CodeMirror, .ql-editor')));
+    if (!inEditor) {
+      e.preventDefault();
+      dom.searchInput.focus();
+      dom.searchInput.select();
+    }
   }
   // Ctrl+D 删除当前笔记（输入字段内不接管）
   if (e.ctrlKey && e.key === 'd' && !inTypingField()) {
@@ -189,7 +195,14 @@ async function openTagManager() {
   tags.forEach(tag => {
     const item = document.createElement('div');
     item.className = 'tag-manager-item';
-    item.innerHTML = `<span class="tag-chip" data-tag-color="${tag.color || ''}">${escapeHtml(tag.name)}</span>
+    // 层级标签（名字含 `/`）缩进展示；父标签自动包含子标签（与搜索一致）
+    const depth = (tag.name.match(/\//g) || []).length;
+    const label = escapeHtml(tag.name.split('/').pop());
+    item.innerHTML = `<span class="tag-chip tag-depth-${Math.min(depth, 3)}"
+        data-tag-color="${tag.color || ''}">${label}</span>
+      <span class="tag-manager-count">${tag.note_count || 0}</span>
+      <button class="btn-link" data-rename-tag="${tag.id}">重命名</button>
+      <button class="btn-link" data-merge-tag="${tag.id}">合并到…</button>
       <button class="btn-link" data-delete-tag="${tag.id}">删除</button>`;
     item.querySelector('[data-delete-tag]').addEventListener('click', async () => {
       if (await showConfirmAsync({ title: '删除标签', message: `确定删除标签「${tag.name}」？`, okText: '删除', danger: true })) {
@@ -197,6 +210,41 @@ async function openTagManager() {
         openTagManager();
         loadTagFilter();
       }
+    });
+    item.querySelector('[data-rename-tag]').addEventListener('click', async () => {
+      const name = await showInputDialog({
+        title: '重命名标签', value: tag.name,
+        placeholder: '用 / 分层，例如 项目/子项目',
+      });
+      if (name == null) return;
+      const r = await window.pywebview.api.tags_rename(tag.id, name);
+      if (!r || !r.ok) showToast('重命名失败：' + ((r && r.error) || ''), { type: 'warn' });
+      else showToast('已重命名为「' + r.tag.name + '」', { type: 'success' });
+      openTagManager();
+      loadTagFilter();
+    });
+    item.querySelector('[data-merge-tag]').addEventListener('click', async () => {
+      const others = (await window.pywebview.api.tags_list()).filter(t => t.id !== tag.id);
+      if (!others.length) {
+        showToast('没有别的标签可以合并', { type: 'warn' });
+        return;
+      }
+      const target = await showInputDialog({
+        title: '合并「' + tag.name + '」到',
+        message: '可选项：' + others.map(t => t.name).join(' / '),
+        placeholder: '输入目标标签名（必须已存在）',
+      });
+      if (target == null) return;
+      const dst = others.find(t => t.name === target.trim());
+      if (!dst) {
+        showToast('没有这个标签，请从上面的列表里选一个', { type: 'warn' });
+        return;
+      }
+      const r = await window.pywebview.api.tags_merge(tag.id, dst.id);
+      if (!r || !r.ok) showToast('合并失败：' + ((r && r.error) || ''), { type: 'error' });
+      else showToast('已合并 ' + r.moved + ' 条关联到「' + dst.name + '」', { type: 'success' });
+      openTagManager();
+      loadTagFilter();
     });
     list.appendChild(item);
   });

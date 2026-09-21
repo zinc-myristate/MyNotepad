@@ -273,6 +273,21 @@ class AppApi:
     def notes_create(self):
         return self.backend.notes_create()
     def notes_duplicate(self, note_id): return self.backend.notes_duplicate(note_id)
+    # 第 7 轮：派生指标 / 跨笔记待办 / 标签管理 / 保存的搜索
+    def note_metrics(self, note_id): return self.backend.note_metrics(note_id)
+    def metrics_bulk(self, note_ids=None): return self.backend.metrics_bulk(note_ids)
+    def todos_list(self, scope='open'): return self.backend.todos_list(scope)
+    def todo_toggle(self, note_id, idx, expected_text=''):
+        return self.backend.todo_toggle(note_id, idx, expected_text)
+    def tags_rename(self, tag_id, new_name): return self.backend.tags_rename(tag_id, new_name)
+    def tags_merge(self, src_id, dst_id): return self.backend.tags_merge(src_id, dst_id)
+    def saved_searches_list(self): return self.backend.saved_searches_list()
+    def saved_search_create(self, name, query):
+        return self.backend.saved_search_create(name, query)
+    def saved_search_update(self, sid, fields):
+        return self.backend.saved_search_update(sid, fields)
+    def saved_search_delete(self, sid): return self.backend.saved_search_delete(sid)
+
     # 正文格式（Delta ↔ Markdown）双轨：查询状态 / 转换 / 还原原始富文本
     def note_format_info(self, note_id): return self.backend.note_format_info(note_id)
     def convert_note_format(self, note_id, target):

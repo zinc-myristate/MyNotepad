@@ -37,6 +37,9 @@ import './14-markdown-render.js';
 import './15-note-format.js';
 import './16-markdown-toolbar.js';
 import './17-markdown-actions.js';
+import './18-todo-panel.js';
+import './19-command-panel.js';
+import './20-saved-searches.js';
 import '../quill/quill-deco.js';
 
 // ----- 对外接口 -----

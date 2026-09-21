@@ -6,6 +6,8 @@ import { initQuill, syncFontSizeDisplay } from './02-editor.js';
 import { initMarkdownEditor } from './13-markdown-editor.js';
 import { initNoteFormatBadge } from './15-note-format.js';
 import { initMarkdownToolbar } from './16-markdown-toolbar.js';
+import { initTodoPanel } from './18-todo-panel.js';
+import { initSavedSearches } from './20-saved-searches.js';
 import { loadNotes, previewHtmlFor, renderNoteList } from './03-notes.js';
 import { loadSettings } from './04-appearance.js';
 import { loadTagFilter } from './05-shell.js';
@@ -244,6 +246,8 @@ async function initApp() {
   initMarkdownEditor();   // Markdown 笔记的源码 + 预览双栏（与 Quill 二选一显示）
   initNoteFormatBadge();  // 标题栏的格式徽标：Markdown ⇄ 富文本 互转
   initMarkdownToolbar();  // Markdown 工具栏（加粗/列表/待办/表格/图片/附件…）
+  initTodoPanel();        // 跨笔记待办清单
+  initSavedSearches();    // 侧栏「视图」区（保存的搜索）
   // 字体/字号下拉同步
   syncFontSizeDisplay();
 

@@ -9,10 +9,13 @@
 import { $, state, showToast } from './01-core.js';
 import { verifyAndSelectNote } from './07-formula-security-dnd.js';
 import { escapeHtml } from '../shared/utils.js';
+import { listCommands, runCommand } from './19-command-panel.js';
 
 const MAX_ITEMS = 30;      // 候选上限：再多也看不过来，还拖慢渲染
 
-let matches = [];          // [{id, title, score}]
+let matches = [];          // 笔记候选 [{id, title, score}]
+let commands = [];         // 命令候选 [{id, title, hint, cmd}]
+let mode = 'notes';        // 'notes' = 跳笔记，'commands' = 执行命令（输入以 > 开头）
 let cursor = 0;            // 键盘高亮的行号
 
 /**
@@ -65,25 +68,49 @@ function rank(query) {
 function renderList(query) {
   const list = $('#quick-switch-list');
   if (!list) return;
-  if (!matches.length) {
-    list.innerHTML = '<div class="quick-switch-empty">没有匹配的笔记</div>';
+  if (mode === 'commands') {
+    if (!commands.length) {
+      list.innerHTML = '<div class="quick-switch-empty">没有匹配的命令</div>';
+      return;
+    }
+    list.innerHTML = commands.map((c, i) => `
+      <div class="quick-switch-item${i === cursor ? ' cursor' : ''}" data-cmd="${i}">
+        <span class="qs-kind">命令</span>
+        <span class="qs-title">${escapeHtml(c.title)}</span>
+        <span class="qs-meta">${c.hint || (i === cursor ? 'Enter 执行' : '')}</span>
+      </div>`).join('');
+  } else if (!matches.length) {
+    list.innerHTML = '<div class="quick-switch-empty">没有匹配的笔记（输入 &gt; 可执行命令）</div>';
     return;
+  } else {
+    list.innerHTML = matches.map((m, i) => `
+      <div class="quick-switch-item${i === cursor ? ' cursor' : ''}" data-qs-id="${m.id}">
+        <span class="qs-title">${query ? highlight(m.title, query) : escapeHtml(m.title)}</span>
+        <span class="qs-meta">${i === cursor ? 'Enter 打开' : ''}</span>
+      </div>`).join('');
   }
-  list.innerHTML = matches.map((m, i) => `
-    <div class="quick-switch-item${i === cursor ? ' cursor' : ''}" data-qs-id="${m.id}">
-      <span class="qs-title">${query ? highlight(m.title, query) : escapeHtml(m.title)}</span>
-      <span class="qs-meta">${i === cursor ? 'Enter 打开' : ''}</span>
-    </div>`).join('');
   const cur = list.querySelector('.quick-switch-item.cursor');
   if (cur && cur.scrollIntoView) cur.scrollIntoView({ block: 'nearest' });
 }
 
+function itemCount() {
+  return mode === 'commands' ? commands.length : matches.length;
+}
+
 function refresh() {
   const input = $('#quick-switch-input');
-  const q = input ? input.value.trim() : '';
-  matches = rank(q);
+  const q = (input ? input.value : '').replace(/^\s+/, '');
   cursor = 0;
-  renderList(q);
+  if (q.startsWith('>')) {
+    mode = 'commands';
+    commands = listCommands(q.slice(1));
+    renderList('');
+    return;
+  }
+  mode = 'notes';
+  commands = [];
+  matches = rank(q.trim());
+  renderList(q.trim());
 }
 
 export function openQuickSwitch() {
@@ -91,6 +118,9 @@ export function openQuickSwitch() {
   const input = $('#quick-switch-input');
   if (!panel || !input) return;
   input.value = '';
+  input.placeholder = '搜索笔记…（输入 > 执行命令）';
+  mode = 'notes';
+  commands = [];
   matches = rank('');
   cursor = 0;
   panel.style.display = 'flex';
@@ -104,10 +134,18 @@ export function closeQuickSwitch() {
 }
 
 function moveCursor(delta) {
-  if (!matches.length) return;
-  cursor = (cursor + delta + matches.length) % matches.length;
+  const n = itemCount();
+  if (!n) return;
+  cursor = (cursor + delta + n) % n;
   const input = $('#quick-switch-input');
-  renderList(input ? input.value.trim() : '');
+  const q = (input ? input.value : '').replace(/^\s+/, '');
+  renderList(mode === 'commands' ? '' : q.trim());
+}
+
+async function runSelected() {
+  const item = commands[cursor];
+  closeQuickSwitch();
+  await runCommand(item);
 }
 
 async function choose(id) {
@@ -130,7 +168,8 @@ if (qsInput) {
     else if (e.key === 'ArrowUp') { e.preventDefault(); moveCursor(-1); }
     else if (e.key === 'Enter') {
       e.preventDefault();
-      if (matches[cursor]) choose(matches[cursor].id);
+      if (mode === 'commands') runSelected();
+      else if (matches[cursor]) choose(matches[cursor].id);
     } else if (e.key === 'Escape') {
       e.preventDefault();
       closeQuickSwitch();
@@ -142,6 +181,12 @@ const qsList = $('#quick-switch-list');
 if (qsList) {
   // 容器级委托：候选行是整体重绘的，逐行绑监听会在每次输入后泄漏
   qsList.addEventListener('click', (e) => {
+    const cmdRow = e.target.closest('[data-cmd]');
+    if (cmdRow) {
+      cursor = Number(cmdRow.dataset.cmd);
+      runSelected();
+      return;
+    }
     const row = e.target.closest('[data-qs-id]');
     if (row) choose(row.dataset.qsId);
   });

@@ -135,7 +135,7 @@ export function closePanel(panel) {
 // 所有面板 ID 列表（新增面板只需在此添加）
 const ALL_PANEL_IDS = [
   'theme-panel','background-panel','confirm-dialog','input-dialog','move-notebook-panel','export-panel','table-picker',
-  'emoji-panel','tag-picker-panel','tag-manager-panel','version-panel',
+  'emoji-panel','tag-picker-panel','tag-manager-panel','version-panel','todo-panel',
   'version-preview-panel','reminder-panel','reminder-list-panel','trash-panel',
   'password-panel','password-verify-panel',
   'math-panel','calendar-panel','divider-panel','sticker-panel','paper-panel',

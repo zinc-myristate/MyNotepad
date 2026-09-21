@@ -15,7 +15,7 @@ import sys
 import tempfile
 import threading
 import uuid
-from datetime import datetime
+from datetime import datetime, timedelta
 
 from cryptography.hazmat.primitives.ciphers.aead import AESGCM
 
@@ -192,6 +192,47 @@ try: conn.execute("ALTER TABLE notebooks ADD COLUMN cover_type TEXT DEFAULT 'col
 except Exception: pass
 try: conn.execute("ALTER TABLE notebooks ADD COLUMN default_paper TEXT DEFAULT 'none'")
 except Exception: pass
+# ====== 派生索引（第 7 轮）：正文的"可查询侧面" ======
+# 为什么单独建表而不是每次现扫：待办聚合 / todo:/has: 搜索 / 字数统计 / 表格视图 / OCR
+# 都要读正文的派生信息，各扫一遍既慢又容易口径不一致。这里统一在**保存时**一次算好。
+conn.executescript("""
+    CREATE TABLE IF NOT EXISTS note_derived (
+        note_id TEXT PRIMARY KEY,
+        word_count INTEGER NOT NULL DEFAULT 0,
+        char_count INTEGER NOT NULL DEFAULT 0,
+        todo_total INTEGER NOT NULL DEFAULT 0,
+        todo_open INTEGER NOT NULL DEFAULT 0,
+        todo_next_due TEXT,
+        has_attachment INTEGER NOT NULL DEFAULT 0,
+        has_reminder INTEGER NOT NULL DEFAULT 0,
+        has_formula INTEGER NOT NULL DEFAULT 0,
+        has_code INTEGER NOT NULL DEFAULT 0,
+        link_count INTEGER NOT NULL DEFAULT 0,
+        props_json TEXT NOT NULL DEFAULT '{}',
+        updated_at TEXT NOT NULL DEFAULT (datetime('now','localtime')),
+        FOREIGN KEY (note_id) REFERENCES notes(id) ON DELETE CASCADE
+    );
+    CREATE INDEX IF NOT EXISTS idx_derived_todo ON note_derived(todo_open, todo_next_due);
+    -- 待办明细：面板直接读它，写回时按 idx + 文本校验定位（正文被改过就拒绝，不猜）
+    CREATE TABLE IF NOT EXISTS note_todos (
+        note_id TEXT NOT NULL,
+        idx INTEGER NOT NULL,
+        text TEXT NOT NULL DEFAULT '',
+        due TEXT,
+        done INTEGER NOT NULL DEFAULT 0,
+        PRIMARY KEY (note_id, idx),
+        FOREIGN KEY (note_id) REFERENCES notes(id) ON DELETE CASCADE
+    );
+    CREATE INDEX IF NOT EXISTS idx_todos_due ON note_todos(done, due);
+    -- 保存的搜索：侧栏"视图"区的数据源
+    CREATE TABLE IF NOT EXISTS saved_searches (
+        id TEXT PRIMARY KEY,
+        name TEXT NOT NULL,
+        query TEXT NOT NULL,
+        sort_order INTEGER NOT NULL DEFAULT 0,
+        created_at TEXT NOT NULL DEFAULT (datetime('now','localtime'))
+    );
+""")
 conn.commit()
 
 # 默认设置
@@ -343,43 +384,145 @@ def _next_sort_order(table='notes'):
     return int(m) + 1
 
 
-def _parse_search_scope(q):
-    """把查询里的范围前缀拆出来：`tag:数学`、`notebook:课程A`（或 nb:）、`in:trash`。
+_DURATION_RE = re.compile(r'^(\d+)([dwm])$')
+_DATE_OPS = {'>': '>', '<': '<', '>=': '>=', '<=': '<=', '=': '='}
+_SCOPE_FLAGS = {'pinned': 'n.is_pinned = 1', 'favorite': 'n.is_favorite = 1',
+                'encrypted': "COALESCE(n.password_hash, '') != ''"}
+_SCOPE_HAS = {
+    'attachment': 'd.has_attachment = 1',
+    'reminder': 'd.has_reminder = 1',
+    'todo': 'd.todo_total > 0',
+    'formula': 'd.has_formula = 1',
+    'code': 'd.has_code = 1',
+    'link': 'd.link_count > 0',
+}
 
-    返回 (剩余的自由文本, {'tag':.., 'notebook':.., 'trash':True})。
+
+def _parse_date_value(value):
+    """`2026-01-01` / `today` / `yesterday` / `7d` → (iso 日期, 是否相对时长)。
+
+    相对时长与绝对日期的**语义不同**（这点必须记住）：
+      · 绝对日期：`created:<2026-01-01` = 早于那天
+      · 相对时长：`updated:<7d` = **最近 7 天**（用户的心智是"多久以内"，
+        写成"早于 7 天前"会得到完全相反的结果——第一版实现就踩了这个坑）
+    """
+    v = (value or '').strip().lower()
+    today = datetime.now().date()
+    if v in ('today', '今天'):
+        return today.isoformat(), True
+    if v in ('yesterday', '昨天'):
+        return (today - timedelta(days=1)).isoformat(), True
+    m = _DURATION_RE.match(v)
+    if m:
+        n, unit = int(m.group(1)), m.group(2)
+        days = n * {'d': 1, 'w': 7, 'm': 30}[unit]
+        return (today - timedelta(days=days)).isoformat(), True
+    try:
+        return datetime.strptime(v, '%Y-%m-%d').date().isoformat(), False
+    except ValueError:
+        return None, False
+
+
+def _parse_search_scope(q):
+    """把查询拆成 (自由文本, 范围字典)。
+
+    支持：`tag:数学` / `notebook:课程A`（或 `nb:`）/ `in:trash` / `title:关键词` /
+    `is:pinned|favorite|encrypted` / `has:attachment|reminder|todo|formula|code|link` /
+    `todo:open|done` / `created:>2026-01-01`（也支持 today/yesterday/7d）/ `updated:<7d` /
+    `-排除词`（可多个）。任何前缀都可以加 `-` 取反。
+
     不认识的前缀（例如用户真想搜 "a:b"）原样留在自由文本里，不做吞掉。
     """
-    scope, words = {}, []
+    scope = {'exclude': []}
+    words = []
     for tok in (q or '').split():
-        if ':' in tok:
-            k, _, v = tok.partition(':')
-            k = k.lower()
-            if k == 'tag' and v:
-                scope['tag'] = v
+        negate = False
+        body = tok
+        if tok.startswith('-') and len(tok) > 1:
+            negate = True
+            body = tok[1:]
+        if ':' in body:
+            key, _, val = body.partition(':')
+            key_l = key.lower()
+            handled = True
+            if key_l == 'tag' and val:
+                scope.setdefault('tag', []).append((val, negate))
+            elif key_l in ('notebook', 'nb') and val:
+                scope['notebook'] = (val, negate)
+            elif key_l == 'in' and val.lower() in ('trash', '回收站'):
+                scope['trash'] = not negate
+            elif key_l == 'title' and val:
+                scope['title'] = (val, negate)
+            elif key_l == 'is' and val.lower() in _SCOPE_FLAGS:
+                scope.setdefault('is', []).append((val.lower(), negate))
+            elif key_l == 'has' and val.lower() in _SCOPE_HAS:
+                scope.setdefault('has', []).append((val.lower(), negate))
+            elif key_l == 'todo' and val.lower() in ('open', 'done', '未完成', '已完成'):
+                scope['todo'] = (val.lower(), negate)
+            elif key_l in ('created', 'updated') and val:
+                m = re.match(r'^(>=|<=|>|<|=)?(.*)$', val)
+                op = _DATE_OPS.get(m.group(1) or '=', '=')
+                iso, is_duration = _parse_date_value(m.group(2))
+                if iso:
+                    # 相对时长一律解释成"最近 N"（见 _parse_date_value 的说明）
+                    scope[key_l] = ('>=' if is_duration else op, iso, negate)
+                else:
+                    handled = False
+            else:
+                handled = False
+            if handled:
                 continue
-            if k in ('notebook', 'nb') and v:
-                scope['notebook'] = v
-                continue
-            if k == 'in' and v.lower() in ('trash', '回收站'):
-                scope['trash'] = True
-                continue
-        words.append(tok)
+        if negate:
+            scope['exclude'].append(body)
+        else:
+            words.append(tok)
+    scope = {k: v for k, v in scope.items() if v not in ([], None, '')}
     return ' '.join(words), scope
 
 
-def _scope_note_ids(scope):
-    """按范围取出候选笔记 id（tag/notebook 支持按名字或 id 匹配；trash 决定看回收站还是正常笔记）"""
+def _scope_where(scope):
+    """范围字典 → (WHERE 片段列表, 参数列表)，全部作用在 `notes n LEFT JOIN note_derived d` 上"""
     where = ["n.deleted_at IS " + ("NOT NULL" if scope.get('trash') else "NULL")]
     params = []
     if scope.get('tag'):
-        where.append("n.id IN (SELECT nt.note_id FROM note_tags nt JOIN tags t ON t.id = nt.tag_id "
-                     "WHERE t.id = ? OR t.name = ?)")
-        params += [scope['tag'], scope['tag']]
+        # 标签层级：标签名含 `/` 即层级，`tag:父` 自动包含 `父/子`
+        for name, negate in scope['tag']:
+            sub = ("n.id IN (SELECT nt.note_id FROM note_tags nt JOIN tags t ON t.id = nt.tag_id "
+                   "WHERE t.id = ? OR t.name = ? OR t.name LIKE ? ESCAPE '\\')")
+            where.append(('NOT ' if negate else '') + sub)
+            params += [name, name, name + '/%']
     if scope.get('notebook'):
-        where.append("(n.notebook_id = ? OR n.notebook_id IN "
-                     "(SELECT id FROM notebooks WHERE name = ?))")
-        params += [scope['notebook'], scope['notebook']]
-    rows = conn.execute("SELECT n.id FROM notes n WHERE " + " AND ".join(where), params).fetchall()
+        name, negate = scope['notebook']
+        sub = ("(n.notebook_id = ? OR n.notebook_id IN (SELECT id FROM notebooks WHERE name = ?))")
+        where.append(('NOT ' if negate else '') + sub)
+        params += [name, name]
+    if scope.get('title'):
+        val, negate = scope['title']
+        where.append("n.title " + ("NOT " if negate else "") + "LIKE ? ESCAPE '\\'")
+        params.append('%' + val.replace('\\', '\\\\').replace('%', '\\%').replace('_', '\\_') + '%')
+    for flag, negate in scope.get('is', []):
+        where.append(('NOT ' if negate else '') + '(' + _SCOPE_FLAGS[flag] + ')')
+    for flag, negate in scope.get('has', []):
+        where.append(('NOT ' if negate else '') + '(' + _SCOPE_HAS[flag] + ')')
+    if scope.get('todo'):
+        val, negate = scope['todo']
+        expr = 'd.todo_open > 0' if val in ('open', '未完成') else 'd.todo_open = 0 AND d.todo_total > 0'
+        where.append(('NOT ' if negate else '') + '(' + expr + ')')
+    for key, col in (('created', 'created_at'), ('updated', 'updated_at')):
+        if scope.get(key):
+            op, iso, negate = scope[key]
+            where.append('NOT (date(n.%s) %s ?)' % (col, op) if negate
+                         else 'date(n.%s) %s ?' % (col, op))
+            params.append(iso)
+    return where, params
+
+
+def _scope_note_ids(scope):
+    """按范围取候选笔记 id"""
+    where, params = _scope_where(scope)
+    rows = conn.execute(
+        "SELECT n.id FROM notes n LEFT JOIN note_derived d ON d.note_id = n.id WHERE "
+        + ' AND '.join(where), params).fetchall()
     return [r['id'] for r in rows]
 
 
@@ -1206,6 +1349,194 @@ if FTS_AVAILABLE:
         applog.get_logger().exception("FTS 初始化失败，降级为 LIKE 搜索")
         FTS_AVAILABLE = False
 
+
+# ====== 派生索引：一次解析算出所有"可查询侧面" ======
+# 格式判据只有 notes.format；md 走行扫描，delta 走 ops 遍历，两者产出口径必须一致
+# （测试里用"同一篇内容两种格式算出的指标应相同"来锁死这一点）。
+_TODO_RE = re.compile(r'^\s*[-*+]\s+\[([ xX])\]\s+(.*)$')
+_DUE_RE = re.compile(r'📅\s*(\d{4}-\d{2}-\d{2})')
+_LINK_RE = re.compile(r'\[\[([^\]|]+)(?:\|[^\]]*)?\]\]')
+_FM_RE = re.compile(r'^---\s*\n(.*?)\n---\s*(?:\n|$)', re.S)
+DERIVED_VERSION = '1'
+WORD_RE = re.compile(r'[\u4e00-\u9fff]|[A-Za-z0-9_]+')
+
+
+def count_words(text):
+    """混合中英文字数：中日韩字符按字计，拉丁/数字按词计（与主流编辑器的口径接近）"""
+    return len(WORD_RE.findall(text or ''))
+
+
+def _unquote(value):
+    """去掉一层成对引号（YAML 值里最常见的修饰）"""
+    v = (value or '').strip()
+    if len(v) >= 2 and v[0] == v[-1] and v[0] in ('"', "'"):
+        return v[1:-1]
+    return v
+
+
+def parse_front_matter(md_text):
+    """极简 YAML front-matter 解析（只认 `key: value` 与 `- 列表`）。
+
+    第 9 轮做完整属性系统时会扩展这里；现在先把 props_json 填上，表格视图/筛选才有的用。
+    """
+    m = _FM_RE.match(md_text or '')
+    if not m:
+        return {}
+    props, key = {}, None
+    for raw in m.group(1).splitlines():
+        if not raw.strip() or raw.lstrip().startswith('#'):
+            continue
+        if raw.lstrip().startswith('- ') and key:
+            props.setdefault(key, [])
+            if isinstance(props[key], list):
+                props[key].append(_unquote(raw.lstrip()[2:].strip()))
+            continue
+        if ':' not in raw:
+            continue
+        k, _, v = raw.partition(':')
+        key = k.strip()
+        v = v.strip()
+        if not v:
+            props[key] = []          # 可能是块式列表，下一行开始收集
+        elif v.startswith('[') and v.endswith(']'):
+            props[key] = [_unquote(x) for x in v[1:-1].split(',') if x.strip()]
+        else:
+            props[key] = v.strip('"\'')
+    return props
+
+
+def _todo_lines_md(md_text):
+    """Markdown → [(idx, text, due, done)]"""
+    out = []
+    for line in (md_text or '').splitlines():
+        m = _TODO_RE.match(line)
+        if not m:
+            continue
+        body = m.group(2).strip()
+        dm = _DUE_RE.search(body)
+        due = dm.group(1) if dm else None
+        text = _DUE_RE.sub('', body).strip()
+        out.append((len(out), text, due, 1 if m.group(1).lower() == 'x' else 0))
+    return out
+
+
+def _todo_lines_delta(content):
+    """Quill Delta → [(idx, text, due, done)]（行属性挂在含换行符的 op 上）"""
+    try:
+        data = json.loads(content or '{}')
+    except Exception:
+        return []
+    ops = data.get('ops', []) if isinstance(data, dict) else data
+    if not isinstance(ops, list):
+        return []
+    lines, buf = [], []
+    for op in ops:
+        if not isinstance(op, dict):
+            continue
+        ins, attrs = op.get('insert'), op.get('attributes') or {}
+        if not isinstance(ins, str):
+            continue
+        parts = ins.split('\n')
+        for i, part in enumerate(parts):
+            buf.append(part)
+            if i < len(parts) - 1:
+                lines.append((''.join(buf), attrs))
+                buf = []
+    out = []
+    for text, attrs in lines:
+        lst = attrs.get('list')
+        if lst not in ('checked', 'unchecked'):
+            continue
+        body = text.strip()
+        dm = _DUE_RE.search(body)
+        due = dm.group(1) if dm else None
+        out.append((len(out), _DUE_RE.sub('', body).strip(), due, 1 if lst == 'checked' else 0))
+    return out
+
+
+def derive_metrics(content, fmt, note_id=None):
+    """正文 → 派生指标（不含附件/提醒这两个要查表的字段，由 _refresh_derived 补）"""
+    plain = note_plain_text(content, fmt)
+    # 统计前去掉 📅 日期标记：否则 md（剥标记）与 delta（保留标记）算出的字数会不一致
+    plain_for_count = _DUE_RE.sub('', plain)
+    todos = _todo_lines_md(content) if fmt == 'md' else _todo_lines_delta(content)
+    open_todos = [t for t in todos if not t[3]]
+    dues = sorted(t[2] for t in open_todos if t[2])
+    has_formula = ('$' in (content or '')) if fmt == 'md' else ('math-formula' in (content or ''))
+    has_code = ('```' in (content or '')) if fmt == 'md' else ('code-block' in (content or ''))
+    return {
+        'word_count': count_words(plain_for_count),
+        # 字符数**不含空白**：否则 md 里被剥掉的 `- [ ] ` 标记会留下空格，
+        # 与同内容的 delta 笔记算出的字符数对不上（两种格式的口径必须统一）
+        'char_count': len(re.sub(r'\s+', '', plain_for_count)),
+        'todo_total': len(todos),
+        'todo_open': len(open_todos),
+        'todo_next_due': dues[0] if dues else None,
+        'has_formula': 1 if has_formula else 0,
+        'has_code': 1 if has_code else 0,
+        'link_count': len(_LINK_RE.findall(plain)),
+        'props_json': json.dumps(parse_front_matter(content) if fmt == 'md' else {},
+                                 ensure_ascii=False),
+        'todos': todos,
+    }
+
+
+def _refresh_derived(note_id, content=None, fmt=None):
+    """重算并落库一篇笔记的派生指标 + 待办明细（保存链路里调用）。
+
+    加密未解锁的笔记：正文是密文，扫出来的都是垃圾 → 只留空指标（正文索引本来也是空的）。
+    """
+    try:
+        if content is None or fmt is None:
+            row = conn.execute("SELECT content, format, password_hash FROM notes WHERE id = ?",
+                               (note_id,)).fetchone()
+            if not row:
+                return
+            content, fmt = row['content'], row['format'] or 'delta'
+            if row['password_hash']:
+                # 加密笔记**从不**参与派生：待办明细/字数放进索引就等于把明文侧面落库，
+                # 与「FTS body 恒空」是同一条隐私约定（解锁与否都不例外）
+                content = ''
+        metrics = derive_metrics(content, fmt, note_id)
+        todos = metrics.pop('todos')
+        has_att = 1 if conn.execute("SELECT 1 FROM attachments WHERE note_id = ? LIMIT 1",
+                                    (note_id,)).fetchone() else 0
+        has_rem = 1 if conn.execute("SELECT 1 FROM reminders WHERE note_id = ? LIMIT 1",
+                                    (note_id,)).fetchone() else 0
+        conn.execute(
+            "INSERT OR REPLACE INTO note_derived (note_id, word_count, char_count, todo_total, "
+            "todo_open, todo_next_due, has_attachment, has_reminder, has_formula, has_code, "
+            "link_count, props_json, updated_at) "
+            "VALUES (?,?,?,?,?,?,?,?,?,?,?,?, datetime('now','localtime'))",
+            (note_id, metrics['word_count'], metrics['char_count'], metrics['todo_total'],
+             metrics['todo_open'], metrics['todo_next_due'], has_att, has_rem,
+             metrics['has_formula'], metrics['has_code'], metrics['link_count'],
+             metrics['props_json']))
+        conn.execute("DELETE FROM note_todos WHERE note_id = ?", (note_id,))
+        for idx, text, due, done in todos:
+            conn.execute("INSERT INTO note_todos (note_id, idx, text, due, done) VALUES (?,?,?,?,?)",
+                         (note_id, idx, text, due, done))
+    except Exception:
+        applog.get_logger().exception("派生索引更新失败")   # 派生失败不能影响保存
+
+
+def _derived_backfill():
+    """启动回填（版本门控，与 FTS 回填同一套模式）"""
+    try:
+        ver = conn.execute("SELECT value FROM settings WHERE key='derived_version'").fetchone()
+        if ver and ver['value'] == DERIVED_VERSION:
+            return
+        for r in conn.execute("SELECT id, content, format FROM notes WHERE deleted_at IS NULL").fetchall():
+            _refresh_derived(r['id'], r['content'], r['format'] or 'delta')
+        conn.execute("INSERT OR REPLACE INTO settings (key, value) VALUES ('derived_version', ?)",
+                     (DERIVED_VERSION,))
+        conn.commit()
+    except Exception:
+        applog.get_logger().exception("派生索引回填失败")
+
+
+_derived_backfill()
+
 # ====== 图片外置迁移（base64 内嵌 → attachments 引用） ======
 # 幂等三重保障：LIKE 预筛（已 dict 化行不命中）+ 确定性 sha 文件名 + 失败保原串下次重试；
 # 写库前先做 premig- 快照（不参与 notes-* 滚动保留），一键回滚凭据。
@@ -1495,6 +1826,7 @@ class Api:
             applog.get_logger().exception('格式转换写库失败')
             return {'ok': False, 'error': '写库失败，笔记未改动'}
         _fts_sync_from_row(note_id)
+        _refresh_derived(note_id, new_content, target)
         return {'ok': True, 'format': target,
                 'plain_len': len(new_plain), 'backup_saved': backup is not None}
 
@@ -1522,6 +1854,7 @@ class Api:
             applog.get_logger().exception('还原原始富文本失败')
             return {'ok': False, 'error': '写库失败，笔记未改动'}
         _fts_sync_from_row(note_id)
+        _refresh_derived(note_id)
         return {'ok': True, 'format': 'delta'}
 
     def notes_get(self, note_id, unlocked=False):
@@ -1611,6 +1944,7 @@ class Api:
                      a['file_size'], a['type'])
                 )
         _fts_sync(nid, title, content, fmt)
+        _refresh_derived(nid, content, fmt)
         conn.commit()
         return self.notes_get(nid)
 
@@ -1623,6 +1957,7 @@ class Api:
             (nid, _next_sort_order('notes'))
         )
         _fts_sync(nid, '未命名笔记', '', 'md')
+        _refresh_derived(nid, '', 'md')
         conn.commit()
         return self.notes_get(nid)
 
@@ -1654,6 +1989,7 @@ class Api:
         conn.execute(f"UPDATE notes SET {sets} WHERE id = ?", vals)
         if fts_needs:
             _fts_sync_from_row(note_id)  # 从库中当前行重建（加密笔记 body 恒空）
+        _refresh_derived(note_id)        # 派生索引与正文同事务更新，绝不出现"正文变了指标没变"
         conn.commit()
         return self.notes_get(note_id)
 
@@ -1777,7 +2113,36 @@ class Api:
             found = set(res['ids'])
             ids = [i for i in scoped if i in found]
             hits = [i for i in ids if i in set(res['title_hits'])]
-        return {'ids': ids, 'title_hits': hits, 'snippets': self._snippets_for(ids, text or '')}
+        ids = self._filter_excluded(ids, scope.get('exclude'))
+        return {'ids': ids, 'title_hits': [i for i in hits if i in set(ids)],
+                'snippets': self._snippets_for(ids, text or '')}
+
+    def _filter_excluded(self, ids, exclude):
+        """排除词（`-词`）：对候选逐个查正文。
+
+        为什么放在范围搜索里做后置过滤而不是塞进 FTS：候选集通常很小（范围已经收窄），
+        而后置过滤能同时覆盖"纯排除词"（没有关键词）这种 FTS 表达不了的情况。
+        加密笔记读不到正文——**保留**它（宁可不排除，也不误删用户的笔记）。
+        """
+        if not exclude or not ids:
+            return ids
+        out = []
+        marks = ','.join('?' * len(ids))
+        rows = conn.execute(
+            f"SELECT id, content, format, password_hash FROM notes WHERE id IN ({marks})",
+            list(ids)).fetchall()
+        texts = {}
+        for r in rows:
+            if r['password_hash']:
+                texts[r['id']] = None
+                continue
+            texts[r['id']] = note_plain_text(r['content'], r['format'] or 'delta').lower()
+        lowered = [w.lower() for w in exclude]
+        for i in ids:
+            t = texts.get(i)
+            if t is None or not any(w in t for w in lowered):
+                out.append(i)
+        return out
 
     def _search_plain(self, q):
         """不带范围前缀的关键词搜索（原逻辑）"""
@@ -1831,6 +2196,225 @@ class Api:
             end = min(len(text), i + len(q) + width)
             out[r['id']] = ('…' if start > 0 else '') + text[start:end] + ('…' if end < len(text) else '')
         return out
+
+    # ----- 派生指标 / 待办（第 7 轮） -----
+    def note_metrics(self, note_id):
+        """单篇的派生指标（字符数/待办数/链接数…），面板与表格视图用"""
+        _refresh_derived(note_id)
+        r = conn.execute("SELECT * FROM note_derived WHERE note_id = ?", (note_id,)).fetchone()
+        return dict(r) if r else None
+
+    def metrics_bulk(self, note_ids=None):
+        """批量指标（表格视图用；不传就全部）"""
+        if note_ids:
+            marks = ','.join('?' * len(note_ids))
+            rows = conn.execute(
+                f"SELECT d.* FROM note_derived d JOIN notes n ON n.id = d.note_id "
+                f"WHERE n.deleted_at IS NULL AND d.note_id IN ({marks})", list(note_ids)).fetchall()
+        else:
+            rows = conn.execute(
+                "SELECT d.* FROM note_derived d JOIN notes n ON n.id = d.note_id "
+                "WHERE n.deleted_at IS NULL").fetchall()
+        return [dict(r) for r in rows]
+
+    def todos_list(self, scope='open'):
+        """跨笔记待办：scope = open | today | overdue | week | nodue | done
+
+        只返回**未加密**笔记的待办：加密笔记不参与派生（见 _refresh_derived），
+        所以锁定与否都不会有明文待办流到界面。
+        """
+        today = datetime.now().strftime('%Y-%m-%d')
+        week = (datetime.now() + timedelta(days=7)).strftime('%Y-%m-%d')
+        where = ["n.deleted_at IS NULL"]
+        params = []
+        if scope == 'done':
+            where.append("t.done = 1")
+        else:
+            where.append("t.done = 0")
+            if scope == 'today':
+                where.append("t.due = ?")
+                params.append(today)
+            elif scope == 'overdue':
+                where.append("t.due IS NOT NULL AND t.due < ?")
+                params.append(today)
+            elif scope == 'week':
+                where.append("t.due IS NOT NULL AND t.due <= ?")
+                params.append(week)
+            elif scope == 'nodue':
+                where.append("t.due IS NULL")
+        rows = conn.execute(
+            "SELECT t.note_id, t.idx, t.text, t.due, t.done, n.title AS note_title, "
+            "n.updated_at AS note_updated "
+            "FROM note_todos t JOIN notes n ON n.id = t.note_id WHERE " + " AND ".join(where) +
+            " ORDER BY (t.due IS NULL), t.due ASC, n.updated_at DESC, t.idx ASC", params).fetchall()
+        items = [dict(r) for r in rows]
+        counts = {}
+        for key, (due_sql, due_params) in {
+            'open': ("", []),
+            'today': ("AND t.due = ?", [today]),
+            'overdue': ("AND t.due IS NOT NULL AND t.due < ?", [today]),
+            'week': ("AND t.due IS NOT NULL AND t.due <= ?", [week]),
+            'nodue': ("AND t.due IS NULL", []),
+        }.items():
+            counts[key] = conn.execute(
+                "SELECT COUNT(*) FROM note_todos t JOIN notes n ON n.id = t.note_id "
+                "WHERE n.deleted_at IS NULL AND t.done = 0 " + due_sql, due_params).fetchone()[0]
+        counts['done'] = conn.execute(
+            "SELECT COUNT(*) FROM note_todos t JOIN notes n ON n.id = t.note_id "
+            "WHERE n.deleted_at IS NULL AND t.done = 1").fetchone()[0]
+        return {'items': items, 'counts': counts}
+
+    def todo_toggle(self, note_id, idx, expected_text=''):
+        """勾选/取消一条待办（按「第 idx 个待办」定位，写回原文）。
+
+        为什么要校验文本：正文可能在面板打开后被改过，此时按位置翻会翻错。
+        校验不一致就**拒绝**并让前端刷新，绝不猜。写回**不建历史版本**（勾待办不是编辑行为，
+        每次都建版本会把 50 条历史塞满）。
+        """
+        row = conn.execute("SELECT * FROM notes WHERE id = ? AND deleted_at IS NULL",
+                           (note_id,)).fetchone()
+        if not row:
+            return {'ok': False, 'error': '笔记不存在'}
+        note = dict(row)
+        fmt = note.get('format') or 'delta'
+        dek = None
+        if note.get('password_hash'):
+            dek = _unlocked_deks.get(note_id)
+            if dek is None:
+                return {'ok': False, 'error': '加密笔记需先解锁'}
+            content = _decrypt_content(dek, note['content'] or '', note_id)
+        else:
+            content = note['content'] or ''
+        if fmt == 'md':
+            lines = content.splitlines(keepends=True)
+            seen = -1
+            hit = None
+            for i, line in enumerate(lines):
+                m = _TODO_RE.match(line)
+                if not m:
+                    continue
+                seen += 1
+                if seen == idx:
+                    hit = (i, m)
+                    break
+            if hit is None:
+                return {'ok': False, 'error': '待办已不存在，请刷新'}
+            i, m = hit
+            cur_text = _DUE_RE.sub('', m.group(2)).strip()
+            if expected_text and cur_text != expected_text.strip():
+                return {'ok': False, 'error': '正文已变化，请刷新后重试'}
+            done_now = 0 if m.group(1).lower() == 'x' else 1
+            lines[i] = _TODO_RE.sub(
+                lambda mm: mm.group(0).replace('[%s]' % mm.group(1),
+                                               '[x]' if done_now else '[ ]', 1),
+                lines[i], count=1)
+            new_content = ''.join(lines)
+        else:
+            try:
+                data = json.loads(content)
+            except Exception:
+                return {'ok': False, 'error': '正文无法解析'}
+            ops = data.get('ops', []) if isinstance(data, dict) else data
+            seen = -1
+            target = None
+            for op in ops:
+                if not isinstance(op, dict):
+                    continue
+                attrs = op.get('attributes') or {}
+                if attrs.get('list') in ('checked', 'unchecked'):
+                    seen += 1
+                    if seen == idx:
+                        target = op
+                        break
+            if target is None:
+                return {'ok': False, 'error': '待办已不存在，请刷新'}
+            cur_text = _DUE_RE.sub('', (target.get('insert') or '').strip()).strip()
+            if expected_text and cur_text != expected_text.strip():
+                return {'ok': False, 'error': '正文已变化，请刷新后重试'}
+            done_now = 0 if target['attributes'].get('list') == 'checked' else 1
+            target['attributes']['list'] = 'checked' if done_now else 'unchecked'
+            new_content = json.dumps(data if isinstance(data, dict) else {'ops': ops},
+                                     ensure_ascii=False)
+        store = _encrypt_content(dek, new_content, note_id) if dek is not None else new_content
+        conn.execute("UPDATE notes SET content = ?, updated_at = datetime('now','localtime') "
+                     "WHERE id = ?", (store, note_id))
+        conn.commit()
+        _fts_sync_from_row(note_id)
+        _refresh_derived(note_id, new_content, fmt)
+        conn.commit()
+        return {'ok': True, 'done': done_now, 'note_id': note_id, 'idx': idx}
+
+    # ----- 标签：重命名 / 合并 -----
+    def tags_rename(self, tag_id, new_name):
+        """重命名标签（层级靠名字里的 `/`，所以重命名就等于改层级）"""
+        name = (new_name or '').strip()
+        if not name:
+            return {'ok': False, 'error': '标签名不能为空'}
+        exists = conn.execute("SELECT id FROM tags WHERE name = ? AND id != ?",
+                              (name, tag_id)).fetchone()
+        if exists:
+            return {'ok': False, 'error': '同名标签已存在，请用「合并」把两者并起来'}
+        if not conn.execute("SELECT 1 FROM tags WHERE id = ?", (tag_id,)).fetchone():
+            return {'ok': False, 'error': '标签不存在'}
+        conn.execute("UPDATE tags SET name = ? WHERE id = ?", (name, tag_id))
+        conn.commit()
+        return {'ok': True, 'tag': self.tags_get(tag_id)}
+
+    def tags_merge(self, src_id, dst_id):
+        """把 src 标签合并到 dst：关联转移后删掉 src（比"重命名"更常用）"""
+        if src_id == dst_id:
+            return {'ok': False, 'error': '不能合并到自己'}
+        for tid in (src_id, dst_id):
+            if not conn.execute("SELECT 1 FROM tags WHERE id = ?", (tid,)).fetchone():
+                return {'ok': False, 'error': '标签不存在'}
+        moved = conn.execute("SELECT COUNT(*) FROM note_tags WHERE tag_id = ?",
+                             (src_id,)).fetchone()[0]
+        conn.execute("INSERT OR IGNORE INTO note_tags (note_id, tag_id) "
+                     "SELECT note_id, ? FROM note_tags WHERE tag_id = ?", (dst_id, src_id))
+        conn.execute("DELETE FROM note_tags WHERE tag_id = ?", (src_id,))
+        conn.execute("DELETE FROM tags WHERE id = ?", (src_id,))
+        conn.commit()
+        return {'ok': True, 'moved': moved, 'tag': self.tags_get(dst_id)}
+
+    # ----- 保存的搜索 -----
+    def saved_searches_list(self):
+        rows = conn.execute("SELECT * FROM saved_searches ORDER BY sort_order, created_at").fetchall()
+        out = []
+        for r in rows:
+            d = dict(r)
+            try:
+                d['count'] = len(self.notes_search(r['query'])['ids'])
+            except Exception:
+                d['count'] = None
+            out.append(d)
+        return out
+
+    def saved_search_create(self, name, query):
+        name = (name or '').strip() or (query or '').strip()
+        query = (query or '').strip()
+        if not query:
+            return {'ok': False, 'error': '查询内容不能为空'}
+        sid = str(uuid.uuid4())
+        order = conn.execute("SELECT COALESCE(MAX(sort_order), -1) + 1 FROM saved_searches").fetchone()[0]
+        conn.execute("INSERT INTO saved_searches (id, name, query, sort_order) VALUES (?,?,?,?)",
+                     (sid, name, query, order))
+        conn.commit()
+        return {'ok': True, 'id': sid, 'name': name, 'query': query}
+
+    def saved_search_update(self, sid, fields):
+        allowed = {k: v for k, v in (fields or {}).items() if k in ('name', 'query', 'sort_order')}
+        if not allowed:
+            return {'ok': False, 'error': '没有可更新的字段'}
+        sets = ', '.join('%s = ?' % k for k in allowed)
+        conn.execute("UPDATE saved_searches SET %s WHERE id = ?" % sets,
+                     list(allowed.values()) + [sid])
+        conn.commit()
+        return {'ok': True}
+
+    def saved_search_delete(self, sid):
+        conn.execute("DELETE FROM saved_searches WHERE id = ?", (sid,))
+        conn.commit()
+        return {'ok': True}
 
     # ----- 附件 -----
     def attachments_list(self, note_id):
@@ -1934,7 +2518,15 @@ class Api:
 
     # ----- 标签 -----
     def tags_list(self):
-        rows = conn.execute("SELECT * FROM tags ORDER BY name").fetchall()
+        """全部标签 + 每个标签的**在用笔记数**（回收站里的不计）。
+
+        带 `/` 的标签名就是层级（`项目/子项目`），前端按 `/` 缩进展示；搜索时
+        `tag:项目` 会自动包含子标签（见 _scope_where）。
+        """
+        rows = conn.execute(
+            "SELECT t.*, (SELECT COUNT(*) FROM note_tags nt JOIN notes n ON n.id = nt.note_id "
+            "            WHERE nt.tag_id = t.id AND n.deleted_at IS NULL) AS note_count "
+            "FROM tags t ORDER BY t.name").fetchall()
         return [dict(r) for r in rows]
 
     def tags_create(self, name, color='#7D8A6E'):
@@ -2051,6 +2643,7 @@ class Api:
             (ver['title'], ver['content'], ver.get('format') or 'delta', ver['note_id'])
         )
         _fts_sync_from_row(ver['note_id'])
+        _refresh_derived(ver['note_id'])
         conn.commit()
         return self.notes_get(ver['note_id'])
 
@@ -2135,6 +2728,9 @@ class Api:
             if not (v['content'] or '').startswith(ENC_PREFIX):
                 conn.execute("UPDATE versions SET content = ? WHERE id = ?",
                              (_encrypt_content(dek, v['content'], note_id), v['id']))
+        # 加密后必须立刻清空派生索引：待办明细/字数当初是按明文建的，
+        # 留在 note_todos 里就等于把明文侧面泄漏出去（FTS body 也是同一条约定）
+        _refresh_derived(note_id)
         conn.commit()
 
     def _decrypt_all_note_content(self, note_id, dek):
@@ -2152,6 +2748,7 @@ class Api:
                     conn.rollback()
                     return False
                 conn.execute("UPDATE versions SET content = ? WHERE id = ?", (pt, v['id']))
+        _refresh_derived(note_id)      # 回到明文：派生索引可以按明文重建了
         conn.commit()
         return True
 
@@ -2231,6 +2828,7 @@ class Api:
             return False  # 解密失败，保守不动
         conn.execute("UPDATE notes SET password_hash = NULL, enc_dek = NULL WHERE id = ?", (note_id,))
         _fts_sync_from_row(note_id)  # 回明文后正文重新入索引
+        _refresh_derived(note_id)    # 明文可索引了，派生指标要跟着填回来
         conn.commit()
         _unlocked_deks.pop(note_id, None)
         return True
@@ -2615,6 +3213,7 @@ class Api:
                 (nid, title or '导入的笔记', text, notebook_id or None,
                  _next_sort_order('notes')))
             _fts_sync(nid, title or '导入的笔记', text, 'md')
+            _refresh_derived(nid, text, 'md')
             conn.commit()
             return self.notes_get(nid)
         except Exception:
