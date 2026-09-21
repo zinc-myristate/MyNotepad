@@ -248,6 +248,30 @@
         </span>
       </div>
 
+      <!-- Markdown 工具栏（与 Quill 工具栏同一网格行，二选一显示） -->
+      <div id="md-toolbar" class="md-toolbar hidden">
+        <button class="md-btn" data-md="h1" title="一级标题">H1</button>
+        <button class="md-btn" data-md="h2" title="二级标题">H2</button>
+        <button class="md-btn" data-md="h3" title="三级标题">H3</button>
+        <span class="md-sep"></span>
+        <button class="md-btn" data-md="bold" title="加粗 (Ctrl+B)"><b>B</b></button>
+        <button class="md-btn" data-md="italic" title="斜体 (Ctrl+I)"><i>I</i></button>
+        <button class="md-btn" data-md="strike" title="删除线"><s>S</s></button>
+        <button class="md-btn" data-md="code" title="行内代码 (Ctrl+`)">&lt;/&gt;</button>
+        <span class="md-sep"></span>
+        <button class="md-btn" data-md="ul" title="无序列表">• 列表</button>
+        <button class="md-btn" data-md="ol" title="有序列表">1. 列表</button>
+        <button class="md-btn" data-md="todo" title="待办清单">☑ 待办</button>
+        <button class="md-btn" data-md="quote" title="引用">❝ 引用</button>
+        <button class="md-btn" data-md="codeblock" title="代码块">{ } 代码</button>
+        <button class="md-btn" data-md="table" title="插入表格">▦ 表格</button>
+        <button class="md-btn" data-md="divider" title="分割线">— 分割线</button>
+        <span class="md-sep"></span>
+        <button class="md-btn" data-md="link" title="链接 (Ctrl+K)">🔗 链接</button>
+        <button class="md-btn" data-md="image" title="插入图片">🖼 图片</button>
+        <button class="md-btn" data-md="attachment" title="插入附件">📎 附件</button>
+        <button class="md-btn" data-md="math" title="行内公式">∑ 公式</button>
+      </div>
       <!-- Quill 编辑器（Delta 笔记；与下面的 Markdown 双栏共用最后一行网格） -->
       <div id="quill-editor" class="quill-editor">
         <!-- Quill 会在这里初始化 -->

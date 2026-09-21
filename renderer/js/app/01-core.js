@@ -299,6 +299,8 @@ export function showEditorUI() {
   // Quill 工具栏与字体/字号栏只对 Delta 笔记有意义；Markdown 笔记用源码 + 预览
   const tb = document.querySelector('.ql-toolbar');
   if (tb) tb.classList.toggle('hidden', isMd);
+  const mdtb = $('#md-toolbar');
+  if (mdtb) mdtb.classList.toggle('hidden', !isMd);
   const fsb = $('#font-size-bar');
   if (fsb) fsb.style.display = isMd ? 'none' : 'flex';
   dom.quillEditor.classList.toggle('hidden', isMd);
@@ -310,6 +312,8 @@ export function showEditorUI() {
 export function hideEditorUI() {
   const tb = document.querySelector('.ql-toolbar');
   if (tb) tb.classList.add('hidden');
+  const mdtb = $('#md-toolbar');
+  if (mdtb) mdtb.classList.add('hidden');
   const fsb = $('#font-size-bar');
   if (fsb) fsb.style.display = 'none';
   dom.quillEditor.classList.add('hidden');

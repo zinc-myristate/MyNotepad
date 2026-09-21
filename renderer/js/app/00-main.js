@@ -35,6 +35,8 @@ import './12-bulk-actions.js';
 import './13-markdown-editor.js';
 import './14-markdown-render.js';
 import './15-note-format.js';
+import './16-markdown-toolbar.js';
+import './17-markdown-actions.js';
 import '../quill/quill-deco.js';
 
 // ----- 对外接口 -----

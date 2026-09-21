@@ -839,6 +839,32 @@ body.adaptive-bg .panel-dialog {
   overflow: hidden;
 }
 
+/* Markdown 工具栏：与 Quill 工具栏同占第 4 行网格（两者二选一显示） */
+.md-toolbar {
+  grid-row: 4;
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 4px;
+  padding: 6px 40px;
+  border-bottom: 1px solid var(--border-light, rgba(0,0,0,0.08));
+}
+.md-toolbar.hidden { display: none; }
+.md-btn {
+  height: 28px;
+  padding: 0 9px;
+  border: 1px solid transparent;
+  border-radius: 6px;
+  background: transparent;
+  color: var(--text-primary);
+  font-size: var(--font-size-xs, 12px);
+  cursor: pointer;
+  transition: background var(--transition, 0.2s), border-color var(--transition, 0.2s);
+}
+.md-btn:hover { background: var(--glass-bg-strong, rgba(0,0,0,0.06)); border-color: var(--border-light, rgba(0,0,0,0.1)); }
+.md-btn:active { background: var(--accent-light); }
+.md-sep { width: 1px; height: 18px; margin: 0 4px; background: var(--border-light, rgba(0,0,0,0.1)); }
+
 /* 正文格式徽标：点一下可以 Markdown ⇄ 富文本 互转（转换前会留版本快照） */
 .note-format-badge {
   flex: 0 0 auto;

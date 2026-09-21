@@ -11,6 +11,7 @@
 import { dom, $, state } from './01-core.js';
 import { debouncedSave, setSaveDot } from './03-notes.js';
 import { bindPreviewLinks, hydrateMarkdownAssets, renderMarkdown } from './14-markdown-render.js';
+import { applyMarkdownAction } from './17-markdown-actions.js';
 
 const PREVIEW_DELAY = 180;      // 预览渲染节流（毫秒）
 
@@ -44,6 +45,10 @@ export function initMarkdownEditor() {
     extraKeys: {
       Enter: 'newlineAndIndentContinueMarkdownList',   // 列表内回车自动续 `- ` / `1. `
       'Shift-Tab': 'indentLess',
+      'Ctrl-B': () => applyMarkdownAction('bold'),
+      'Ctrl-I': () => applyMarkdownAction('italic'),
+      'Ctrl-K': () => applyMarkdownAction('link'),
+      'Ctrl-`': () => applyMarkdownAction('code'),
     },
   });
   cm.on('change', () => {
@@ -143,29 +148,4 @@ function syncScroll(from) {
   } finally {
     requestAnimationFrame(() => { _scrollLock = false; });
   }
-}
-
-/** 在光标处插入一段 Markdown（工具栏/快捷键用；后续提交里接按钮） */
-export function insertMarkdownSnippet(snippet, selectOffset) {
-  const text = snippet || '';
-  if (!cm) {
-    const ta = document.getElementById('md-source');
-    if (!ta) return;
-    const pos = ta.selectionStart || 0;
-    ta.value = ta.value.slice(0, pos) + text + ta.value.slice(ta.selectionEnd || pos);
-    ta.dispatchEvent(new Event('input', { bubbles: true }));
-    return;
-  }
-  const sel = cm.getSelection();
-  const doc = cm.getDoc();
-  const from = doc.getCursor('from');
-  if (sel && text.indexOf('\n') < 0) {
-    doc.replaceSelection(text.replace('%s', sel));    // 包住选中文字
-  } else {
-    doc.replaceSelection(text);
-  }
-  if (typeof selectOffset === 'number') {
-    doc.setCursor({ line: from.line, ch: from.ch + selectOffset });
-  }
-  cm.focus();
 }
