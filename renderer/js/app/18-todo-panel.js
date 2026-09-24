@@ -7,6 +7,7 @@
 // 加密笔记不参与派生（后端保证），所以这里不会出现密文笔记的待办。
 
 import { $, closePanel, openPanel, showToast, state } from './01-core.js';
+import { ICONS } from '../shared/icons.js';
 import { loadNotes, selectNote } from './03-notes.js';
 import { verifyAndSelectNote } from './07-formula-security-dnd.js';
 
@@ -49,7 +50,7 @@ function renderItems() {
         <div class="todo-text">${esc(it.text)}</div>
         <div class="todo-meta">
           <span class="todo-note" data-open="${i}" title="打开这篇笔记">${esc(it.note_title || '未命名笔记')}</span>
-          ${it.due ? `<span class="todo-due${isOverdue(it.due) ? ' overdue' : ''}">📅 ${esc(it.due)}</span>` : ''}
+          ${it.due ? `<span class="todo-due${isOverdue(it.due) ? ' overdue' : ''}">${ICONS.calendar} ${esc(it.due)}</span>` : ''}
         </div>
       </div>
     </div>`).join('');

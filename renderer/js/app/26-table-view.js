@@ -7,6 +7,7 @@
 // 加密笔记只显示标题与「已加密」，派生数据列留空——属性同理，后端根本不下发。
 
 import { $, state, showToast } from './01-core.js';
+import { ICONS } from '../shared/icons.js';
 import { loadNotes, selectNote } from './03-notes.js';
 
 const FIXED_COLUMNS = [
@@ -39,7 +40,6 @@ function cellValue(row, col) {
     if (v === false) return '否';
     return v == null ? '' : String(v);
   }
-  if (col.key === 'title') return row.encrypted ? '🔒 ' + row.title : row.title;
   return row[col.key] == null ? '' : String(row[col.key]);
 }
 
@@ -67,15 +67,20 @@ function render() {
   if (!head || !body) return;
   const cols = [...FIXED_COLUMNS, ..._propKeys.map((k) => ({ key: 'prop:' + k, prop: k, label: k, type: 'text' }))];
   head.innerHTML = '<tr>' + cols.map((c) => {
-    const mark = _sort.key === c.key ? (_sort.dir > 0 ? ' ▲' : ' ▼') : '';
+    const mark = _sort.key === c.key
+      ? ' ' + (_sort.dir > 0 ? ICONS['chevron-up'] : ICONS['chevron-down']) : '';
     return '<th data-sort="' + escapeHtml(c.key) + '"' + (c.prop ? ' class="prop-col"' : '')
       + '>' + escapeHtml(c.label) + mark + '</th>';
   }).join('') + '</tr>';
   const rows = sortRows(_rows);
   body.innerHTML = rows.length ? rows.map((r) => '<tr data-note="' + escapeHtml(r.id) + '"'
     + (r.id === state.activeNoteId ? ' class="active"' : '') + '>'
-    + cols.map((c) => '<td' + (c.prop ? ' class="prop-col"' : '') + '>' + escapeHtml(cellValue(r, c))
-      + '</td>').join('') + '</tr>').join('')
+    + cols.map((c) => {
+      // 加密标记用图标（列里要塞 HTML，所以不能放在 cellValue 里）
+      const icon = (c.key === 'title' && r.encrypted) ? ICONS.lock + ' ' : '';
+      return '<td' + (c.prop ? ' class="prop-col"' : '') + '>' + icon
+        + escapeHtml(cellValue(r, c)) + '</td>';
+    }).join('') + '</tr>').join('')
     : '<tr><td class="table-empty" colspan="' + cols.length
       + '">当前筛选下没有笔记（表格显示的永远是列表里看到的那批）</td></tr>';
   if (meta) {

@@ -541,7 +541,7 @@ function showSaveToast() {
     toast.style.cssText = 'position:fixed;bottom:30px;left:50%;transform:translateX(-50%);padding:10px 24px;background:#38A169;color:#fff;border-radius:20px;font-size:14px;font-weight:600;z-index:9999;box-shadow:0 4px 16px rgba(56,161,105,0.4);transition:all 0.3s ease;opacity:0;pointer-events:none;';
     document.body.appendChild(toast);
   }
-  toast.innerHTML = '<svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="3" stroke-linecap="round" style="vertical-align:middle;margin-right:6px;"><polyline points="20 6 9 17 4 12"/></svg>已保存';
+  toast.innerHTML = ICONS['saved-check'] + '已保存';
   toast.style.opacity = '1';
   toast.style.transform = 'translateX(-50%) translateY(-10px)';
   if (saveIndicatorTimer) clearTimeout(saveIndicatorTimer);

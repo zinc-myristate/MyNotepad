@@ -13,6 +13,11 @@
   · 关闭/取消一律是 `.btn-close-panel` + SVG ✕（唯一允许的文字例外：数学符号面板里的 `×` 本身就是要插入的乘号）
   · 动作按钮复用既有类（`.btn-secondary` / `.btn-close-panel` / `.status-btn` / `.btn-new-note`），
     不自己发明
+  · **动态生成的界面图标走 `shared/icons.js` 的 ICONS**，不要在 JS 里内联 `<svg>` 字符串
+    （静态 HTML 工具栏是例外：Quill 工具栏本来就是内联 SVG）
+  · **UI 图标一律不用 emoji**：用户第二次反馈才发现，第 8/9 轮只统一了当轮的按钮，
+    更早的 Markdown 工具栏（☑ 🔗 🖼 📎）与提醒 Toast（🔔 🕐 ✕ 📋）还在用 emoji。
+    下面是**内容**而非图标、允许保留 emoji 的清单。
 """
 import os
 import re
@@ -23,6 +28,18 @@ RENDERER = os.path.join(PROJECT_ROOT, 'renderer')
 
 # 唯一允许的文字 `×`：数学符号面板里它就是"乘号"这个要插入的字符
 TEXT_GLYPH_ALLOWED = ('math-sym-btn',)
+
+# emoji 属于**内容/语法**而非图标的清单（文件 → 允许的行内特征）
+EMOJI_CONTENT_ALLOWED = {
+    'renderer/js/app/02-editor.js': ['emojis:', "cat: '"],          # 表情选择器的数据
+    'renderer/js/quill/quill-deco.js': ["html:'", 'cat:'],          # 贴纸/印章数据
+    'renderer/js/app/17-markdown-actions.js': ['[📎'],               # 写进正文的附件链接标签（后端靠 📎 识别）
+    'renderer/index.html': ['todo-hint', '- [ ] 事项'],             # 待办语法提示（要用户照抄的字符）
+    'renderer/js/app/09-boot.js': ['console.log'],                  # 控制台提示
+}
+
+# 明确禁止出现在 UI 里的"图标类 emoji"
+ICON_EMOJI = '🔗🖼📎☑❝▦🔔🕐📋📅⚠🔒✂🗑⭐📌🔖✔✓✕'
 
 
 def _html():
@@ -122,3 +139,68 @@ def test_new_buttons_all_have_icons_where_the_app_uses_icons():
         m = re.search(r'<button\b[^>]*id="' + sel + r'"[^>]*>(.*?)</button>', html, re.S)
         assert m, '找不到 #%s' % sel
         assert '<svg width="14" height="14"' in m.group(1), '#%s 缺少 14×14 图标' % sel
+
+
+# ---------------- 第二轮：UI 图标里不允许出现 emoji ----------------
+
+def _ui_files():
+    """界面文件（渲染到用户眼前的）：内容型模块不在其列，它们本来就有 emoji 数据。"""
+    names = ['index.html']
+    app = os.path.join(RENDERER, 'js', 'app')
+    for name in sorted(os.listdir(app)):
+        if name.endswith('.js'):
+            names.append('js/app/' + name)
+    names.append('js/quill/quill-bubbles.js')
+    return names
+
+
+def test_no_emoji_used_as_ui_icon():
+    """UI 图标一律 SVG，不许用 emoji（用户第二轮反馈的直接原因）。
+
+    允许保留的 emoji 只在"内容/语法"位置，逐条列在 EMOJI_CONTENT_ALLOWED 里——
+    要放宽必须先往那张表里写明理由，不允许悄悄塞回来。
+    """
+    offences = []
+    for rel in _ui_files():
+        path = os.path.join(RENDERER, rel)
+        if not os.path.isfile(path):
+            continue
+        allowed_marks = EMOJI_CONTENT_ALLOWED.get('renderer/' + rel.replace('\\', '/'), [])
+        for i, line in enumerate(open(path, encoding='utf-8').read().splitlines(), 1):
+            bad = [c for c in line if c in ICON_EMOJI]
+            if not bad:
+                continue
+            if any(mark in line for mark in allowed_marks):
+                continue
+            offences.append('%s:%d %s  %s' % (rel, i, ''.join(bad), line.strip()[:70]))
+    assert not offences, '这些地方的 UI 图标还是 emoji：\n' + '\n'.join(offences)
+
+
+def test_dynamic_icons_come_from_the_registry():
+    """JS 里动态生成的图标走 shared/icons.js，别在模块里内联 `<svg>`。
+
+    理由：图标库存在之前就被绕过了一次（第 8/9 轮内联 SVG），结果同一个 ✕ 有了三份实现。
+    静态 HTML 工具栏不在此列——Quill 工具栏本来就是内联 SVG，Markdown 工具栏与它保持一致。
+    """
+    app = os.path.join(RENDERER, 'js', 'app')
+    offenders = []
+    for name in sorted(os.listdir(app)):
+        if not name.endswith('.js'):
+            continue
+        src = open(os.path.join(app, name), encoding='utf-8').read()
+        if '<svg' in src:
+            offenders.append(name)
+    assert not offenders, ('这些模块里有内联 <svg>，请用 ICONS.xxx（shared/icons.js）：%s' % offenders)
+
+
+def test_icons_registry_entries_follow_the_style_rules():
+    src = open(os.path.join(RENDERER, 'js', 'shared', 'icons.js'), encoding='utf-8').read()
+    tags = re.findall(r"'(?:[^']*)':\s*'<svg\b[^>]*>", src) + re.findall(r'<svg\b[^>]*>', src)
+    assert len(tags) >= 18, '图标库条目太少（%d）：是不是解析错了' % len(tags)
+    for tag in tags:
+        assert 'viewBox="0 0 24 24"' in tag, '图标库必须统一 24 viewBox：%s' % tag
+        assert 'stroke="currentColor"' in tag and 'fill="none"' in tag or 'fill="currentColor"' in tag, \
+            '图标库条目必须显式声明描边/填充：%s' % tag
+        sw = re.search(r'stroke-width="([\d.]+)"', tag)
+        if sw:
+            assert sw.group(1) in ('1', '2', '2.5', '3'), '描边档位异常：%s' % tag

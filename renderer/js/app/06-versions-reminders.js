@@ -313,7 +313,7 @@ $('#reminder-nl-input').addEventListener('input', () => {
   if (!val) { hintEl.textContent = ''; hintEl.className = 'hint-text'; return; }
   const parsed = parseNaturalDate(val);
   if (parsed) {
-    hintEl.textContent = '📅 ' + parsed.hint;
+    hintEl.innerHTML = ICONS.calendar + ' ' + escapeHtml(parsed.hint);
     hintEl.className = 'hint-text';
     // 自动填充 datetime 选择器
     $('#reminder-datetime').value = parsed.remindAt.replace(' ', 'T');
@@ -477,10 +477,11 @@ async function loadReminderList() {
       container.innerHTML = '<div style="text-align:center;padding:30px;color:var(--text-muted);">暂无提醒</div>';
       return;
     }
-    const svgCheck = '<svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"><polyline points="20 6 9 17 4 12"/></svg>';
-    const svgEdit = '<svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M11 4H4a2 2 0 0 0-2 2v14a2 2 0 0 0 2 2h14a2 2 0 0 0 2-2v-7"/><path d="M18.5 2.5a2.121 2.121 0 0 1 3 3L12 15l-4 1 1-4 9.5-9.5z"/></svg>';
-    const svgTrash = '<svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polyline points="3 6 5 6 21 6"/><path d="M19 6v14a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2V6m3 0V4a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v2"/></svg>';
-    const svgRepeat = '<svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polyline points="17 1 21 5 17 9"/><path d="M3 11V9a4 4 0 0 1 4-4h14"/><polyline points="7 23 3 19 7 15"/><path d="M21 13v2a4 4 0 0 1-4 4H3"/></svg>';
+    // 图标统一走 shared/icons.js（此前是四份局部常量）
+    const svgCheck = ICONS['check-lg'];
+    const svgEdit = ICONS.edit;
+    const svgTrash = ICONS.trash;
+    const svgRepeat = ICONS.repeat;
     const repeatLabels = { none: '', daily: `${svgRepeat}每天`, weekly: `${svgRepeat}每周`, weekday: `${svgRepeat}工作日`, monthly: `${svgRepeat}每月`, yearly: `${svgRepeat}每年` };
     container.innerHTML = reminders.map(r => {
       const isCompleted = r.is_completed === 1;
@@ -578,12 +579,12 @@ function showReminderToast(reminder) {
   const time = reminder.remind_at || '';
 
   toast.innerHTML = `
-    <div class="toast-content">🔔 ${escapeHtml(content)}</div>
+    <div class="toast-content">${ICONS.bell} ${escapeHtml(content)}</div>
     <div class="toast-time">${escapeHtml(time)}</div>
     <div class="toast-actions">
       <button class="toast-btn toast-btn-primary" data-action="complete">${ICONS.check} 完成</button>
       <div class="snooze-dropdown">
-        <button class="toast-btn snooze-toggle">🕐 稍后</button>
+        <button class="toast-btn snooze-toggle">${ICONS.clock} 稍后</button>
         <div class="snooze-menu">
           <button data-snooze="5">5 分钟后</button>
           <button data-snooze="15">15 分钟后</button>
@@ -591,7 +592,7 @@ function showReminderToast(reminder) {
           <button data-snooze="60">1 小时后</button>
         </div>
       </div>
-      <button class="toast-close" data-action="dismiss">✕</button>
+      <button class="toast-close" data-action="dismiss">${ICONS.close}</button>
     </div>
   `;
 
@@ -699,8 +700,8 @@ document.addEventListener('contextmenu', (e) => {
   const text = (clone.textContent || '').replace(/\s+/g, ' ').trim().slice(0, 50);
 
   menu.innerHTML = `
-    <button data-action="set-reminder">🔔 设置提醒</button>
-    <button data-action="copy-text">📋 复制文字</button>
+    <button data-action="set-reminder">${ICONS.bell} 设置提醒</button>
+    <button data-action="copy-text">${ICONS.copy} 复制文字</button>
   `;
 
   menu.querySelector('[data-action="set-reminder"]').addEventListener('click', async () => {

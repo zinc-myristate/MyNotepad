@@ -950,6 +950,7 @@ body.adaptive-bg .panel-dialog {
   position: sticky; top: 0; cursor: pointer; user-select: none;
   background: var(--glass-bg-strong, #fafafa); color: var(--text-muted); font-weight: 600;
 }
+.table-view-table th svg { vertical-align: -2px; }
 .table-view-table th:hover { color: var(--accent-text); }
 .table-view-table tr.active td { background: var(--accent-light); }
 .table-view-table td.prop-col, .table-view-table th.prop-col { color: var(--accent-text); }
@@ -1148,7 +1149,10 @@ body[data-theme="dark"] {
 .todo-meta { display: flex; gap: 10px; margin-top: 2px; font-size: var(--font-size-xs, 12px); color: var(--text-muted); }
 .todo-note { cursor: pointer; }
 .todo-note:hover { color: var(--accent-text); text-decoration: underline; }
+.todo-due { display: inline-flex; align-items: center; gap: 3px; }
+.todo-due svg { flex-shrink: 0; }
 .todo-due.overdue { color: var(--danger, #C0392B); font-weight: 600; }
+.todo-hint svg, .hint-text svg { vertical-align: -2px; }
 .todo-empty { padding: 24px 8px; text-align: center; color: var(--text-muted); }
 .todo-hint { margin: 12px 0 0; font-size: var(--font-size-xs, 12px); color: var(--text-muted); }
 .todo-hint code { background: var(--glass-bg-strong, rgba(0,0,0,0.05)); padding: 1px 5px; border-radius: 4px; }
@@ -1184,7 +1188,12 @@ body[data-theme="dark"] {
   font-size: var(--font-size-xs, 12px);
   cursor: pointer;
   transition: background var(--transition, 0.2s), border-color var(--transition, 0.2s);
+  /* 图标 + 文字的横向排布：与 Quill 工具栏的自定义按钮同一套观感 */
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
 }
+.md-btn svg { flex-shrink: 0; }
 .md-btn:hover { background: var(--glass-bg-strong, rgba(0,0,0,0.06)); border-color: var(--border-light, rgba(0,0,0,0.1)); }
 .md-btn:active { background: var(--accent-light); }
 .md-sep { width: 1px; height: 18px; margin: 0 4px; background: var(--border-light, rgba(0,0,0,0.1)); }
@@ -2948,6 +2957,7 @@ body.adaptive-bg .btn-solid-secondary {
   margin-bottom: 4px;
   line-height: 1.4;
 }
+.toast-content svg { vertical-align: -2px; }
 .toast-time {
   font-size: var(--font-size-xs);
   color: rgba(255,255,255,0.6);
@@ -2962,7 +2972,9 @@ body.adaptive-bg .btn-solid-secondary {
   cursor: pointer; border: 1px solid rgba(255,255,255,0.25);
   background: rgba(255,255,255,0.1); color: #fff;
   transition: all var(--transition-fast);
+  display: inline-flex; align-items: center; gap: 4px;
 }
+.toast-btn svg { flex-shrink: 0; }
 .toast-btn:hover { background: rgba(255,255,255,0.2); }
 .toast-btn.toast-btn-primary {
   background: var(--accent-solid); border-color: var(--accent-solid); color: var(--on-accent);
@@ -2970,8 +2982,8 @@ body.adaptive-bg .btn-solid-secondary {
 .toast-btn.toast-btn-primary:hover { filter: brightness(1.1); }
 .toast-close {
   margin-left: auto; cursor: pointer; opacity: 0.5;
-  font-size: 16px; background: none; border: none; color: #fff;
-  padding: 0 4px; line-height: 1;
+  background: none; border: none; color: #fff;
+  padding: 0 4px; line-height: 0;
 }
 .toast-close:hover { opacity: 1; }
 

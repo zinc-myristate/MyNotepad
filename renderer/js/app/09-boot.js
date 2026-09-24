@@ -19,6 +19,7 @@ import { loadSettings } from './04-appearance.js';
 import { loadTagFilter } from './05-shell.js';
 import { initAllDrag, initAutoLock, verifyAndSelectNote } from './07-formula-security-dnd.js';
 import { debounce, escapeHtml } from '../shared/utils.js';
+import { ICONS } from '../shared/icons.js';
 
 let currentNotebookId = null; // null = 全部笔记
 let _notebooks = [];          // 最近一次加载的笔记本列表（供名称查询，避免各处重复请求）
@@ -306,10 +307,7 @@ async function showStartupNotice() {
     const span = document.createElement('span');
     span.textContent = msg;                       // textContent：提示内容不参与 HTML 解析
     const close = document.createElement('button');
-    // 关闭一律用标准 SVG ✕（与面板关闭按钮同一份 SVG，只把描边调成白色）
-    close.innerHTML = '<svg width="14" height="14" viewBox="0 0 24 24" fill="none" '
-      + 'stroke="currentColor" stroke-width="2.5" stroke-linecap="round">'
-      + '<line x1="18" y1="6" x2="6" y2="18"/><line x1="6" y1="6" x2="18" y2="18"/></svg>';
+    close.innerHTML = ICONS.close;   // 与 20 个面板关闭按钮同一份几何（图标库里就有）
     close.title = '关闭提示';
     close.style.cssText = 'position:absolute;right:8px;top:5px;background:none;border:none;' +
       'color:#fff;cursor:pointer;line-height:0;padding:2px;';
