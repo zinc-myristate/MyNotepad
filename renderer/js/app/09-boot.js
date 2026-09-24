@@ -306,10 +306,13 @@ async function showStartupNotice() {
     const span = document.createElement('span');
     span.textContent = msg;                       // textContent：提示内容不参与 HTML 解析
     const close = document.createElement('button');
-    close.textContent = '×';
+    // 关闭一律用标准 SVG ✕（与面板关闭按钮同一份 SVG，只把描边调成白色）
+    close.innerHTML = '<svg width="14" height="14" viewBox="0 0 24 24" fill="none" '
+      + 'stroke="currentColor" stroke-width="2.5" stroke-linecap="round">'
+      + '<line x1="18" y1="6" x2="6" y2="18"/><line x1="6" y1="6" x2="18" y2="18"/></svg>';
     close.title = '关闭提示';
     close.style.cssText = 'position:absolute;right:8px;top:5px;background:none;border:none;' +
-      'color:#fff;font-size:16px;cursor:pointer;line-height:1;';
+      'color:#fff;cursor:pointer;line-height:0;padding:2px;';
     close.addEventListener('click', () => bar.remove());
     bar.appendChild(span);
     bar.appendChild(close);

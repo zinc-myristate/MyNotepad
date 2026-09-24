@@ -888,13 +888,7 @@ body.adaptive-bg .panel-dialog {
 .prop-editor-foot { display: flex; align-items: center; gap: 10px; }
 .prop-tip { flex: 1; font-size: 11px; color: var(--text-muted); }
 .prop-tip code { background: var(--glass-bg-strong, rgba(0, 0, 0, 0.05)); padding: 1px 4px; border-radius: 4px; }
-.prop-btn {
-  height: 28px; padding: 0 10px; cursor: pointer; border-radius: 6px;
-  border: 1px solid var(--border-light, rgba(0, 0, 0, 0.12));
-  background: transparent; color: var(--text-primary); font-size: 12px;
-}
-.prop-btn:hover { border-color: var(--accent-text); color: var(--accent-text); }
-.prop-btn-primary { background: var(--accent-solid, var(--accent)); color: var(--on-accent, #fff); border-color: transparent; }
+/* 属性面板底部按钮走既有的 .btn-secondary（紧凑尺寸见上面的统一覆盖） */
 
 /* ====== 双链（预览里的 [[链接]]）====== */
 .md-wikilink {
@@ -976,12 +970,20 @@ body.adaptive-bg .panel-dialog {
 .editor-status.hidden { display: none; }
 .status-spacer { flex: 1; }
 .status-format { color: var(--accent-text); }
+/* 状态栏按钮：视觉参数照抄 .btn-sidebar-footer（图标 + 文字、透明底、悬停变色），
+   只把内边距压小以适应 26px 高的一行 */
 .status-btn {
-  border: 1px solid var(--border-light, rgba(0,0,0,0.1));
-  background: transparent; color: var(--text-muted); cursor: pointer;
-  border-radius: 10px; padding: 1px 9px; font-size: var(--font-size-xs, 12px);
+  display: inline-flex; align-items: center; gap: 5px;
+  border: 1px solid var(--border-light); background: transparent;
+  color: var(--text-secondary); cursor: pointer;
+  border-radius: var(--radius-sm); padding: 2px 8px;
+  font-size: var(--font-size-xs); font-family: var(--font-sans); font-weight: 500;
+  transition: all var(--transition-fast);
 }
-.status-btn:hover, .status-btn.active { color: var(--accent-text); border-color: var(--accent-text); }
+.status-btn svg { flex-shrink: 0; vertical-align: middle; }
+.status-btn:hover, .status-btn.active {
+  background: var(--btn-hover-bg); color: var(--text-primary); border-color: var(--border-color);
+}
 
 /* 无笔记（含删除/锁定后隐藏编辑区）时，这三个都不该留在屏幕上显旧内容 */
 body.no-active-note .editor-status,
@@ -1010,12 +1012,18 @@ body.no-active-note .outline-drawer { display: none !important; }
 .find-input:focus { border-color: var(--accent-text); }
 .find-count { min-width: 44px; text-align: center; color: var(--text-muted); font-size: 11px; }
 .find-case-label { display: flex; align-items: center; gap: 2px; font-size: 11px; color: var(--text-muted); }
-.find-btn {
-  height: 26px; min-width: 26px; padding: 0 7px; cursor: pointer;
-  border: 1px solid var(--border-light, rgba(0,0,0,0.1)); border-radius: 6px;
-  background: transparent; color: var(--text-primary); font-size: var(--font-size-xs, 12px);
+/* 紧凑容器里的标准按钮：尺寸缩小，外观仍是既有那两种（.btn-close-panel / .btn-secondary） */
+.find-bar .btn-close-panel,
+.outline-head .btn-close-panel,
+.table-view-head .btn-close-panel {
+  flex: 0 0 auto; width: 24px; height: 24px;
 }
-.find-btn:hover { border-color: var(--accent-text); color: var(--accent-text); }
+.find-bar .btn-secondary,
+.table-view-head .btn-secondary,
+.prop-editor-foot .btn-secondary {
+  padding: 4px 12px; font-size: var(--font-size-xs); border-radius: var(--radius-sm);
+  line-height: 1.4;
+}
 .cm-find-hit { background: rgba(255, 214, 0, 0.35); border-radius: 2px; }
 
 /* ====== 大纲抽屉 ====== */
@@ -1030,7 +1038,7 @@ body.no-active-note .outline-drawer { display: none !important; }
 .outline-drawer.hidden { display: none; }
 .outline-head {
   display: flex; align-items: center; justify-content: space-between;
-  padding: 6px 10px; font-size: var(--font-size-xs, 12px); color: var(--text-muted);
+  padding: 4px 6px 4px 12px; font-size: var(--font-size-xs, 12px); color: var(--text-muted);
   border-bottom: 1px solid var(--border-light, rgba(0,0,0,0.08));
 }
 .outline-list { flex: 1; overflow: auto; padding: 6px 4px; }
@@ -3072,7 +3080,8 @@ body.adaptive-bg .btn-solid-secondary {
 .bulk-bar button:hover { border-color: var(--accent); color: var(--accent-text); }
 .bulk-bar button.bulk-danger { border-color: var(--danger); color: var(--danger); }
 .bulk-bar button.bulk-danger:hover { background: var(--danger); color: #fff; }
-#bulk-cancel { margin-left: auto; font-size: 14px; line-height: 1; padding: 2px 7px; }
+/* 关闭/取消一律用标准 SVG ✕（与 20 个面板关闭按钮同一份），这里只调内边距与对齐 */
+#bulk-cancel { margin-left: auto; display: inline-flex; align-items: center; padding: 3px 5px; }
 .bulk-select {
   max-width: 96px; padding: 3px 4px; font-size: var(--font-size-xs);
   font-family: var(--font-sans); color: var(--text-primary);

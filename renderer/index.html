@@ -69,7 +69,7 @@
         <option value="">打标签…</option>
       </select>
       <button id="bulk-delete" class="bulk-danger" title="把所选移入回收站">删除</button>
-      <button id="bulk-cancel" title="取消选择（Esc）">×</button>
+      <button id="bulk-cancel" title="取消选择（Esc）"><svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round"><line x1="18" y1="6" x2="6" y2="18"/><line x1="6" y1="6" x2="18" y2="18"/></svg></button>
     </div>
 
     <!-- 笔记列表 -->
@@ -176,9 +176,9 @@
         <div id="prop-editor" class="prop-editor hidden">
           <div id="prop-rows" class="prop-rows"></div>
           <div class="prop-editor-foot">
-            <button id="btn-prop-add" class="prop-btn">+ 添加一行</button>
+            <button id="btn-prop-add" class="btn-secondary">+ 添加一行</button>
             <span class="prop-tip">可用 <code>prop:键=值</code> 搜索，例如 <code>prop:状态=进行中</code></span>
-            <button id="btn-prop-done" class="prop-btn prop-btn-primary">完成</button>
+            <button id="btn-prop-done" class="btn-secondary">完成</button>
           </div>
         </div>
       </div>
@@ -320,12 +320,18 @@
       <div id="sticker-overlay" class="sticker-overlay"></div>
 
       <!-- 编辑器状态栏：字数 / 结构 / 大纲入口（第 8 轮） -->
+      <!-- 注意：本轮新增的关闭按钮沿用 .btn-close-panel 的**样式**（与 20 个面板一致），
+           但**不带 data-panel** —— 它们的关闭逻辑在各自模块里（01-core 的全局处理器只认 data-panel） -->
       <div id="editor-status" class="editor-status hidden">
         <span id="status-text" class="status-text"></span>
         <span class="status-spacer"></span>
         <span id="status-format" class="status-format"></span>
-        <button id="btn-outline" class="status-btn" title="大纲（标题导航）">大纲</button>
-        <button id="btn-links" class="status-btn" title="双链与反向链接">链接</button>
+        <button id="btn-outline" class="status-btn" title="大纲（标题导航）">
+          <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor"
+               stroke-width="2" stroke-linecap="round"><line x1="3" y1="6" x2="21" y2="6"/><line x1="3" y1="12" x2="15" y2="12"/><line x1="3" y1="18" x2="11" y2="18"/></svg>大纲</button>
+        <button id="btn-links" class="status-btn" title="双链与反向链接">
+          <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor"
+               stroke-width="2" stroke-linecap="round"><path d="M10 13a5 5 0 0 0 7.54.54l3-3a5 5 0 0 0-7.07-7.07l-1.72 1.71"/><path d="M14 11a5 5 0 0 0-7.54-.54l-3 3a5 5 0 0 0 7.07 7.07l1.71-1.71"/></svg>链接</button>
       </div>
       </div>
 
@@ -337,14 +343,18 @@
           <label class="find-case-label" title="区分大小写">
             <input id="find-case" type="checkbox"> Aa
           </label>
-          <button id="find-prev" class="find-btn" title="上一个 (Shift+Enter)">↑</button>
-          <button id="find-next" class="find-btn" title="下一个 (Enter)">↓</button>
-          <button id="find-close" class="find-btn" title="关闭 (Esc)">×</button>
+          <button id="find-prev" class="btn-close-panel" title="上一个 (Shift+Enter)">
+            <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor"
+                 stroke-width="2.5" stroke-linecap="round"><polyline points="18 15 12 9 6 15"/></svg></button>
+          <button id="find-next" class="btn-close-panel" title="下一个 (Enter)">
+            <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor"
+                 stroke-width="2.5" stroke-linecap="round"><polyline points="6 9 12 15 18 9"/></svg></button>
+          <button id="find-close" class="btn-close-panel" title="关闭 (Esc)"><svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round"><line x1="18" y1="6" x2="6" y2="18"/><line x1="6" y1="6" x2="18" y2="18"/></svg></button>
         </div>
         <div id="find-replace-row" class="find-row hidden">
           <input id="find-replace-input" class="find-input" type="text" placeholder="替换为…" spellcheck="false">
-          <button id="find-replace-one" class="find-btn" title="替换当前">替换</button>
-          <button id="find-replace-all" class="find-btn" title="全部替换">全部</button>
+          <button id="find-replace-one" class="btn-secondary" title="替换当前">替换</button>
+          <button id="find-replace-all" class="btn-secondary" title="全部替换">全部</button>
         </div>
       </div>
 
@@ -352,7 +362,7 @@
       <aside id="outline-drawer" class="outline-drawer hidden">
         <div class="outline-head">
           <span>大纲</span>
-          <button id="outline-close" class="find-btn" title="关闭">×</button>
+          <button id="outline-close" class="btn-close-panel" title="关闭"><svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round"><line x1="18" y1="6" x2="6" y2="18"/><line x1="6" y1="6" x2="18" y2="18"/></svg></button>
         </div>
         <div id="outline-list" class="outline-list"></div>
       </aside>
@@ -361,7 +371,7 @@
       <aside id="links-drawer" class="outline-drawer links-drawer hidden">
         <div class="outline-head">
           <span>链接</span>
-          <button id="links-close" class="find-btn" title="关闭">×</button>
+          <button id="links-close" class="btn-close-panel" title="关闭"><svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round"><line x1="18" y1="6" x2="6" y2="18"/><line x1="6" y1="6" x2="18" y2="18"/></svg></button>
         </div>
         <div id="links-list" class="links-list"></div>
       </aside>
@@ -372,8 +382,8 @@
           <span class="table-view-title">表格视图</span>
           <span id="table-view-meta" class="table-view-meta"></span>
           <span class="status-spacer"></span>
-          <button id="btn-table-csv" class="find-btn">导出 CSV</button>
-          <button id="table-view-close" class="find-btn" title="关闭">×</button>
+          <button id="btn-table-csv" class="btn-secondary">导出 CSV</button>
+          <button id="table-view-close" class="btn-close-panel" title="关闭"><svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round"><line x1="18" y1="6" x2="6" y2="18"/><line x1="6" y1="6" x2="18" y2="18"/></svg></button>
         </div>
         <div class="table-wrap">
           <table id="table-view-table" class="table-view-table">
