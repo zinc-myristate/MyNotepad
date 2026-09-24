@@ -8,32 +8,105 @@ import { updateNotebookCount } from './09-boot.js';
 import { buildDividerPanel, buildStickerGrid, setStickerCat } from '../quill/quill-deco.js';
 import { escapeHtml } from '../shared/utils.js';
 
+/** 当前显示着背景图的那一层（笔记层优先于全局层） */
+function activeBgLayer() {
+  const note = document.querySelector('.note-bg-layer');
+  const global = document.querySelector('.global-bg-layer');
+  for (const el of [note, global]) {
+    if (el && el.style.backgroundImage) return el;
+  }
+  return null;
+}
+
+/** 界面行 → 它压在图片的哪一段（条带划分见 BAND_OF_CHROME）。
+ *  为什么按段采样：一张图常常上半亮下半暗，整图一个"明/暗"判断必然有一半界面读不清。 */
+const CHROME_BANDS = {
+  title: ['#title-row'],
+  upper: ['#tag-bar', '#prop-block', '#md-toolbar', '#editor-toolbar', '#font-size-bar'],
+  mid: ['.ql-editor', '#md-editor', '#md-preview'],
+  bottom: ['#editor-status', '#find-bar'],
+};
+const BAND_RANGES = {           // 占编辑器区域高度的比例（与界面行在屏幕上的位置对应）
+  title: [0.00, 0.09],
+  upper: [0.09, 0.27],
+  mid: [0.30, 0.72],
+  bottom: [0.92, 1.00],
+};
+
+function bandLuminance(ctx, w, h, from, to) {
+  const y0 = Math.max(0, Math.floor(h * from));
+  const y1 = Math.min(h, Math.max(y0 + 1, Math.ceil(h * to)));
+  const data = ctx.getImageData(0, y0, w, y1 - y0).data;
+  const toLinear = (c) => { c /= 255; return c <= 0.03928 ? c / 12.92 : Math.pow((c + 0.055) / 1.055, 2.4); };
+  let r = 0, g = 0, b = 0, n = 0;
+  for (let i = 0; i < data.length; i += 16) {     // 每 4 像素取 1 个，够用且快
+    r += data[i]; g += data[i + 1]; b += data[i + 2]; n++;
+  }
+  if (!n) return { r: 255, g: 255, b: 255, luminance: 1, dark: false };
+  r /= n; g /= n; b /= n;
+  const luminance = 0.2126 * toLinear(r) + 0.7152 * toLinear(g) + 0.0722 * toLinear(b);
+  return { r: Math.round(r), g: Math.round(g), b: Math.round(b), luminance, dark: luminance < 0.42 };
+}
+
 export function analyzeImageColor(dataUri, callback) {
   const img = new Image();
   img.onload = () => {
-    const canvas = document.createElement('canvas');
-    const maxDim = 80; // 缩放到 80px 采样
-    const scale = Math.min(1, maxDim / Math.max(img.width, img.height));
-    canvas.width = Math.round(img.width * scale);
-    canvas.height = Math.round(img.height * scale);
-    const ctx = canvas.getContext('2d');
-    ctx.drawImage(img, 0, 0, canvas.width, canvas.height);
+    // 用与 CSS 完全相同的「cover + 缩放 + 位置」把图draw到小画布，再按条带取亮度。
+    // 不自己算这套几何就用不上分区采样（画布哪一段对应屏幕哪一行会错位）。
+    const layer = activeBgLayer();
+    const area = document.getElementById('editor-area');
+    const rect = area ? area.getBoundingClientRect() : { width: 1200, height: 800 };
+    const boxW = Math.max(1, Math.round(rect.width));
+    const boxH = Math.max(1, Math.round(rect.height));
+    const zoom = parseFloat((layer && layer.style.backgroundSize) || '100') || 100;
+    const posParts = ((layer && layer.style.backgroundPosition) || '50% 50%').split(/\s+/);
+    const posX = (parseFloat(posParts[0]) || 0) / 100;                  // '50%'→0.5，'0%'→0
+    const posY = posParts.length > 1 ? (parseFloat(posParts[1]) || 0) / 100 : 0.5;
 
-    // 网格分区采样：每个区域取代表色，然后取中位数
-    const data = ctx.getImageData(0, 0, canvas.width, canvas.height).data;
+    const scale = Math.min(1, 96 / Math.max(boxW, boxH));
+    const canvas = document.createElement('canvas');
+    canvas.width = Math.max(1, Math.round(boxW * scale));
+    canvas.height = Math.max(1, Math.round(boxH * scale));
+    const ctx = canvas.getContext('2d');
+    const drawW = boxW * (zoom / 100) * scale;
+    const drawH = drawW * (img.naturalHeight / Math.max(1, img.naturalWidth));
+    const dx = (canvas.width - drawW) * posX;
+    const dy = (canvas.height - drawH) * posY;
+    // 图没盖住的地方露出来的是**主题的编辑器底色**（不是白色）：深色主题下那是暗的，
+    // 当成白底会把上下两条界面行判反（实测：纯深色背景图却给标题行配了深色字）。
+    const editorBg = getComputedStyle(document.body).getPropertyValue('--bg-editor').trim();
+    ctx.fillStyle = editorBg || '#ffffff';
+    ctx.fillRect(0, 0, canvas.width, canvas.height);
+    ctx.drawImage(img, dx, dy, drawW, drawH);
+
+    const bands = {};
+    Object.keys(BAND_RANGES).forEach((key) => {
+      bands[key] = bandLuminance(ctx, canvas.width, canvas.height,
+        BAND_RANGES[key][0], BAND_RANGES[key][1]);
+    });
+
+    // 整图亮度（保持旧字段，settings.adaptive_color 里仍存一份）
+    const small = document.createElement('canvas');
+    const maxDim = 80;
+    const s2 = Math.min(1, maxDim / Math.max(img.width, img.height));
+    small.width = Math.round(img.width * s2);
+    small.height = Math.round(img.height * s2);
+    small.getContext('2d').drawImage(img, 0, 0, small.width, small.height);
+    const data = small.getContext('2d').getImageData(0, 0, small.width, small.height).data;
+
+    // 整图中位数（抗极值），仅用于记录/兜底
     const gridSize = 8;
     const samples = [];
-
     for (let gy = 0; gy < gridSize; gy++) {
       for (let gx = 0; gx < gridSize; gx++) {
         let sr = 0, sg = 0, sb = 0, sc = 0;
-        const x0 = Math.floor(gx * canvas.width / gridSize);
-        const y0 = Math.floor(gy * canvas.height / gridSize);
-        const x1 = Math.floor((gx + 1) * canvas.width / gridSize);
-        const y1 = Math.floor((gy + 1) * canvas.height / gridSize);
+        const x0 = Math.floor(gx * small.width / gridSize);
+        const y0 = Math.floor(gy * small.height / gridSize);
+        const x1 = Math.floor((gx + 1) * small.width / gridSize);
+        const y1 = Math.floor((gy + 1) * small.height / gridSize);
         for (let y = y0; y < y1; y += 2) {
           for (let x = x0; x < x1; x += 2) {
-            const i = (y * canvas.width + x) * 4;
+            const i = (y * small.width + x) * 4;
             sr += data[i]; sg += data[i+1]; sb += data[i+2]; sc++;
           }
         }
@@ -55,20 +128,49 @@ export function analyzeImageColor(dataUri, callback) {
 
     // 合并计算整体亮度偏差：偏暗则用亮底，偏亮则用暗底
     const isDarkBg = luminance < 0.35;
-    callback({ r, g, b, luminance, isDarkBg });
+    callback({ r, g, b, luminance, isDarkBg, bands });
   };
   img.onerror = () => callback(null);
   img.src = dataUri;
 }
 
+const ALL_TONE_SELECTORS = Object.values(CHROME_BANDS).flat();
+
+/** 按图片各段明暗，给每一行界面切换文字色（.bg-tone-dark / .bg-tone-light） */
+export function applyChromeTones(colorInfo) {
+  const bands = (colorInfo && colorInfo.bands) || null;
+  const fallbackDark = colorInfo ? !!colorInfo.isDarkBg : false;
+  Object.keys(CHROME_BANDS).forEach((band) => {
+    const dark = bands && bands[band] ? bands[band].dark : fallbackDark;
+    CHROME_BANDS[band].forEach((sel) => {
+      const el = document.querySelector(sel);
+      if (!el) return;
+      el.classList.toggle('bg-tone-dark', dark);
+      el.classList.toggle('bg-tone-light', !dark);
+    });
+  });
+}
+
+/** 「背景模糊」与「界面不透明度」：前者给图降噪，后者只给界面行加薄纱 */
+export function applyBackgroundTuning(opts = {}) {
+  const blur = Number(opts.blur) || 0;
+  const scrim = opts.scrim === undefined ? 0.3 : Number(opts.scrim) || 0;
+  [dom.globalBgLayer, dom.noteBgLayer].forEach((el) => {
+    if (!el) return;
+    // 模糊会让边缘透出底色，所以顺带放大一点点盖住（1 + 2*blur% 的幅度足够）
+    el.style.filter = blur > 0 ? 'blur(' + blur + 'px)' : '';
+    el.style.transform = blur > 0 ? 'scale(' + (1 + Math.min(0.12, blur * 0.008)) + ')' : '';
+  });
+  document.documentElement.style.setProperty('--ad-scrim', String(Math.max(0, Math.min(1, scrim))));
+  state.bgBlur = blur;
+  state.bgScrim = scrim;
+}
+
 export function applyAdaptiveUI(colorInfo) {
-  // 极简自适应：只控制工具栏/编辑器透明 + 边框线
-  // 侧边栏跟随主题色，背景面板深色底白字，均不受影响
   const body = document.body;
   body.classList.add('adaptive-bg');
-  body.style.setProperty('--ad-toolbar-bg', 'transparent');
   body.style.setProperty('--ad-border-strong', 'rgba(128,128,128,0.40)');
-
+  applyChromeTones(colorInfo);
   if (colorInfo) {
     window.pywebview.api.settings_set('adaptive_color', JSON.stringify(colorInfo));
   }
@@ -77,7 +179,12 @@ export function applyAdaptiveUI(colorInfo) {
 export function clearAdaptiveUI() {
   const body = document.body;
   body.classList.remove('adaptive-bg');
-  ['--ad-toolbar-bg','--ad-border-strong'].forEach(k => body.style.removeProperty(k));
+  body.style.removeProperty('--ad-border-strong');
+  // 去掉所有行上的明暗类：不留"上一次图片"的配色
+  ALL_TONE_SELECTORS.forEach((sel) => {
+    const el = document.querySelector(sel);
+    if (el) el.classList.remove('bg-tone-dark', 'bg-tone-light');
+  });
   window.pywebview.api.settings_set('adaptive_color', '');
 }
 

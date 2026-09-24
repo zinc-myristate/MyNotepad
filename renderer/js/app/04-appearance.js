@@ -4,7 +4,8 @@
 import { $, $$, NotepadConfig, closePanel, dom, openPanel, showToast, state } from './01-core.js';
 import { syncNoteFields } from './02-editor.js';
 import { renderNoteList } from './03-notes.js';
-import { analyzeImageColor, applyAdaptiveUI, buildCoverPanel, clearAdaptiveUI } from './08-appearance2.js';
+import { analyzeImageColor, applyAdaptiveUI, applyBackgroundTuning, buildCoverPanel,
+  clearAdaptiveUI } from './08-appearance2.js';
 import { debounce } from '../shared/utils.js';
 
 export async function loadSettings(retryCount = 0) {
@@ -20,6 +21,9 @@ export async function loadSettings(retryCount = 0) {
     state.globalBg.opacity = parseFloat(settings.bg_opacity) || 1.0;
     state.globalBg.zoom = parseInt(settings.bg_zoom) || 100;
     try { const pos = JSON.parse(settings.bg_pos || '{"x":50,"y":50}'); state.globalBg.posX = pos.x; state.globalBg.posY = pos.y; globalBgPos = pos; } catch(e) {}
+    state.globalBg.blur = parseFloat(settings.bg_blur) || 0;
+    state.globalBg.scrim = settings.ui_scrim === undefined ? 0.3 : (parseFloat(settings.ui_scrim) || 0);
+    syncBgTuningSliders();
 
     applyTheme(state.currentTheme);
     applyGlobalBackground();
@@ -106,10 +110,12 @@ async function applyGlobalBackground() {
       dom.globalBgLayer.style.opacity = state.globalBg.opacity;
       dom.globalBgLayer.style.backgroundSize = zoom + '% auto';
       dom.globalBgLayer.style.backgroundPosition = posX + '% ' + posY + '%';
+      applyCurrentTuning();
       analyzeImageColor(dataUri, function(info) { applyAdaptiveUI(info); });
     } else {
       const fileUrl = 'file:///' + imgPath.replace(/\\/g, '/');
       dom.globalBgLayer.style.backgroundImage = 'url(' + fileUrl + ')';
+      applyCurrentTuning();
       dom.globalBgLayer.style.opacity = state.globalBg.opacity;
       dom.globalBgLayer.style.backgroundSize = zoom + '% auto';
       dom.globalBgLayer.style.backgroundPosition = posX + '% ' + posY + '%';
@@ -158,6 +164,8 @@ export async function applyNoteBackground(note) {
       dom.noteBgLayer.style.backgroundSize = zoom + '% auto';
       dom.noteBgLayer.style.backgroundPosition = posX + '% ' + posY + '%';
       state.noteBgImagePath = note.bg_value;
+      syncBgTuningSliders(note);
+      applyCurrentTuning(note);
       analyzeImageColor(dataUri, function(info) { applyAdaptiveUI(info); });
     } else {
       const fileUrl = 'file:///' + imgPath.replace(/\\/g, '/');
@@ -166,8 +174,53 @@ export async function applyNoteBackground(note) {
       dom.noteBgLayer.style.backgroundSize = zoom + '% auto';
       dom.noteBgLayer.style.backgroundPosition = posX + '% ' + posY + '%';
       state.noteBgImagePath = note.bg_value;
+      syncBgTuningSliders(note);
+      applyCurrentTuning(note);
       analyzeImageColor(fileUrl, function(info) { applyAdaptiveUI(info); });
     }
+  }
+}
+
+// ====== 背景模糊 / 界面不透明度（2026-09-22） ======
+// 两者都是"背景图相关的观感设置"：模糊给花图降噪，界面不透明度只给工具栏/状态栏这些
+// 界面行盖一层主题色薄纱（0% = 完全透明）。存在笔记上（有自定义背景图时）与全局设置里，
+// 与透明度/缩放/位置同一套规则。
+function currentBgTuning(note) {
+  if (note && note.bg_type === 'image') {
+    return { blur: Number(note.bg_blur) || 0,
+             scrim: note.ui_scrim === undefined || note.ui_scrim === null
+               ? 0.3 : Number(note.ui_scrim) };
+  }
+  if (state.noteBgImagePath && state.activeNoteId && note === undefined) {
+    // 笔记级背景正在显示但调用方没给 note：沿用 state 里记着的那份
+    return { blur: Number(state.bgBlur) || 0, scrim: Number(state.bgScrim ?? 0.3) };
+  }
+  return { blur: Number(state.globalBg.blur) || 0, scrim: Number(state.globalBg.scrim ?? 0.3) };
+}
+
+function applyCurrentTuning(note) {
+  applyBackgroundTuning(currentBgTuning(note));
+}
+
+/** 把当前生效的值同步到两套滑杆（全局 / 当前笔记） */
+export function syncBgTuningSliders(note) {
+  const globalBlur = Number(state.globalBg.blur) || 0;
+  const globalScrim = Math.round((state.globalBg.scrim ?? 0.3) * 100);
+  if ($('#global-bg-blur')) {
+    $('#global-bg-blur').value = globalBlur;
+    $('#global-bg-blur-val').textContent = globalBlur + 'px';
+    $('#global-ui-scrim').value = globalScrim;
+    $('#global-ui-scrim-val').textContent = globalScrim + '%';
+  }
+  if (!note) return;
+  const noteBlur = Number(note.bg_blur) || 0;
+  const noteScrim = Math.round((note.ui_scrim === undefined || note.ui_scrim === null
+    ? 0.3 : Number(note.ui_scrim)) * 100);
+  if ($('#note-bg-blur') && note.bg_type === 'image') {
+    $('#note-bg-blur').value = noteBlur;
+    $('#note-bg-blur-val').textContent = noteBlur + 'px';
+    $('#note-ui-scrim').value = noteScrim;
+    $('#note-ui-scrim-val').textContent = noteScrim + '%';
   }
 }
 
@@ -349,6 +402,42 @@ $('#bg-pos-reset').addEventListener('click', () => {
   window.pywebview.api.settings_set('bg_pos', JSON.stringify(globalBgPos));
   applyGlobalBackground();
 
+});
+
+// 全局背景模糊 / 界面不透明度
+$('#global-bg-blur').addEventListener('input', () => {
+  const val = parseInt($('#global-bg-blur').value);
+  $('#global-bg-blur-val').textContent = val + 'px';
+  state.globalBg.blur = val;
+  window.pywebview.api.settings_set('bg_blur', String(val));
+  applyCurrentTuning();
+});
+$('#global-ui-scrim').addEventListener('input', () => {
+  const val = parseInt($('#global-ui-scrim').value);
+  $('#global-ui-scrim-val').textContent = val + '%';
+  state.globalBg.scrim = val / 100;
+  window.pywebview.api.settings_set('ui_scrim', String(val / 100));
+  applyCurrentTuning();
+});
+
+// 笔记背景模糊 / 界面不透明度
+$('#note-bg-blur').addEventListener('input', async () => {
+  const val = parseInt($('#note-bg-blur').value);
+  $('#note-bg-blur-val').textContent = val + 'px';
+  if (state.activeNoteId) {
+    await window.pywebview.api.notes_update(state.activeNoteId, { bg_blur: val });
+    syncNoteFields(state.activeNoteId, { bg_blur: val });
+    applyBackgroundTuning({ blur: val, scrim: Number(state.bgScrim ?? 0.3) });
+  }
+});
+$('#note-ui-scrim').addEventListener('input', async () => {
+  const val = parseInt($('#note-ui-scrim').value);
+  $('#note-ui-scrim-val').textContent = val + '%';
+  if (state.activeNoteId) {
+    await window.pywebview.api.notes_update(state.activeNoteId, { ui_scrim: val / 100 });
+    syncNoteFields(state.activeNoteId, { ui_scrim: val / 100 });
+    applyBackgroundTuning({ blur: Number(state.bgBlur) || 0, scrim: val / 100 });
+  }
 });
 
 // 笔记背景透明度滑块

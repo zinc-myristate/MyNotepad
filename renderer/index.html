@@ -142,7 +142,7 @@
     <div id="editor-container" class="editor-container">
 
       <!-- 标题输入框 -->
-      <div style="display:flex;align-items:center;gap:8px;padding:12px 48px 0;">
+      <div id="title-row" class="title-row" style="display:flex;align-items:center;gap:8px;padding:12px 48px 0;">
         <input
           id="note-title-input"
           class="note-title-input"
@@ -478,6 +478,14 @@
             缩放：<input type="range" id="global-bg-zoom" min="50" max="200" value="100" step="5">
             <span id="global-bg-zoom-val">100%</span>
           </label>
+          <label class="opacity-slider" title="给花哨的背景图降噪，正文与界面都更清楚">
+            背景模糊：<input type="range" id="global-bg-blur" min="0" max="20" value="0" step="1">
+            <span id="global-bg-blur-val">0px</span>
+          </label>
+          <label class="opacity-slider" title="只在工具栏/状态栏这些界面行上盖一层主题色薄纱（0% = 完全透明）">
+            界面不透明度：<input type="range" id="global-ui-scrim" min="0" max="100" value="30" step="5">
+            <span id="global-ui-scrim-val">30%</span>
+          </label>
           <div class="bg-pos-controls">
             <span>位置：</span>
             <button id="bg-pos-up" class="bg-pos-btn" title="上移"><svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"><path d="M12 19V5M5 12l7-7 7 7"/></svg></button>
@@ -517,6 +525,14 @@
           <label class="opacity-slider">
             缩放：<input type="range" id="note-bg-zoom" min="50" max="200" value="100" step="5">
             <span id="note-bg-zoom-val">100%</span>
+          </label>
+          <label class="opacity-slider" title="给花哨的背景图降噪，正文与界面都更清楚">
+            背景模糊：<input type="range" id="note-bg-blur" min="0" max="20" value="0" step="1">
+            <span id="note-bg-blur-val">0px</span>
+          </label>
+          <label class="opacity-slider" title="只在工具栏/状态栏这些界面行上盖一层主题色薄纱（0% = 完全透明）">
+            界面不透明度：<input type="range" id="note-ui-scrim" min="0" max="100" value="30" step="5">
+            <span id="note-ui-scrim-val">30%</span>
           </label>
           <div class="bg-pos-controls">
             <span>位置：</span>

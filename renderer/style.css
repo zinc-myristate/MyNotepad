@@ -753,12 +753,46 @@ html, body {
 }
 
 /* ====== 自适应背景系统 ====== */
+/* 可读性核心（2026-09-22）：图片背景下界面层按**它自己那块区域**的明暗换文字色。
+   做法是在该行上局部重定义 --text-* 变量——子元素（图标走 currentColor、说明文字走
+   --text-muted、边框走 --border-light）全部自动跟随，不需要一长串 !important 选择器。
+   --ad-veil 是薄纱的颜色（浅底用白、暗底用近黑），--ad-scrim 由「界面不透明度」滑杆控制，
+   只盖界面行、不盖正文区（正文区保持全透明，这是路线"沉浸式"的前提）。 */
+.bg-tone-light {
+  --text-primary: #22201D;
+  --text-secondary: rgba(34, 32, 29, 0.88);
+  --text-muted: rgba(34, 32, 29, 0.68);
+  --border-light: rgba(60, 58, 54, 0.35);
+  --border-color: rgba(60, 58, 54, 0.45);
+  --ad-veil: 255, 255, 255;
+  --ad-shadow: 0 1px 2px rgba(255, 255, 255, 0.85);
+}
+.bg-tone-dark {
+  --text-primary: #F5F5F2;
+  --text-secondary: rgba(245, 245, 242, 0.90);
+  --text-muted: rgba(245, 245, 242, 0.72);
+  --border-light: rgba(255, 255, 255, 0.30);
+  --border-color: rgba(255, 255, 255, 0.40);
+  --ad-veil: 16, 18, 22;
+  --ad-shadow: 0 1px 3px rgba(0, 0, 0, 0.85);
+}
+.bg-tone-light, .bg-tone-dark {
+  background-color: rgba(var(--ad-veil), var(--ad-scrim, 0));
+  text-shadow: var(--ad-shadow);
+  transition: background-color var(--transition-fast), color var(--transition-fast);
+}
+/* 输入框/下拉这些自带底色的控件：跟着薄纱一起走，别在暗底上留一块亮 */
+.bg-tone-dark .find-input, .bg-tone-dark .prop-row input, .bg-tone-dark .prop-row select,
+.bg-tone-dark .my-toolbar-select {
+  background-color: rgba(20, 22, 26, 0.55) !important;
+  color: var(--text-primary) !important;
+  border-color: rgba(255, 255, 255, 0.28) !important;
+}
 /* 侧边栏跟随主题色，不参与自适应透明化 */
 body.adaptive-bg .sidebar::after { background: var(--ad-border-strong) !important; }
 body.adaptive-bg .sidebar-header { border-bottom: 1px solid var(--ad-border) !important; }
 body.adaptive-bg .sidebar-footer { border-top: 1px solid var(--ad-border) !important; }
 body.adaptive-bg .ql-toolbar.ql-snow {
-  background: var(--ad-toolbar-bg) !important;
   border-top: 1px solid var(--ad-border-strong) !important;
   border-bottom: 1px solid var(--ad-border-strong) !important;
 }
@@ -2013,6 +2047,13 @@ body[data-theme="dark"] {
 body.adaptive-bg .btn-solid-secondary {
   background: var(--ad-hover-bg) !important;
   color: var(--ad-text) !important;
+}
+/* 这几个 --ad-* 变量以前从没定义过，上面几条规则因此被浏览器整条丢弃（死代码）。
+   现在给它们真实含义：--ad-text 是"当文字用的主色"，--ad-hover-bg 是悬停底色，都跟随主题。 */
+body.adaptive-bg {
+  --ad-text: var(--text-primary);
+  --ad-hover-bg: rgba(var(--ad-veil, 128, 128, 128), 0.22);
+  --ad-border: var(--border-light);
 }
 
 .btn-danger {
