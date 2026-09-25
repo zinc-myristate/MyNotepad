@@ -9,8 +9,10 @@ a = Analysis(
     # 注：这里曾列 'pycparser.yacctab', 'pycparser.lextab' —— pycparser 3.x 已删除这两个模块
     # （实测 find_spec 为 None），保留只会让**每次构建都刷两行** `ERROR: Hidden import ... not found`，
     # 淹没真正缺失的 hiddenimport。故移除。
-    hiddenimports=['backend', 'desktop', 'pystray', 'docx', 'openpyxl', 'PIL', 'cryptography',
-                   'cv2', 'numpy'],
+    # PIL.ImageGrab 是**函数内导入**（截图那条路才需要）。PyInstaller 能扫到函数内 import，
+    # 但截图是第 10 轮的主功能，缺了它打包版会静默失效，所以显式列一份兜底。
+    hiddenimports=['backend', 'desktop', 'pystray', 'docx', 'openpyxl', 'PIL', 'PIL.ImageGrab',
+                   'cryptography', 'cv2', 'numpy'],
     hookspath=[],
     hooksconfig={},
     runtime_hooks=['pyi_rth_hideconsole.py'],
