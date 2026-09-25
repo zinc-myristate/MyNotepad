@@ -432,6 +432,41 @@ def crop_png(src_path, box, dest_path):
         return False
 
 
+def clipboard_image_to_file(png_path):
+    """把剪贴板里的图片存成 PNG（给 OCR 用）。没有图片时返回 None。
+
+    剪贴板里可能是三种东西（`ImageGrab.grabclipboard` 的原样返回值）：
+      · PIL 图像（QQ/微信截图、画图里复制）
+      · 文件路径列表（在资源管理器里"复制"了一个图片文件）
+      · None（剪贴板里是文字/空的）
+    三种都要处理——用户说的"剪贴板里的图"这三种都算。
+    """
+    try:
+        from PIL import Image, ImageGrab
+    except Exception:
+        return None
+    try:
+        data = ImageGrab.grabclipboard()
+    except Exception:
+        return None
+    if data is None:
+        return None
+    if isinstance(data, list):
+        for name in data:
+            try:
+                with Image.open(name) as im:
+                    im.convert('RGB').save(png_path, 'PNG')
+                return png_path
+            except Exception:
+                continue
+        return None
+    try:
+        data.convert('RGB').save(png_path, 'PNG')
+        return png_path
+    except Exception:
+        return None
+
+
 def set_clipboard_image(png_path):
     """把一张图片放进系统剪贴板（`CF_DIB`）。成功 True，失败 False。
 

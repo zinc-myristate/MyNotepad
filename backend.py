@@ -2533,22 +2533,30 @@ class Api:
         return self.notes_update(note['id'], {
             'title': _first_line_title(body), 'notebook_id': notebook_id})
 
-    def capture_image(self, src_path, title=None):
+    def capture_image(self, src_path, title=None, body=None):
         """把一张图（截图）存成收件箱里的新笔记，并把图复制进附件目录。
 
         走的是既有的附件机制（`attachments/<note_id>/`），所以导出/备份/复制笔记全都照常可用。
+
+        `body` 用于第 11 轮的「识别文字」：文字接在图片下面（图保留，方便回头核对识别得对不对）；
+        给了 body 又没给 title 时，标题取正文第一行——比"截图 2026-09-25 22:15"有用得多。
         """
         try:
             if not src_path or not os.path.isfile(src_path):
                 return None
             notebook_id = _find_or_create_notebook(INBOX_NOTEBOOK)
-            name = title or ('截图 %s' % datetime.now().strftime('%Y-%m-%d %H:%M'))
+            extra = (body or '').strip()
+            name = title or (_first_line_title(extra) if extra
+                             else ('截图 %s' % datetime.now().strftime('%Y-%m-%d %H:%M')))
             note = self.notes_create()
             saved = self.file_copy_to_note(src_path, note['id'], 'image')
             if not saved or not saved.get('filename'):
                 return None
             rel = 'attachments/%s/%s' % (note['id'], saved['filename'])
-            self.notes_update(note['id'], {'content': '![%s](%s)\n' % (name, rel)})
+            content = '![%s](%s)\n' % (name, rel)
+            if extra:
+                content += '\n' + extra + '\n'
+            self.notes_update(note['id'], {'content': content})
             return self.notes_update(note['id'], {'title': name, 'notebook_id': notebook_id})
         except Exception:
             applog.get_logger().exception("截图捕获失败")

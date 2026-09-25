@@ -142,7 +142,7 @@ const ALL_PANEL_IDS = [
   'version-preview-panel','reminder-panel','reminder-list-panel','trash-panel',
   'password-panel','password-verify-panel',
   'math-panel','calendar-panel','divider-panel','sticker-panel','paper-panel',
-  'link-panel','icon-preview-panel','quick-switch-panel',
+  'link-panel','icon-preview-panel','quick-switch-panel','ocr-panel',
 ];
 
 export function closeAllPanels() {

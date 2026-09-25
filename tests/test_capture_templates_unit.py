@@ -252,12 +252,18 @@ def test_bridge_signatures_accept_the_arguments_js_passes(app_ns):
         'clipboard_capture': 0,
         'daily_note_open': 0,
         'capture_text': 1,
-        'capture_image': 1,
+        'capture_image': 3,          # capture_image(path, title, body) —— 第 11 轮加了 body
         'template_render': 2,
         'template_update': 2,
         'template_create': 2,
         'notes_create_from_template': 3,
         'file_copy_to_note': 3,
+        # 第 11 轮：OCR
+        'ocr_languages': 0,
+        'ocr_recognize': 2,
+        'ocr_pick_image': 0,
+        'ocr_clipboard_image': 0,
+        'ocr_release': 1,
     }
     api_cls = app_ns['AppApi']
     bad = []
@@ -316,3 +322,65 @@ def test_json_payload_passed_to_main_window_is_serialisable():
     seg = src.split('def _capture_commit')[1].split('def _capture_end')[0]
     assert 'json.dumps(result.get(\'saved\') or {})' in seg
     json.dumps({'id': 'x', 'filename': 'a.png', 'storedPath': 'C:/x/a.png'})
+
+
+# ---------------- 第 11 轮：识别文字（OCR）的接线 ----------------
+
+def test_ocr_module_wired_into_frontend():
+    main = _read('renderer/js/app/00-main.js')
+    boot = _read('renderer/js/app/09-boot.js')
+    assert '29-ocr.js' in main, 'OCR 模块没有被入口 import'
+    assert 'initOcr' in boot and 'initOcr()' in boot, 'initOcr 没有在 09-boot 里调用'
+    core = _read('renderer/js/app/01-core.js')
+    assert "'ocr-panel'" in core, '新面板必须登记进 ALL_PANEL_IDS（否则"关闭所有面板"漏掉它）'
+
+
+def test_ocr_panel_dom_and_entries():
+    html = _read('renderer/index.html')
+    for el in ('ocr-panel', 'ocr-thumb', 'ocr-lang', 'ocr-status', 'ocr-retry',
+               'ocr-text', 'ocr-hint', 'ocr-insert', 'ocr-copy', 'ocr-note', 'ocr-cancel',
+               'cap-ocr-file', 'cap-ocr-clipboard'):
+        assert 'id="%s"' % el in html, 'index.html 缺少 #%s' % el
+    css = _read('renderer/style.css')
+    for sel in ('.ocr-dialog', '.ocr-thumb', '.ocr-lang', '.ocr-status', '.ocr-text',
+                '.ocr-actions'):
+        assert sel in css, 'style.css 缺少 %s' % sel
+    # 图标必须走图标库（UI 里不许出现 emoji 当图标）
+    icons = _read('renderer/js/shared/icons.js')
+    assert 'ocr:' in icons
+    js = _read('renderer/js/app/29-ocr.js')
+    assert 'ICONS.ocr' in js
+    # 四个入口都要接上：截图工具条 / 选文件 / 剪贴板 / 图片右键
+    assert 'openFromCapture' in js and 'cap-ocr-file' in js
+    assert 'cap-ocr-clipboard' in js and 'ocr_clipboard_image' in js
+    assert 'contextmenu' in js and 'data-md-src' in js
+    overlay = _read('renderer/js/capture/overlay.js')
+    assert 'ocr:' in overlay and '识别文字' in overlay
+    assert 'data-act="ocr"' in _read('renderer/capture-overlay.html')
+
+
+def test_ocr_insert_keeps_image_and_puts_text_below():
+    """用户选定的行为：图保留、文字接在它下面（两条路各验一次）。"""
+    js = _read('renderer/js/app/29-ocr.js')
+    assert "'image-text'" in js, '图片+文字一起插要走 image-text 动作'
+    assert 'insertAfterExistingImage' in js, '图片已在笔记里时要插在它下面'
+    actions = _read('renderer/js/app/17-markdown-actions.js')
+    assert "case 'image-text'" in actions
+    # 富文本那条路：插完图片再把文字插到 embed 后面
+    assert 'insertImageResult' in js and 'insertText' in js
+
+
+def test_ocr_panel_reports_languages_and_remembers_choice():
+    js = _read('renderer/js/app/29-ocr.js')
+    assert 'ocr_languages' in js, '语言下拉必须列本机真实可用的引擎'
+    assert "LANG_KEY = 'ocr_language'" in js, '语言选择要记住（下次直接可用）'
+    assert 'settings_set' in js and 'settings_get' in js
+
+
+def test_ocr_selftest_entry_for_packaged_diagnostics():
+    """打包版要能一句话自检（`MyNotepad.exe --ocr-selftest <图>`）"""
+    app_src = _read('app.pyw')
+    assert "'--ocr-selftest' in sys.argv" in app_src
+    assert 'selftest_from_argv' in app_src
+    ocr_src = _read('ocr.py')
+    assert '--out' in ocr_src and '.ocr.json' in ocr_src

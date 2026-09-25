@@ -106,6 +106,26 @@ def test_capture_image_missing_file(api, backend_mod):
     assert api.capture_image('') is None
 
 
+def test_capture_image_with_ocr_body(tmp_path, api, backend_mod):
+    """第 11 轮：识别出的文字接在图片下面（图保留），标题取文字第一行"""
+    from PIL import Image
+    img = os.path.join(str(tmp_path), 'ocr.png')
+    Image.new('RGB', (60, 40), (250, 250, 250)).save(img)
+    note = api.capture_image(img, None, '第一行标题\n\n正文内容')
+    assert note is not None
+    assert note['title'] == '第一行标题', '给了正文就该拿正文第一行当标题'
+    body = api.notes_get(note['id'])['content']
+    assert body.startswith('!['), '图片在前'
+    assert body.index('第一行标题') > body.index('!['), '文字在图片下面'
+    assert '正文内容' in body
+    # 再确认图片真进了附件（不是只写了个路径）
+    files = api.attachments_list(note['id'])
+    assert files and files[0]['filename'] in body
+    # 没给正文时保持原样：标题还是"截图 时间"
+    note2 = api.capture_image(img)
+    assert note2['title'].startswith('截图 ')
+
+
 def test_capture_custom_notebook_name(api, backend_mod):
     note = api.capture_text('随手记', notebook_name='速记')
     nbs = {nb['name']: nb['id'] for nb in api.notebooks_list()}

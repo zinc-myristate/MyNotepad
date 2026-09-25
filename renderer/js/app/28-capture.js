@@ -172,6 +172,8 @@ export function initCapture() {
     if (ev.target.closest && ev.target.closest('#capture-menu')) return;
     toggleMenu(false);
   });
+  // 别的模块（如识别文字）从菜单里跳去开自己的面板时，让菜单先收起来
+  document.addEventListener('myapp:capture-menu-close', () => toggleMenu(false));
   document.addEventListener('keydown', (ev) => {
     if (ev.key === 'Escape' && _open) toggleMenu(false);
   });

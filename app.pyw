@@ -31,8 +31,17 @@ import tkinter.messagebox
 import desktop          # 托盘常驻 / 开机自启 / 提醒守护（见 desktop.py）
 import json
 import base64
+import ocr              # 图片文字识别（Windows 内置 OCR，见 ocr.py）
 import tempfile
 import time
+
+# 打包版的 OCR 自检：`MyNotepad.exe --ocr-selftest <图片> [语言] [--out 结果.json]`。
+# 必须在**创建窗口之前**处理并退出——这条路的用途正是"窗口起不来/点了没反应时"排查
+# 系统 OCR 语言包与 winrt 运行时到底在不在。
+if '--ocr-selftest' in sys.argv:
+    sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+    import ocr
+    raise SystemExit(ocr.selftest_from_argv(sys.argv))
 
 # PyInstaller 兼容
 if getattr(sys, 'frozen', False):
@@ -309,8 +318,8 @@ class AppApi:
     def daily_note_open(self): return self.backend.daily_note_open()
     def capture_text(self, text, notebook_name=None):
         return self.backend.capture_text(text, notebook_name)
-    def capture_image(self, src_path, title=None):
-        return self.backend.capture_image(src_path, title)
+    def capture_image(self, src_path, title=None, body=None):
+        return self.backend.capture_image(src_path, title, body)
 
     def clipboard_capture(self):
         """读系统剪贴板文本并捕获成笔记（剪贴板只在 Python 侧读，前端不碰）"""
@@ -341,6 +350,13 @@ class AppApi:
     def capture_mini_submit(self, text, keep_open=False):
         return _mini_submit(text, keep_open)
     def capture_mini_close(self): return _mini_close()
+
+    # 第 11 轮：图片文字识别（OCR）。识别本身在 ocr.py，这里只做桥接与临时文件管理
+    def ocr_languages(self): return ocr.languages_info()
+    def ocr_recognize(self, path, lang=None): return ocr.recognize(path, lang)
+    def ocr_pick_image(self): return pick_image_file()
+    def ocr_clipboard_image(self): return _ocr_clipboard_image()
+    def ocr_release(self, path): return _ocr_release(path)
 
     def export_table_csv(self, note_ids=None):
         """导出表格为 CSV（对话框在这一层，写文件在后端——与其它导出同一条规矩）"""
@@ -1361,6 +1377,30 @@ def _temp_png(tag):
                         'mynotepad_%s_%d.png' % (tag, int(time.time() * 1000)))
 
 
+def _ocr_clipboard_image():
+    """剪贴板里的图片 → 临时 PNG（给 OCR 用）；剪贴板里没有图返回 None。
+
+    只允许写进系统临时目录且文件名带 `mynotepad_` 前缀——`_ocr_release` 会按这个前缀
+    判断"这是我自己的临时文件"，绝不删用户的东西。
+    """
+    path = _temp_png('ocr_clip')
+    return desktop.clipboard_image_to_file(path)
+
+
+def _ocr_release(path):
+    """识别面板用完临时图后清掉它（只认自己造的临时文件）"""
+    try:
+        p = os.path.abspath(path or '')
+        tmp = os.path.realpath(tempfile.gettempdir())
+        if (p.startswith(tmp) and os.path.basename(p).startswith('mynotepad_')
+                and os.path.isfile(p)):
+            os.remove(p)
+            return True
+    except OSError:
+        pass
+    return False
+
+
 def _cleanup_files(*paths):
     for p in paths:
         if not p:
@@ -1529,11 +1569,17 @@ def _capture_commit(action, rect=None, viewport=None):
     shot = _temp_png('shot')
     if not desktop.crop_png(_capture['full'], box, shot):
         return {'ok': False, 'error': '裁剪失败'}
+    keep_shot = False
     try:
         if action == 'clipboard':
             result['ok'] = bool(desktop.set_clipboard_image(shot))
             if not result['ok']:
                 result['error'] = '写入剪贴板失败'
+        elif action == 'ocr':
+            # 识别要在**主窗**里弹面板让人过一眼，所以这张裁剪图得留给前端用，
+            # 不能像别的动作那样用完即删（前端用完调 ocr_release 删掉）
+            keep_shot = True
+            result['path'] = shot
         elif action == 'note':
             note = backend_api.capture_image(shot)
             if not note:
@@ -1564,7 +1610,7 @@ def _capture_commit(action, rect=None, viewport=None):
             applog.get_logger().exception("截图提交失败")
         except Exception:
             pass
-    _cleanup_files(shot)
+    _cleanup_files(shot) if not keep_shot else None
     # 失败时**不收窗**：覆盖窗一关，用户就再也看不到失败原因了（只能重截一次）
     if result.get('ok'):
         _capture_end(restore=True)
@@ -1573,6 +1619,9 @@ def _capture_commit(action, rect=None, viewport=None):
             _eval_main('window.__capture && window.__capture.insertImage(%s, %s, %s)'
                        % (json.dumps(result['rel']), json.dumps(result.get('saved') or {}),
                           json.dumps(note_id or '')))
+        elif action == 'ocr':
+            _eval_main('window.__ocr && window.__ocr.openFromCapture(%s, %s)'
+                       % (json.dumps(shot), json.dumps(note_id or '')))
         elif action == 'note' and result.get('id'):
             _eval_main('window.__capture && window.__capture.afterExternalCapture(%s, true)'
                        % json.dumps(result['id']))

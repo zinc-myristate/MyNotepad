@@ -11,6 +11,18 @@ openpyxl==3.1.5
 opencv-contrib-python==5.0.0.93   # 仅供「自定义图标」智能裁切；缺失会降级居中裁切
 numpy==2.4.6
 pystray==0.19.5           # 系统托盘常驻（关窗后提醒仍生效）；PyInstaller 自带 hook-pystray
+# 图片文字识别（第 11 轮）：走 Windows 10/11 自带的 OCR，不联网、不下载模型。
+# winocr 是一层极薄的封装，winrt-* 是投影出来的 WinRT 运行时（缺一个就 import 失败）。
+# 识别用的是**系统已安装的语言包**（本机常见是 zh-Hans-CN / en-GB），
+# 没装对应语言包时界面会提示去「设置 → 时间和语言」添加，而不是静默失效。
+winocr==0.0.15
+winrt-runtime==3.2.1
+winrt-Windows.Foundation==3.2.1
+winrt-Windows.Foundation.Collections==3.2.1
+winrt-Windows.Globalization==3.2.1
+winrt-Windows.Graphics.Imaging==3.2.1
+winrt-Windows.Media.Ocr==3.2.1
+winrt-Windows.Storage.Streams==3.2.1
 
 # 测试依赖
 pytest==9.1.1

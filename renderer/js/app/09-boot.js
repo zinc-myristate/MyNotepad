@@ -16,6 +16,7 @@ import { initLinks } from './25-links.js';
 import { initTableView } from './26-table-view.js';
 import { initTemplates } from './27-templates.js';
 import { initCapture } from './28-capture.js';
+import { initOcr } from './29-ocr.js';
 import { loadNotes, previewHtmlFor, renderNoteList } from './03-notes.js';
 import { loadSettings } from './04-appearance.js';
 import { loadTagFilter } from './05-shell.js';
@@ -265,6 +266,7 @@ async function initApp() {
   initTableView();        // 表格视图
   initTemplates();        // 模板抽屉（第 10 轮）
   initCapture();          // 快速捕获菜单 + 跨窗口插入桥（第 10 轮）
+  initOcr();              // 图片文字识别（第 11 轮）
   // 字体/字号下拉同步
   syncFontSizeDisplay();
 

@@ -1223,6 +1223,36 @@ body.no-active-note .outline-drawer { display: none !important; }
   font-family: var(--font-mono, Consolas, monospace); font-size: 11.5px; line-height: 1.6;
 }
 
+/* ====== 识别文字（OCR）面板（第 11 轮）======
+   识别结果先给人看一眼：图 + 语言 + 状态在上，可改的文本在中间，落点在下面。 */
+.ocr-dialog { width: min(720px, 92vw); max-height: 86vh; }
+.ocr-top { display: flex; gap: 12px; align-items: flex-start; margin-bottom: 10px; }
+.ocr-thumb {
+  width: 168px; height: 108px; flex: 0 0 auto; object-fit: contain;
+  border: 1px solid var(--border-light, rgba(0,0,0,0.12)); border-radius: 8px;
+  background: var(--glass-bg-strong, rgba(0,0,0,0.05));
+}
+.ocr-meta { flex: 1; min-width: 0; display: flex; flex-direction: column; gap: 6px; }
+.ocr-lang-row { display: flex; align-items: center; gap: 8px; font-size: var(--font-size-xs, 12px); color: var(--text-muted); }
+.ocr-lang {
+  flex: 1; min-width: 0; padding: 5px 8px; border-radius: 6px;
+  border: 1px solid var(--border-color, rgba(0,0,0,0.14));
+  background: var(--input-bg, #fff); color: var(--text-primary);
+  font-family: var(--font-sans); font-size: var(--font-size-xs, 12px);
+}
+.ocr-status { font-size: 11.5px; color: var(--text-muted); min-height: 16px; }
+.ocr-status.ok { color: var(--accent-dark, #5b6a4f); }
+.ocr-status.warn { color: #B8844A; }
+.ocr-status.error { color: var(--danger, #C0392B); }
+.ocr-text {
+  width: 100%; height: 220px; resize: vertical; padding: 10px 12px; border-radius: 8px;
+  border: 1px solid var(--border-color, rgba(0,0,0,0.14));
+  background: var(--input-bg, #fff); color: var(--text-primary);
+  font-family: var(--font-sans); font-size: 13.5px; line-height: 1.7;
+}
+.ocr-hint { margin-top: 6px; font-size: 11.5px; color: var(--text-muted); }
+.ocr-actions { display: flex; gap: 8px; margin-top: 12px; flex-wrap: wrap; }
+
 /* Quill 代码块：Snow 主题自带深色底（#23241f），在纸质笔记本里太突兀，
    而且与 Markdown 预览的代码块长得不一样；统一成本应用的主题变量后，
    下面那套 hljs 配色才能在两个编辑器里都用同一份。 */

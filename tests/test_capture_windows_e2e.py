@@ -182,8 +182,8 @@ def test_overlay_selection_shows_toolbar_and_reports_css_pixels(tmp_path):
     assert r['ready'] == 1, '页面画完冻屏图后必须让 Python 显示窗口（否则白闪）'
     assert r['img_size'][0] == bridge.client[2] and r['img_size'][1] == bridge.client[3]
     assert r['bar_visible'] is True
-    assert json.loads(r['buttons']) == ['insert', 'note', 'clipboard', 'cancel']
-    assert r['has_svg'] == 4, '工具条图标必须来自统一图标库（不是 emoji/文字）'
+    assert json.loads(r['buttons']) == ['insert', 'note', 'ocr', 'clipboard', 'cancel']
+    assert r['has_svg'] == 5, '工具条图标必须来自统一图标库（不是 emoji/文字）'
     assert '插入当前笔记' in r['labels']
     # 120 × 100 CSS × 2 倍缩放 = 240 × 200 物理像素
     assert r['size_label'].replace(' ', '') == '240×200'

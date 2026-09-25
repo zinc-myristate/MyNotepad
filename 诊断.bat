@@ -77,5 +77,12 @@ if exist "%ROOT%data\error.log" (
   powershell -NoProfile -Command "Get-Content -Tail 15 -Encoding UTF8 '%ROOT%data\error.log'"
 )
 echo.
+echo ---- 8. 图片文字识别（OCR） ----
+python -c "import winocr" >nul 2>nul && echo   [v] winocr      || echo   [x] winocr 缺失（识别不可用）
+python -c "from winrt.windows.media.ocr import OcrEngine" >nul 2>nul && echo   [v] winrt       || echo   [x] winrt 缺失（识别不可用）
+python ocr.py 2>nul | findstr /C:"ready" /C:"zh-" /C:"en-"
+if errorlevel 1 echo   [?] 没能列出 OCR 语言：可能没装 winocr，或系统没装任何 OCR 语言包
+echo   提示：打包版可用 "MyNotepad.exe --ocr-selftest 图片.png" 单独自检（结果写在图片旁边的 .ocr.json）
+echo.
 echo ============ 诊断结束 ============
 pause

@@ -25,6 +25,7 @@ const magCtx = magCanvas.getContext('2d', { willReadFrequently: true });
 const BUTTONS = {
   insert: { icon: ICONS.insert, text: '插入当前笔记', primary: true },
   note: { icon: ICONS.plus, text: '存为新笔记' },
+  ocr: { icon: ICONS.ocr, text: '识别文字' },
   clipboard: { icon: ICONS.copy, text: '复制' },
   cancel: { icon: ICONS.close, text: '取消' },
 };

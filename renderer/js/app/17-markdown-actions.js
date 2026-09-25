@@ -95,6 +95,13 @@ export function applyMarkdownAction(action, payload = {}) {
     case 'image':
       doc.replaceSelection(`![${payload.name || ''}](${payload.path || 'attachments/'})`);
       break;
+    // 图片 + 紧跟其后的文字（第 11 轮 OCR：图在上、识别出的文字在下）
+    case 'image-text': {
+      const img = `![${payload.name || ''}](${payload.path || 'attachments/'})`;
+      const text = (payload.text || '').trim();
+      insertBlock(cm, '\n' + img + (text ? '\n\n' + text : '') + '\n');
+      break;
+    }
     case 'attachment':
       doc.replaceSelection(`[📎 ${payload.name || '附件'}](${payload.path || 'attachments/'})`);
       break;
