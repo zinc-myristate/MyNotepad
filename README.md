@@ -26,6 +26,7 @@
 | 🧮 数学公式 | KaTeX 行内/块级公式，点击可编辑 |
 | 📤 导出 | HTML / TXT / DOCX / XLSX / PDF（系统打印）/ **Markdown**（图片自动复制到同级 `.assets/`）/ **导入 Markdown** / **一键全库备份 ZIP** / **按笔记本或标签导出**（解压即可作为独立库打开） |
 | 📥 快速捕获 | 侧栏「捕获」菜单：**截图选区**（框选 → 插入当前笔记 / 存为新笔记 / 复制，带像素放大镜）/ **剪贴板文本** →「收件箱」/ **今日日记**（幂等，套「日记」模板）/ **迷你记录窗**（`Ctrl+Alt+S` 全局唤起，Enter 收进收件箱，不抢焦点）/ **模板**（`{{date}} {{time}} {{weekday}} {{title}}`，抽屉里可视化编辑 + 变量预览） |
+| 🔍 识别文字 | **Windows 自带 OCR**（不联网不下模型）：截图工具条 / 捕获菜单「识别图片…」「识别剪贴板图片」/ 笔记里图片**右键**四个入口；识别完先弹面板可改可换语言（记住选择），再选「插入当前笔记（图保留、文字接在它下面）/ 复制 / 存为新笔记」；中文逐字去空格、按行距还原段落，小图自动放大重试 |
 | 🎙 其他 | 语音输入（Web Speech API zh-CN）、日历面板、自定义应用图标（显著性智能裁切 + Win11 大圆角）、**复制笔记**（含附件文件） |
 
 ## 技术架构
@@ -39,7 +40,7 @@
 | Markdown 栈 | markdown-it（渲染）+ CodeMirror 5（源码编辑）+ DOMPurify（消毒）+ highlight.js（代码高亮），全部离线自带、无 CDN |
 | 加密 | `cryptography`（AES-256-GCM） |
 | 打包 | PyInstaller（`MyNotepad.spec`） |
-| 测试 | pytest（466 单测 + 76 无头 E2E） |
+| 测试 | pytest（498 单测 + 81 无头 E2E） |
 
 ## 快速开始
 
@@ -76,7 +77,7 @@ pyinstaller MyNotepad.spec   # 产物在 dist/MyNotepad/
 ## 测试
 
 ```bash
-py -3.14 -m pytest                 # 466 单测（自动隔离临时数据目录）
+py -3.14 -m pytest                 # 498 单测（自动隔离临时数据目录）
 py -3.14 -m pytest -m e2e          # 64 无头 pywebview 端到端
 python -m ruff check .             # 代码检查（配置见 pyproject.toml）
 ```
