@@ -400,15 +400,19 @@ async function loadDesktopSettings() {
   const chkTray = $('#chk-tray');
   const chkAuto = $('#chk-autostart');
   const chkHotkey = $('#chk-hotkey');
+  const chkCapHotkey = $('#chk-capture-hotkey');
   const rowAuto = $('#row-autostart');
   const rowHotkey = $('#row-hotkey');
+  const rowCapHotkey = $('#row-capture-hotkey');
   const hint = $('#autostart-hint');
   const hkHint = $('#hotkey-hint');
+  const capHint = $('#capture-hotkey-hint');
   try {
     const st = await window.pywebview.api.desktop_status();
     chkTray.checked = !!st.tray;
     chkAuto.checked = !!st.autostart;
     chkHotkey.checked = !!st.hotkey;
+    if (chkCapHotkey) chkCapHotkey.checked = !!st.capture_hotkey;
     const ok = !!st.autostart_supported;
     rowAuto.classList.toggle('disabled', !ok);
     chkAuto.disabled = !ok;
@@ -421,10 +425,33 @@ async function loadDesktopSettings() {
         ? '任意界面按 Ctrl+Alt+N：叫出窗口并新建笔记'
         : '（仅 Windows 可用）';
     }
+    const capOk = !!st.capture_hotkey_supported;
+    if (rowCapHotkey) rowCapHotkey.classList.toggle('disabled', !capOk);
+    if (chkCapHotkey) chkCapHotkey.disabled = !capOk;
+    if (capHint) {
+      capHint.textContent = capOk
+        ? '任意界面按 Ctrl+Alt+S：弹一个小输入框，Enter 收进「收件箱」'
+        : '（仅 Windows 可用）';
+    }
   } catch (e) {
     if (hint) hint.textContent = '（读取失败）';
   }
 }
+
+$('#chk-capture-hotkey')?.addEventListener('change', async (e) => {
+  try {
+    const actual = await window.pywebview.api.set_capture_hotkey_enabled(e.target.checked);
+    if (e.target.checked && !actual) {
+      showToast('Ctrl+Alt+S 注册失败（可能被其他程序占用）', { type: 'warn' });
+      e.target.checked = false;
+    } else {
+      showToast(actual ? '已启用：Ctrl+Alt+S 弹出快速记录窗' : '已关闭快速记录窗热键', { type: 'info' });
+    }
+  } catch (err) {
+    showToast('设置失败：' + err, { type: 'error' });
+    await loadDesktopSettings();
+  }
+});
 
 $('#chk-hotkey').addEventListener('change', async (e) => {
   try {

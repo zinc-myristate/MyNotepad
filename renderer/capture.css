@@ -1,0 +1,171 @@
+/* ====== 捕获窗口样式（第 10 轮）======
+   覆盖窗与迷你窗共用一份：两者都是**独立窗口**（各自的 HTML 页面），不继承主界面的
+   style.css——那份文件依赖主界面的 CSS 变量与主题切换，而这两个窗口是临时的、
+   始终深色的。共用一个文件是因为它们的基调完全一样（无边框深色小窗 + 一个强调色按钮）。 */
+
+* { box-sizing: border-box; }
+
+:root {
+  --cap-bg: #1B1D1F;
+  --cap-fg: #F2F3F4;
+  --cap-muted: rgba(242, 243, 244, 0.62);
+  --cap-line: rgba(255, 255, 255, 0.14);
+  --cap-btn: rgba(255, 255, 255, 0.09);
+  --cap-btn-hover: rgba(255, 255, 255, 0.16);
+  --cap-accent: #7D8A6E;
+  --cap-accent-fg: #FFFFFF;
+}
+
+html, body {
+  margin: 0; padding: 0; height: 100%; width: 100%;
+  overflow: hidden;
+  background: var(--cap-bg);
+  color: var(--cap-fg);
+  font-family: "Microsoft YaHei UI", "Segoe UI", system-ui, sans-serif;
+  user-select: none;
+  -webkit-user-select: none;
+}
+
+/* ====== 截图覆盖窗 ====== */
+body.ov { cursor: crosshair; }
+
+.ov-shot {
+  position: absolute; left: 0; top: 0;
+  /* 宽高与偏移由 JS 按「图片物理原点 vs 客户区物理原点」算出来：
+     正常情况就是 100% 铺满；万一显示图是整屏图（裁剪失败），它会被摆到真实的屏幕位置上。 */
+  image-rendering: auto;
+  pointer-events: none;
+  -webkit-user-drag: none;
+}
+
+.ov-sel {
+  position: absolute; z-index: 2;
+  border: 1px solid rgba(255, 255, 255, 0.9);
+  /* 选区外压暗：一个 9999px 的投影，比铺四个遮罩块省事且永远不会有 1px 缝隙 */
+  box-shadow: 0 0 0 9999px rgba(0, 0, 0, 0.45);
+  cursor: move;
+}
+.ov-sel.hidden { display: none; }
+
+.ov-size {
+  position: absolute; left: -1px; top: -24px;
+  padding: 2px 7px; border-radius: 5px;
+  background: rgba(0, 0, 0, 0.72); color: #fff;
+  font-size: 11.5px; font-variant-numeric: tabular-nums;
+  white-space: nowrap;
+}
+.ov-size.inside { top: 4px; left: 4px; }
+
+.ov-handle {
+  position: absolute; width: 9px; height: 9px;
+  background: #fff; border: 1px solid rgba(0, 0, 0, 0.45);
+  border-radius: 2px;
+}
+.ov-handle[data-h="nw"] { left: -5px; top: -5px; cursor: nwse-resize; }
+.ov-handle[data-h="n"]  { left: calc(50% - 4.5px); top: -5px; cursor: ns-resize; }
+.ov-handle[data-h="ne"] { right: -5px; top: -5px; cursor: nesw-resize; }
+.ov-handle[data-h="e"]  { right: -5px; top: calc(50% - 4.5px); cursor: ew-resize; }
+.ov-handle[data-h="se"] { right: -5px; bottom: -5px; cursor: nwse-resize; }
+.ov-handle[data-h="s"]  { left: calc(50% - 4.5px); bottom: -5px; cursor: ns-resize; }
+.ov-handle[data-h="sw"] { left: -5px; bottom: -5px; cursor: nesw-resize; }
+.ov-handle[data-h="w"]  { left: -5px; top: calc(50% - 4.5px); cursor: ew-resize; }
+
+.ov-mag {
+  position: absolute; z-index: 4; pointer-events: none;
+  display: flex; flex-direction: column; align-items: center; gap: 2px;
+  padding: 3px; border-radius: 8px;
+  background: rgba(0, 0, 0, 0.78);
+  box-shadow: 0 4px 14px rgba(0, 0, 0, 0.4);
+}
+.ov-mag.hidden { display: none; }
+#mag-canvas {
+  display: block; border-radius: 5px;
+  image-rendering: pixelated;
+}
+.ov-mag-hex {
+  font-family: Consolas, "Courier New", monospace;
+  font-size: 11px; color: #fff; letter-spacing: 0.04em;
+}
+
+.ov-hint {
+  position: absolute; z-index: 5; left: 50%; top: 18px; transform: translateX(-50%);
+  padding: 6px 14px; border-radius: 999px;
+  background: rgba(0, 0, 0, 0.62); color: rgba(255, 255, 255, 0.92);
+  font-size: 12.5px; white-space: nowrap;
+  transition: opacity 0.2s ease;
+}
+.ov-hint.dim { opacity: 0; }
+
+.ov-bar {
+  position: absolute; z-index: 6;
+  display: flex; flex-wrap: wrap; align-items: center; gap: 4px;
+  padding: 5px 6px; border-radius: 10px;
+  background: rgba(24, 26, 28, 0.96);
+  border: 1px solid var(--cap-line);
+  box-shadow: 0 8px 22px rgba(0, 0, 0, 0.45);
+}
+.ov-bar.hidden { display: none; }
+.ov-bar-sep { width: 1px; height: 18px; background: var(--cap-line); margin: 0 2px; }
+.ov-btn {
+  display: inline-flex; align-items: center; gap: 5px;
+  padding: 6px 9px; border: none; border-radius: 7px; cursor: pointer;
+  background: var(--cap-btn); color: var(--cap-fg);
+  font-family: inherit; font-size: 12px; white-space: nowrap;
+  transition: background 0.12s ease;
+}
+.ov-btn:hover { background: var(--cap-btn-hover); }
+.ov-btn svg { flex: 0 0 auto; }
+.ov-btn.primary { background: var(--cap-accent); color: var(--cap-accent-fg); }
+.ov-btn.primary:hover { filter: brightness(1.08); }
+.ov-btn-ghost { background: transparent; color: var(--cap-muted); }
+.ov-btn-ghost:hover { background: var(--cap-btn); color: var(--cap-fg); }
+.ov-btn[disabled] { opacity: 0.45; cursor: default; }
+.ov-bar-msg {
+  flex-basis: 100%; padding: 3px 4px 1px; color: #F0A0A0; font-size: 11.5px;
+}
+.ov-bar-msg.hidden { display: none; }
+
+/* ====== 迷你捕获窗 ====== */
+body.mini {
+  display: flex; flex-direction: column;
+  border-radius: 10px;
+  background: var(--cap-bg);
+  border: 1px solid var(--cap-line);
+}
+.mini-head {
+  display: flex; align-items: center; gap: 8px;
+  padding: 7px 8px 6px 12px;
+  border-bottom: 1px solid var(--cap-line);
+  /* 无边框窗口靠这个类拖动（pywebview 的 DRAG_REGION_SELECTOR） */
+  cursor: default;
+}
+.mini-title { font-size: 12.5px; font-weight: 600; }
+.mini-hint { flex: 1; color: var(--cap-muted); font-size: 11px; }
+.mini-close {
+  display: inline-flex; align-items: center; justify-content: center;
+  width: 24px; height: 24px; padding: 0; border: none; border-radius: 6px;
+  background: transparent; color: var(--cap-muted); cursor: pointer;
+}
+.mini-close:hover { background: var(--cap-btn); color: var(--cap-fg); }
+.mini-input {
+  flex: 1; width: 100%; resize: none;
+  padding: 9px 12px; border: none; outline: none;
+  background: transparent; color: var(--cap-fg);
+  font-family: inherit; font-size: 13.5px; line-height: 1.6;
+  user-select: text; -webkit-user-select: text;
+}
+.mini-input::placeholder { color: rgba(242, 243, 244, 0.38); }
+.mini-foot {
+  display: flex; align-items: center; gap: 8px;
+  padding: 6px 10px 8px; border-top: 1px solid var(--cap-line);
+}
+.mini-status { flex: 1; color: var(--cap-muted); font-size: 11.5px; }
+.mini-status.ok { color: #A8C08A; }
+.mini-save {
+  display: inline-flex; align-items: center; gap: 6px;
+  padding: 6px 12px; border: none; border-radius: 8px; cursor: pointer;
+  background: var(--cap-accent); color: var(--cap-accent-fg);
+  font-family: inherit; font-size: 12.5px; font-weight: 500;
+}
+.mini-save:hover { filter: brightness(1.08); }
+.mini-save[disabled] { opacity: 0.5; cursor: default; filter: none; }

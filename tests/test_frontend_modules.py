@@ -20,6 +20,11 @@ from conftest import PROJECT_ROOT
 
 JS_DIR = os.path.join(PROJECT_ROOT, 'renderer', 'js')
 ENTRY = 'app/00-main.js'
+# 第十轮起有**多个**入口：主界面之外还有两个独立窗口（截图覆盖窗 / 迷你捕获窗），
+# 它们各有自己的 HTML 页面，不（也不该）被主界面的模块图 import。
+# 它们仍必须参与链接检查与引用检查，所以这里显式登记为入口，而不是把它们挪出扫描范围。
+EXTRA_ENTRIES = ['capture/overlay.js', 'capture/mini.js']
+ENTRIES = [ENTRY] + EXTRA_ENTRIES
 INDEX = os.path.join(PROJECT_ROOT, 'renderer', 'index.html')
 
 
@@ -292,7 +297,12 @@ def test_every_imported_name_is_exported_by_target():
 
 
 def test_no_orphan_modules():
-    """所有模块都必须能从入口沿 import 图到达，否则代码永不执行"""
+    """所有模块都必须能从某个入口沿 import 图到达，否则代码永不执行。
+
+    入口不止一个：主界面 + 两个捕获窗（见 EXTRA_ENTRIES 的说明）。它们各自被自己的
+    HTML 页面以 `<script type="module">` 引入——所以还要顺手锁住那两个页面确实引了模块，
+    否则把入口登记进来反而会掩盖"页面忘了挂脚本"（那样文件是死的，检查却是绿的）。
+    """
     seen = set()
 
     def visit(rel):
@@ -304,9 +314,18 @@ def test_no_orphan_modules():
             if target in MODULES:
                 visit(target)
 
-    visit(ENTRY)
+    for entry in ENTRIES:
+        assert entry in MODULES, '登记的入口模块不存在：%s' % entry
+        visit(entry)
     orphans = sorted(set(MODULES) - seen)
     assert not orphans, '存在孤儿模块（没有被任何模块 import，代码不会执行）：%r' % (orphans,)
+    for page, mod in (('capture-overlay.html', 'capture/overlay.js'),
+                      ('capture-mini.html', 'capture/mini.js')):
+        path = os.path.join(PROJECT_ROOT, 'renderer', page)
+        assert os.path.exists(path), '捕获窗口页面缺失：%s' % page
+        with open(path, encoding='utf-8') as fh:
+            html = fh.read()
+        assert 'js/%s' % mod in html, '%s 没有引入它自己的模块 %s' % (page, mod)
 
 
 def test_references_to_other_modules_exports_are_imported():

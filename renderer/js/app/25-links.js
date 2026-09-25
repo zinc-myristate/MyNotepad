@@ -161,6 +161,7 @@ export function initLinks() {
   $('#btn-links')?.addEventListener('click', () => toggleLinks());
   // 与大纲抽屉互斥（见 22-outline.js 的说明）
   document.addEventListener('myapp:outline-opened', () => toggleLinks(false));
+  document.addEventListener('myapp:templates-opened', () => toggleLinks(false));
   $('#links-close')?.addEventListener('click', () => toggleLinks(false));
   const list = $('#links-list');
   if (list) {

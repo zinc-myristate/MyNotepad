@@ -160,6 +160,7 @@ export function isOutlineVisible() {
 export function initOutline() {
   $('#btn-outline')?.addEventListener('click', () => toggleOutline());
   document.addEventListener('myapp:links-opened', () => toggleOutline(false));
+  document.addEventListener('myapp:templates-opened', () => toggleOutline(false));
   $('#outline-close')?.addEventListener('click', () => toggleOutline(false));
   $('#outline-list')?.addEventListener('click', (ev) => {
     const item = ev.target.closest('[data-outline]');

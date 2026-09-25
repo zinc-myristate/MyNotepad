@@ -205,12 +205,15 @@ class GlobalHotkey(threading.Thread):
     MOD_ALT, MOD_CONTROL, MOD_SHIFT, MOD_NOREPEAT = 0x0001, 0x0002, 0x0004, 0x4000
     WM_HOTKEY, WM_QUIT = 0x0312, 0x0012
     VK_N = 0x4E
+    VK_S = 0x53
 
-    def __init__(self, callback, vk=VK_N, mods=MOD_CONTROL | MOD_ALT):
+    def __init__(self, callback, vk=VK_N, mods=MOD_CONTROL | MOD_ALT, hotkey_id=1):
         super().__init__(daemon=True)
         self._callback = callback
         self._vk = vk
         self._mods = mods | self.MOD_NOREPEAT
+        # 每个热键一个 id：多个热键线程各自注册在同一进程里，id 撞了会互相顶掉
+        self._id = int(hotkey_id)
         self._tid = None
         self.started = False
         self.error = ''
@@ -224,7 +227,7 @@ class GlobalHotkey(threading.Thread):
             from ctypes import wintypes
             user32 = ctypes.windll.user32
             self._tid = ctypes.windll.kernel32.GetCurrentThreadId()
-            if not user32.RegisterHotKey(None, 1, self._mods, self._vk):
+            if not user32.RegisterHotKey(None, self._id, self._mods, self._vk):
                 self.error = '热键已被其他程序占用'
                 self._log('注册全局热键失败（可能被占用）')
                 return
@@ -236,7 +239,7 @@ class GlobalHotkey(threading.Thread):
                         self._callback()
                     except Exception:
                         self._log('全局热键回调失败')
-            user32.UnregisterHotKey(None, 1)
+            user32.UnregisterHotKey(None, self._id)
         except Exception:
             self.error = '注册异常'
             self._log('全局热键线程异常')
@@ -317,3 +320,176 @@ class ReminderWatcher(threading.Thread):
 
     def stop(self):
         self._stop.set()
+
+
+# ====== 截图 / 剪贴板图片（第 10 轮：快速捕获）======
+# 为什么整屏截图要这么费劲：WebView2 **不支持真正的透明窗口**（`transparent=True` 实测无效，
+# 窗口仍是不透明的），所以"半透明蒙层 + 实时看到桌面"这条路走不通。改成
+# 「先冻屏 → 覆盖窗显示这张冻屏图 → 在图上框选 → 按坐标从原图裁剪」：
+# 用户看到的与最终裁到的像素完全一致，而且覆盖窗本身可以是不透明窗口。
+
+# GetSystemMetrics 索引：虚拟屏幕（含所有显示器）的左上角与尺寸，**物理像素**
+_SM_XVIRTUALSCREEN, _SM_YVIRTUALSCREEN = 76, 77
+_SM_CXVIRTUALSCREEN, _SM_CYVIRTUALSCREEN = 78, 79
+
+
+def virtual_screen_rect():
+    """虚拟屏幕（所有显示器拼起来）的物理像素矩形 `(x, y, w, h)`；取不到返回 None。
+
+    多显示器时左上角可能是负数（副屏在主屏左边），所以原点必须带着走——
+    裁剪坐标是相对这张整屏图的，不能拿 (0,0) 当左上。
+    """
+    if not sys.platform.startswith('win'):
+        return None
+    try:
+        import ctypes
+        gsm = ctypes.windll.user32.GetSystemMetrics
+        x, y = int(gsm(_SM_XVIRTUALSCREEN)), int(gsm(_SM_YVIRTUALSCREEN))
+        w, h = int(gsm(_SM_CXVIRTUALSCREEN)), int(gsm(_SM_CYVIRTUALSCREEN))
+        if w <= 0 or h <= 0:
+            return None
+        return (x, y, w, h)
+    except Exception:
+        return None
+
+
+def grab_screen(path):
+    """把整个虚拟屏幕抓成 PNG 存到 `path`，返回 `(w, h)`；失败返回 None。
+
+    必须先让本应用窗口消失再抓（否则会把自己拍进去）——调用方负责先 hide + 等一小会儿。
+    """
+    try:
+        from PIL import ImageGrab
+    except Exception:
+        return None
+    try:
+        img = ImageGrab.grab(all_screens=True)
+        img.save(path, 'PNG')
+        return img.size
+    except Exception:
+        try:
+            import applog
+            applog.get_logger().exception("抓屏失败")
+        except Exception:
+            pass
+        return None
+
+
+def map_selection_to_image(rect, viewport, client, origin, image_size):
+    """纯函数：覆盖窗里的选区（CSS px）→ 图片里的像素矩形。
+
+    为什么不能直接拿选区当像素：窗口坐标是**逻辑**像素（本机 200% 缩放，物理 = 逻辑 × 2），
+    而冻屏图是物理像素。窗口客户区在屏幕上的物理矩形由 Win32 给出（GetClientRect +
+    ClientToScreen），于是「1 CSS px = 客户区物理宽 / 视口宽」，这一个比例同时吃掉了
+    DPI 缩放与边框补偿——比自己猜缩放系数可靠（spike 里窗口客户区比请求尺寸小了 13px，
+    正是靠这个比例兜住的）。
+
+    参数：
+      rect       —— 选区 (x, y, w, h)，CSS px
+      viewport   —— 覆盖窗视口 (w, h)，CSS px（JS 的 innerWidth/innerHeight）
+      client     —— 覆盖窗客户区的物理矩形 (x, y, w, h)
+      origin     —— 图片物理原点 (x, y)（虚拟屏幕左上角）
+      image_size —— 图片物理尺寸 (w, h)
+    返回 `(x, y, w, h)`（已裁进图内），参数不合法或选区太小则返回 None。
+    """
+    try:
+        rx, ry, rw, rh = (float(v) for v in rect)
+        vw, vh = (float(v) for v in viewport)
+        cx, cy, cw, ch = (float(v) for v in client)
+        ox, oy = (float(v) for v in origin)
+        iw, ih = (float(v) for v in image_size)
+    except (TypeError, ValueError):
+        return None
+    if min(vw, vh, cw, ch, iw, ih, rw, rh) <= 0:
+        return None
+    sx, sy = cw / vw, ch / vh
+    x0 = cx + rx * sx - ox
+    y0 = cy + ry * sy - oy
+    x1 = x0 + rw * sx
+    y1 = y0 + rh * sy
+    x0, y0 = max(0.0, x0), max(0.0, y0)      # 选区可能拖出窗口/屏幕一点点
+    x1, y1 = min(iw, x1), min(ih, y1)
+    left, top = int(round(x0)), int(round(y0))
+    right, bottom = int(round(x1)), int(round(y1))
+    if right - left < 2 or bottom - top < 2:  # 小于 2×2 物理像素等于没选（误点）
+        return None
+    return (left, top, right - left, bottom - top)
+
+
+def crop_png(src_path, box, dest_path):
+    """按像素矩形裁剪 PNG（box 来自 map_selection_to_image），成功返回 True。"""
+    try:
+        from PIL import Image
+        with Image.open(src_path) as im:
+            im.crop((box[0], box[1], box[0] + box[2], box[1] + box[3])).save(dest_path, 'PNG')
+        return True
+    except Exception:
+        try:
+            import applog
+            applog.get_logger().exception("裁剪截图失败")
+        except Exception:
+            pass
+        return False
+
+
+def set_clipboard_image(png_path):
+    """把一张图片放进系统剪贴板（`CF_DIB`）。成功 True，失败 False。
+
+    为什么要自己写：tkinter 只能处理文本剪贴板，图片得走 Win32。用 Pillow 存一份 BMP
+    **去掉 14 字节文件头**——剩下的正好就是 `CF_DIB` 要的 DIB（BITMAPINFOHEADER + 像素），
+    比手写位图结构靠谱得多。24 位无压缩，粘到 Word / 微信 / 画图里都是图。
+    """
+    if not sys.platform.startswith('win'):
+        return False
+    try:
+        import ctypes
+        import io
+
+        from PIL import Image
+
+        img = Image.open(png_path).convert('RGB')
+        buf = io.BytesIO()
+        img.save(buf, 'BMP')
+        data = buf.getvalue()[14:]           # 去文件头 = CF_DIB
+        if not data:
+            return False
+
+        user32 = ctypes.windll.user32
+        kernel32 = ctypes.windll.kernel32
+        # 64 位下必须声明返回/参数类型：HANDLE 不声明会被当成 32 位 int 截断（实测踩到）
+        kernel32.GlobalAlloc.restype = ctypes.c_void_p
+        kernel32.GlobalAlloc.argtypes = [ctypes.c_uint, ctypes.c_size_t]
+        kernel32.GlobalLock.restype = ctypes.c_void_p
+        kernel32.GlobalLock.argtypes = [ctypes.c_void_p]
+        kernel32.GlobalUnlock.argtypes = [ctypes.c_void_p]
+        kernel32.GlobalFree.restype = ctypes.c_void_p
+        kernel32.GlobalFree.argtypes = [ctypes.c_void_p]
+        user32.SetClipboardData.restype = ctypes.c_void_p
+        user32.SetClipboardData.argtypes = [ctypes.c_uint, ctypes.c_void_p]
+
+        if not user32.OpenClipboard(None):
+            return False
+        try:
+            user32.EmptyClipboard()
+            handle = kernel32.GlobalAlloc(0x0002, len(data))   # GMEM_MOVEABLE
+            if not handle:
+                return False
+            ptr = kernel32.GlobalLock(handle)
+            if not ptr:
+                kernel32.GlobalFree(handle)
+                return False
+            ctypes.memmove(ptr, data, len(data))
+            kernel32.GlobalUnlock(handle)
+            if not user32.SetClipboardData(8, handle):          # 8 = CF_DIB
+                kernel32.GlobalFree(handle)
+                return False
+            return True          # 成功后内存归剪贴板所有，**不能**再 GlobalFree
+        finally:
+            user32.CloseClipboard()
+    except Exception:
+        try:
+            import applog
+            applog.get_logger().exception("写入剪贴板图片失败")
+        except Exception:
+            pass
+        return False

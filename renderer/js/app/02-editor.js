@@ -311,10 +311,20 @@ async function handleImageFile(file) {
 async function insertImageFromPath(sourcePath) {
   const result = await window.pywebview.api.file_copy_to_note(sourcePath, state.activeNoteId, 'image');
   if (!result) return;
+  insertImageResult(result);
+}
 
+/**
+ * 把**已经复制好**的附件插进 Quill（`file_copy_to_note` 的返回值）。
+ *
+ * 单独抽出来是因为第十轮的截图走的是自己的路径：Python 侧已经把裁剪好的图复制进附件目录了，
+ * 这里再调一次 `file_copy_to_note` 就会存两份（复制笔记时多出一个孤儿附件）。
+ */
+export function insertImageResult(result) {
+  if (!result || !result.filename) return;
   // 在 Quill 中插入图片：只存引用（id/filename/storedPath），正文不再内嵌 base64
   //（渲染由 NoteImageBlot 异步 read_file_base64 完成）
-  const range = state.quill.getSelection(true);
+  const range = state.quill.getSelection(true) || { index: state.quill.getLength() };
   state.quill.insertEmbed(range.index, 'image', {
     id: result.id,
     filename: result.filename,

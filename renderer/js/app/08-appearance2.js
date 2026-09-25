@@ -2,7 +2,7 @@
 // ====== ESM 依赖（原先靠全局作用域与加载顺序隐式依赖，现显式声明）======
 import { $, $$, NotepadConfig, closePanel, dom, openPanel, showToast, state } from './01-core.js';
 import { notesStore } from './01b-store.js';
-import { renderNoteList, saveCurrentNote, selectNote } from './03-notes.js';
+import { loadNotes, renderNoteList, saveCurrentNote, selectNote } from './03-notes.js';
 import { verifyAndSelectNote } from './07-formula-security-dnd.js';
 import { updateNotebookCount } from './09-boot.js';
 import { buildDividerPanel, buildStickerGrid, setStickerCat } from '../quill/quill-deco.js';
@@ -302,6 +302,23 @@ function createCalDay(dayNum, extraClass, dateStr) {
 
 async function onCalendarDateClick(dateStr) {
   closePanel($('#calendar-panel'));
+  const now = new Date();
+  const todayStr = `${now.getFullYear()}-${String(now.getMonth()+1).padStart(2,'0')}-${String(now.getDate()).padStart(2,'0')}`;
+  // 今天走「每日笔记」（套「日记」模板 + 落「日记」笔记本 + 幂等），其它日期保持原样：
+  // 点过去的日期只会打开/新建"那天创建的笔记"，不会凭空按今天的模板生成一篇内容
+  if (dateStr === todayStr) {
+    try {
+      const note = await window.pywebview.api.daily_note_open();
+      if (note && note.id) {
+        await loadNotes();
+        await selectNote(note.id);
+        return;
+      }
+    } catch (e) {
+      showToast('打开今日日记失败：' + (e && e.message ? e.message : e), { type: 'error' });
+      return;
+    }
+  }
   // 查找当天创建的笔记
   const dayNotes = state.notes.filter(n => (n.created_at||'').startsWith(dateStr));
   if (dayNotes.length > 0) {

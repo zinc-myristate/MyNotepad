@@ -98,6 +98,11 @@ export function applyMarkdownAction(action, payload = {}) {
     case 'attachment':
       doc.replaceSelection(`[📎 ${payload.name || '附件'}](${payload.path || 'attachments/'})`);
       break;
+    // 模板 / 其它模块送进来的一整段 Markdown：也走「另起一段」，
+    // 否则从列表项里插入会被解析成列表内容（与表格同一个坑）
+    case 'insert-text':
+      if (payload.text) insertBlock(cm, '\n' + payload.text.replace(/\n?$/, '\n'));
+      break;
     default:
       break;
   }

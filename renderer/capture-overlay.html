@@ -1,0 +1,48 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>截图选区</title>
+<link rel="stylesheet" href="capture.css">
+</head>
+<body class="ov">
+
+  <!-- 冻屏图：整屏抓下来的那张（按客户区裁过）。它铺在窗口里当"桌面"，
+       所以框选看到的像素与最终裁出来的完全一致。 -->
+  <img id="shot" class="ov-shot" alt="" draggable="false">
+
+  <!-- 选区：内部透明，靠超大 box-shadow 把选区外压暗（不用四个遮罩块） -->
+  <div id="sel" class="ov-sel hidden">
+    <div id="sel-size" class="ov-size"></div>
+    <div class="ov-handle" data-h="nw"></div>
+    <div class="ov-handle" data-h="n"></div>
+    <div class="ov-handle" data-h="ne"></div>
+    <div class="ov-handle" data-h="e"></div>
+    <div class="ov-handle" data-h="se"></div>
+    <div class="ov-handle" data-h="s"></div>
+    <div class="ov-handle" data-h="sw"></div>
+    <div class="ov-handle" data-h="w"></div>
+  </div>
+
+  <!-- 像素放大镜（描边处取色） -->
+  <div id="mag" class="ov-mag hidden">
+    <canvas id="mag-canvas" width="136" height="136"></canvas>
+    <span id="mag-hex" class="ov-mag-hex">#000000</span>
+  </div>
+
+  <div id="hint" class="ov-hint">拖动鼠标框选区域　·　Esc 取消</div>
+
+  <!-- 选区旁的小工具条：框选完才出现 -->
+  <div id="bar" class="ov-bar hidden">
+    <button class="ov-btn" data-act="insert"></button>
+    <button class="ov-btn" data-act="note"></button>
+    <button class="ov-btn" data-act="clipboard"></button>
+    <span class="ov-bar-sep"></span>
+    <button class="ov-btn ov-btn-ghost" data-act="cancel"></button>
+    <div id="bar-msg" class="ov-bar-msg hidden"></div>
+  </div>
+
+  <script type="module" src="js/capture/overlay.js"></script>
+</body>
+</html>

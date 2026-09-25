@@ -1,0 +1,30 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>快速记录</title>
+<link rel="stylesheet" href="capture.css">
+</head>
+<body class="mini">
+
+  <!-- 顶部条：既是标题栏也是拖动区（pywebview 的 DRAG_REGION_SELECTOR = .pywebview-drag-region）。
+       窗口是 frameless + easy_drag=False，所以只有这个区域能拖动——若整窗可拖，
+       在输入框里选文字就会变成拖窗口。 -->
+  <div class="mini-head pywebview-drag-region">
+    <span class="mini-title">快速记录</span>
+    <span class="mini-hint">Enter 收进「收件箱」 · Ctrl+Enter 继续记 · Esc 关闭</span>
+    <button id="mini-close" class="mini-close" title="关闭 (Esc)"></button>
+  </div>
+
+  <textarea id="mini-input" class="mini-input" spellcheck="false"
+            placeholder="记点什么…（第一行会当标题，正文原样保留）"></textarea>
+
+  <div class="mini-foot">
+    <span id="mini-status" class="mini-status"></span>
+    <button id="mini-save" class="mini-save">收进收件箱</button>
+  </div>
+
+  <script type="module" src="js/capture/mini.js"></script>
+</body>
+</html>

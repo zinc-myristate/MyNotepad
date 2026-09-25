@@ -14,6 +14,8 @@ import { initFindBar } from './23-find-bar.js';
 import { initProperties } from './24-properties.js';
 import { initLinks } from './25-links.js';
 import { initTableView } from './26-table-view.js';
+import { initTemplates } from './27-templates.js';
+import { initCapture } from './28-capture.js';
 import { loadNotes, previewHtmlFor, renderNoteList } from './03-notes.js';
 import { loadSettings } from './04-appearance.js';
 import { loadTagFilter } from './05-shell.js';
@@ -261,6 +263,8 @@ async function initApp() {
   initProperties();       // 属性行（front-matter）
   initLinks();            // 双链抽屉
   initTableView();        // 表格视图
+  initTemplates();        // 模板抽屉（第 10 轮）
+  initCapture();          // 快速捕获菜单 + 跨窗口插入桥（第 10 轮）
   // 字体/字号下拉同步
   syncFontSizeDisplay();
 

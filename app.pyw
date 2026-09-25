@@ -30,6 +30,9 @@ import tkinter.filedialog
 import tkinter.messagebox
 import desktop          # 托盘常驻 / 开机自启 / 提醒守护（见 desktop.py）
 import json
+import base64
+import tempfile
+import time
 
 # PyInstaller 兼容
 if getattr(sys, 'frozen', False):
@@ -324,6 +327,21 @@ class AppApi:
             text = ''
         return self.backend.capture_text(text) if (text or '').strip() else None
 
+    def notes_create_from_template(self, template_id, title=None, notebook_name=None):
+        return self.backend.notes_create_from_template(template_id, title, notebook_name)
+
+    # 第 10 轮：截图选区覆盖窗 / 迷你捕获窗（实现在本文件下方，见「捕获窗口」一节）
+    def capture_begin(self, note_id=None): return _capture_begin(note_id)
+    def capture_overlay_info(self, viewport_w=None, viewport_h=None):
+        return _capture_overlay_info(viewport_w, viewport_h)
+    def capture_overlay_ready(self): return _capture_overlay_ready()
+    def capture_commit(self, action, rect=None, viewport=None):
+        return _capture_commit(action, rect, viewport)
+    def capture_mini_open(self): return _mini_open()
+    def capture_mini_submit(self, text, keep_open=False):
+        return _mini_submit(text, keep_open)
+    def capture_mini_close(self): return _mini_close()
+
     def export_table_csv(self, note_ids=None):
         """导出表格为 CSV（对话框在这一层，写文件在后端——与其它导出同一条规矩）"""
         try:
@@ -477,6 +495,9 @@ class AppApi:
             'autostart_supported': desktop.autostart_supported(),
             'hotkey': (self.backend.settings_get(HOTKEY_KEY) or '0') == '1',
             'hotkey_supported': sys.platform.startswith('win'),
+            # 第 10 轮：迷你捕获窗的独立热键（Ctrl+Alt+S，同样默认关）
+            'capture_hotkey': (self.backend.settings_get(CAPTURE_HOTKEY_KEY) or '0') == '1',
+            'capture_hotkey_supported': sys.platform.startswith('win'),
         }
 
     def set_hotkey_enabled(self, enabled):
@@ -484,6 +505,13 @@ class AppApi:
         apply = _HOTKEY_CTL.get('apply')
         if apply is not None:
             return apply(bool(enabled))     # 立即生效，返回是否真的注册上了
+        return bool(enabled)
+
+    def set_capture_hotkey_enabled(self, enabled):
+        self.backend.settings_set(CAPTURE_HOTKEY_KEY, '1' if enabled else '0')
+        apply = _CAPTURE_HOTKEY_CTL.get('apply')
+        if apply is not None:
+            return apply(bool(enabled))
         return bool(enabled)
 
     def set_tray_enabled(self, enabled):
@@ -1053,10 +1081,12 @@ def _clamp_window_geometry(w, h, x=None, y=None):
 _WIN_GEOM_KEY = 'window_geometry'
 TRAY_KEY = 'tray_enabled'      # '1'（默认）= 关闭窗口时驻留托盘
 HOTKEY_KEY = 'quick_hotkey'    # '1' = 启用全局快速记录热键（默认关，避免抢占系统热键）
+CAPTURE_HOTKEY_KEY = 'capture_hotkey'   # '1' = 启用迷你捕获窗热键 Ctrl+Alt+S（同样默认关）
 # 托盘/热键控制器：AppApi 只能看到桥接层，这些对象在下面创建，
 # 用字典做一次「后注册回调」（启动时还没创建 → 设置只落库，启动时读取即可）。
 _TRAY_CTL = {'apply': None}
 _HOTKEY_CTL = {'apply': None}
+_CAPTURE_HOTKEY_CTL = {'apply': None}
 
 
 def _load_saved_geometry(backend):
@@ -1215,6 +1245,436 @@ def _quit_from_tray():
         pass
 
 
+# ====== 捕获窗口：截图选区覆盖窗 + 迷你捕获窗（第 10 轮）======
+# 两个独立的小窗口，都只在需要时创建、用完就 destroy（不常驻：pywebview 的窗口没法真正"复用"，
+# 常驻一个隐藏窗口反而要在每次都清理它的状态）。
+#
+# 覆盖窗为什么是"冻屏图"而不是半透明蒙层：WebView2 **不支持真正的透明窗口**
+# （`transparent=True` 实测无效），半透明蒙层下面仍是自己的底色而不是桌面。所以改成
+# 「藏主窗 → 抓整个虚拟屏幕存 PNG → 覆盖窗显示这张图 → 按坐标从原图裁剪」，
+# 用户看到的与最终裁到的像素完全一致（详见 desktop.py 顶部说明）。
+_CAPTURE_TITLE = '我的记事本 · 截图选区'
+_MINI_TITLE = '我的记事本 · 快速记录'
+_OVERLAY_HTML = os.path.join(BASE_DIR, 'renderer', 'capture-overlay.html')
+_MINI_HTML = os.path.join(BASE_DIR, 'renderer', 'capture-mini.html')
+# 藏窗后等这么久再抓屏：DWM 把窗口撤下去有个过程，立刻抓会把自己拍进去（实测 0.12s 起稳定）
+_HIDE_SETTLE_SEC = 0.18
+
+_capture = {
+    'full': None,        # 冻屏整图（虚拟屏幕）临时文件
+    'view': None,        # 覆盖窗显示的那张（按客户区裁过）
+    'origin': None,      # 整图物理原点 (x, y)
+    'view_origin': None, # 显示图物理原点 (x, y)
+    'view_size': None,   # 显示图物理尺寸 (w, h)
+    'client': None,      # 覆盖窗客户区物理矩形 (x, y, w, h)（位置=摆过去之后的位置）
+    'image': None,       # 给覆盖窗的 data URI
+    'note_id': None,     # 开始截图时正在编辑的笔记（插入用）
+    'window': None,
+    'was_visible': False,
+}
+_mini = {'window': None}
+
+
+def _dpi_scale():
+    """系统 DPI 缩放（1.0 = 100%）。pywebview 的窗口坐标是**逻辑**像素，物理坐标要除以它。"""
+    try:
+        import ctypes
+        dpi = ctypes.windll.user32.GetDpiForSystem() or 96
+        return (dpi / 96.0) or 1.0
+    except Exception:
+        return 1.0
+
+
+def _client_rect_on_screen(title, timeout=1.5):
+    """按标题找窗口，返回其**客户区**在屏幕上的物理矩形 (x, y, w, h)。
+
+    为什么要等：覆盖窗的页面在**表单还没 Show 完**时就已经加载并回调 `capture_overlay_info`
+    了（WebView2 在构造表单的过程中就开始导航），那一刻 `FindWindowW` 找不到窗口 →
+    实测整次截图会因此作废（页面拿不到图就直接取消）。所以这里轮询等一小会儿。
+
+    为什么要客户区而不是请求的尺寸：pywebview 的 width/height 是窗口外框逻辑尺寸，
+    实际客户区会小一点（DWM 边框/阴影），而 DPI 换算又可能再差几个像素。
+    拿真实的客户区 + JS 的 innerWidth 一除，缩放与边框补偿一次算清（见 desktop.map_selection_to_image）。
+    """
+    deadline = time.time() + max(0.0, timeout)
+    while True:
+        rect = _client_rect_probe(title)
+        if rect:
+            return rect
+        if time.time() >= deadline:
+            return None
+        time.sleep(0.05)
+
+
+def _client_rect_probe(title):
+    try:
+        import ctypes
+        from ctypes import wintypes
+        user32 = ctypes.windll.user32
+        hwnd = user32.FindWindowW(None, title)
+        if not hwnd:
+            return None
+        rc = wintypes.RECT()
+        if not user32.GetClientRect(hwnd, ctypes.byref(rc)):
+            return None
+        pt = wintypes.POINT(0, 0)
+        if not user32.ClientToScreen(hwnd, ctypes.byref(pt)):
+            return None
+        w, h = int(rc.right - rc.left), int(rc.bottom - rc.top)
+        if w <= 0 or h <= 0:
+            return None
+        return (int(pt.x), int(pt.y), w, h)
+    except Exception:
+        return None
+
+
+def _focus_window(title):
+    """把某个窗口叫到前台（覆盖窗/迷你窗都要抢键盘焦点，否则 Esc/Enter 收不到）"""
+    try:
+        import ctypes
+        user32 = ctypes.windll.user32
+        hwnd = user32.FindWindowW(None, title)
+        if not hwnd:
+            return False
+        user32.SetForegroundWindow(hwnd)
+        return True
+    except Exception:
+        return False
+
+
+def _eval_main(js):
+    """让**主窗**的 JS 做点事（跨窗口通信只能这么走）。失败只记日志：内容已经落库了。"""
+    try:
+        window.evaluate_js(js)
+        return True
+    except Exception:
+        try:
+            import applog
+            applog.get_logger().exception("调用主窗 JS 失败")
+        except Exception:
+            pass
+        return False
+
+
+def _temp_png(tag):
+    return os.path.join(tempfile.gettempdir(),
+                        'mynotepad_%s_%d.png' % (tag, int(time.time() * 1000)))
+
+
+def _cleanup_files(*paths):
+    for p in paths:
+        if not p:
+            continue
+        try:
+            if os.path.isfile(p):
+                os.remove(p)
+        except OSError:
+            pass
+
+
+def _capture_begin(note_id=None):
+    """开始一次截图。返回 True 表示覆盖窗已创建（失败时主窗原样恢复）。"""
+    if _capture['window'] is not None:
+        return False                        # 已经在截了（连点两次不该冒出两个覆盖窗）
+    screen = desktop.virtual_screen_rect()
+    if not screen:
+        return False
+    was_visible = _window_visible()
+    if was_visible:
+        try:
+            window.hide()
+            time.sleep(_HIDE_SETTLE_SEC)    # 不睡这一下就会把记事本自己拍进图里
+        except Exception:
+            try:
+                import applog
+                applog.get_logger().exception("截图前隐藏主窗失败（会把自己拍进图里）")
+            except Exception:
+                pass
+    full = _temp_png('shot_full')
+    if not desktop.grab_screen(full):
+        _cleanup_files(full)
+        if was_visible:
+            _show_window()
+        return False
+    scale = _dpi_scale()
+    geo = {'width': max(200, int(screen[2] / scale)), 'height': max(100, int(screen[3] / scale)),
+           'x': int(screen[0] / scale), 'y': int(screen[1] / scale)}
+    try:
+        overlay = webview.create_window(
+            _CAPTURE_TITLE, _OVERLAY_HTML,
+            js_api=api,
+            width=geo['width'], height=geo['height'], x=geo['x'], y=geo['y'],
+            frameless=True, easy_drag=False, resizable=False, on_top=True,
+            focus=True, shadow=False, background_color='#000000', hidden=True)
+    except Exception:
+        _cleanup_files(full)
+        if was_visible:
+            _show_window()
+        try:
+            import applog
+            applog.get_logger().exception("创建截图覆盖窗失败")
+        except Exception:
+            pass
+        return False
+    if overlay is None:
+        _cleanup_files(full)
+        if was_visible:
+            _show_window()
+        return False
+    _capture.update({'full': full, 'view': None, 'origin': (screen[0], screen[1]),
+                     'view_origin': (screen[0], screen[1]),
+                     'view_size': (screen[2], screen[3]), 'client': None,
+                     'image': None, 'note_id': note_id, 'window': overlay,
+                     'was_visible': was_visible})
+    overlay.events.closed += _on_overlay_closed
+    return True
+
+
+def _on_overlay_closed():
+    """覆盖窗被外部关掉（Alt+F4 / 系统）时也要收尾，不留一个卡住的会话"""
+    if _capture['window'] is None:
+        return
+    _capture_end(restore=False)
+
+
+def _capture_overlay_info(viewport_w=None, viewport_h=None):
+    """覆盖窗 JS 索要冻屏图与映射参数（图片按 base64 data URI 过去）。
+
+    视口尺寸由页面**报上来**（`window.innerWidth/innerHeight`），不让 Python 反过来
+    `evaluate_js` 去问：桥接调用返回之前 JS 正等着结果，Python 再回调 JS 会互相等死
+    （e2e 里实测卡死几分钟）。它还有一个用处：**量不到客户区时当兜底**（×DPI 缩放）。
+
+    裁剪框恒为 `(0, 0, 客户区宽, 客户区高)`：窗口被摆在虚拟屏左上角，而整屏图的 (0,0) 就是
+    虚拟屏左上角。窗口比屏幕小一点（边框/DWM）时，直接拉伸会让像素与光标错开半格，
+    裁出来之后显示图就是 1:1 的，映射只剩一个缩放比例。
+    """
+    if not _capture['full'] or not os.path.isfile(_capture['full']):
+        return None
+    measured = _client_rect_on_screen(_CAPTURE_TITLE, timeout=1.5)
+    ox, oy = _capture['origin']
+    if measured:
+        cw, ch = measured[2], measured[3]
+    else:
+        # 兜底：按页面报的视口 × DPI 缩放推算（量不到也要让截图能用，只是可能有几像素错位）
+        cw = int(round(float(viewport_w or 0) * _dpi_scale()))
+        ch = int(round(float(viewport_h or 0) * _dpi_scale()))
+        if cw <= 0 or ch <= 0:
+            return None
+    client = (ox, oy, cw, ch)
+    view = _capture['full'].replace('_full.png', '_view.png')
+    box = (0, 0, cw, ch)
+    if desktop.crop_png(_capture['full'], box, view):
+        _capture['view'] = view
+        _capture['view_origin'] = (ox, oy)
+        _capture['view_size'] = (cw, ch)
+    else:
+        # 裁不动就退回整图：映射参数跟着退回，公式自己会兜住（宁可图大一圈，不能错位）
+        _capture['view'] = _capture['full']
+        _capture['view_origin'] = (ox, oy)
+        try:
+            from PIL import Image
+            with Image.open(_capture['full']) as im:
+                _capture['view_size'] = im.size
+        except Exception:
+            return None
+    try:
+        with open(_capture['view'], 'rb') as f:
+            _capture['image'] = 'data:image/png;base64,' + base64.b64encode(f.read()).decode('ascii')
+    except OSError:
+        return None
+    _capture['client'] = client
+    return {'image': _capture['image'], 'client': list(client),
+            'origin': list(_capture['view_origin']), 'size': list(_capture['view_size']),
+            'note_id': _capture['note_id'] or '',
+            'viewport': [viewport_w or 0, viewport_h or 0]}
+
+
+def _capture_overlay_ready():
+    """冻屏图已经在页面里画好了 → 现在才显示窗口（先显示会闪一下自己那块黑底）"""
+    overlay = _capture['window']
+    if overlay is None:
+        return False
+    try:
+        overlay.show()
+        overlay.restore()
+    except Exception:
+        return False
+    _focus_window(_CAPTURE_TITLE)
+    return True
+
+
+def _capture_box(rect, viewport):
+    """选区（CSS px）→ **整图**里的物理像素矩形，顺便把显示图坐标平移回整图"""
+    view_box = desktop.map_selection_to_image(
+        rect or (), viewport or (), _capture['client'],
+        _capture['view_origin'], _capture['view_size'])
+    if view_box is None:
+        return None
+    dx = _capture['view_origin'][0] - _capture['origin'][0]
+    dy = _capture['view_origin'][1] - _capture['origin'][1]
+    return (view_box[0] + dx, view_box[1] + dy, view_box[2], view_box[3])
+
+
+def _capture_commit(action, rect=None, viewport=None):
+    """覆盖窗把用户的选择交回来：insert / note / clipboard / cancel"""
+    action = (action or 'cancel').strip()
+    result = {'ok': True, 'action': action}
+    note_id = _capture['note_id']          # 收尾会把会话清空，插入要用的 id 得先留一份
+    if action == 'cancel':
+        _capture_end(restore=True)
+        return result
+    box = _capture_box(rect, viewport)
+    if box is None:
+        return {'ok': False, 'error': '选区太小了'}
+    shot = _temp_png('shot')
+    if not desktop.crop_png(_capture['full'], box, shot):
+        return {'ok': False, 'error': '裁剪失败'}
+    try:
+        if action == 'clipboard':
+            result['ok'] = bool(desktop.set_clipboard_image(shot))
+            if not result['ok']:
+                result['error'] = '写入剪贴板失败'
+        elif action == 'note':
+            note = backend_api.capture_image(shot)
+            if not note:
+                result['ok'] = False
+                result['error'] = '存成笔记失败'
+            else:
+                result['id'] = note.get('id')
+        elif action == 'insert':
+            if not note_id:
+                result['ok'] = False
+                result['error'] = '没有正在编辑的笔记'
+            else:
+                saved = backend_api.file_copy_to_note(shot, note_id, 'image')
+                if not saved or not saved.get('filename'):
+                    result['ok'] = False
+                    result['error'] = '保存截图附件失败'
+                else:
+                    result['rel'] = 'attachments/%s/%s' % (note_id, saved['filename'])
+                    result['saved'] = saved
+        else:
+            result['ok'] = False
+            result['error'] = '未知操作：' + action
+    except Exception as exc:
+        result['ok'] = False
+        result['error'] = str(exc)
+        try:
+            import applog
+            applog.get_logger().exception("截图提交失败")
+        except Exception:
+            pass
+    _cleanup_files(shot)
+    # 失败时**不收窗**：覆盖窗一关，用户就再也看不到失败原因了（只能重截一次）
+    if result.get('ok'):
+        _capture_end(restore=True)
+        # 窗口收掉之后再让主窗做插入/刷新：顺序反了会先看到笔记变化再看到窗口消失，观感很跳
+        if action == 'insert':
+            _eval_main('window.__capture && window.__capture.insertImage(%s, %s, %s)'
+                       % (json.dumps(result['rel']), json.dumps(result.get('saved') or {}),
+                          json.dumps(note_id or '')))
+        elif action == 'note' and result.get('id'):
+            _eval_main('window.__capture && window.__capture.afterExternalCapture(%s, true)'
+                       % json.dumps(result['id']))
+    return result
+
+
+def _capture_end(restore=True):
+    """收尾：销毁覆盖窗、删掉临时图、按需把主窗放回来"""
+    was_visible = _capture['was_visible']
+    overlay = _capture['window']
+    files = [_capture['full'], _capture['view']]
+    _capture.update({'window': None, 'image': None, 'full': None, 'view': None,
+                     'origin': None, 'view_origin': None, 'view_size': None,
+                     'client': None, 'note_id': None, 'was_visible': False})
+    _cleanup_files(*files)
+    if overlay is not None:
+        try:
+            overlay.destroy()
+        except Exception:
+            pass
+    if restore and was_visible:
+        _show_window()
+
+
+def _mini_open():
+    """迷你捕获窗：无边框小窗，Enter 落「收件箱」。返回 True 表示窗口可用。"""
+    mini = _mini['window']
+    if mini is not None:
+        try:
+            mini.show()
+            mini.restore()
+            _focus_window(_MINI_TITLE)
+            _eval_mini('window.__mini && window.__mini.focusInput()')
+            return True
+        except Exception:
+            _mini['window'] = None
+    work = _get_work_area() or (0, 0, 1280, 800)
+    w, h = 560, 168
+    x = int(work[0] + max(0, (work[2] - w) // 2))
+    y = int(work[1] + max(0, work[3] // 4))          # 靠上四分之一：离视线近，又不压住中间
+    try:
+        win = webview.create_window(
+            _MINI_TITLE, _MINI_HTML, js_api=api,
+            width=w, height=h, x=x, y=y,
+            frameless=True, easy_drag=False, resizable=False, on_top=True,
+            focus=True, shadow=True, background_color='#000000')
+    except Exception:
+        try:
+            import applog
+            applog.get_logger().exception("创建迷你捕获窗失败")
+        except Exception:
+            pass
+        return False
+    if win is None:
+        return False
+    _mini['window'] = win
+    win.events.closed += _on_mini_closed
+    return True
+
+
+def _on_mini_closed():
+    _mini['window'] = None
+
+
+def _eval_mini(js):
+    mini = _mini['window']
+    if mini is None:
+        return False
+    try:
+        mini.evaluate_js(js)
+        return True
+    except Exception:
+        return False
+
+
+def _mini_submit(text, keep_open=False):
+    """迷你窗提交：落「收件箱」；keep_open=True（Ctrl+Enter）留着继续记下一条。
+
+    刻意**不**把主窗叫到前台：捕获是"记一下就走"，抢焦点等于打断用户正在做的事。
+    主窗的列表用 JS 悄悄刷新一下，等用户切回去时东西已经在了。
+    """
+    body = (text or '').strip()
+    note = backend_api.capture_text(body) if body else None
+    if note and note.get('id'):
+        _eval_main('window.__capture && window.__capture.afterExternalCapture(%s, false)'
+                   % json.dumps(note['id']))
+    if not keep_open:
+        _mini_close()
+    return {'ok': bool(note), 'id': (note or {}).get('id')}
+
+
+def _mini_close():
+    mini = _mini['window']
+    _mini['window'] = None
+    if mini is not None:
+        try:
+            mini.destroy()
+        except Exception:
+            pass
+    return True
+
+
 _tray = None
 _watcher = None
 
@@ -1298,11 +1758,52 @@ def _apply_hotkey_setting(enabled):
 
 _HOTKEY_CTL['apply'] = _apply_hotkey_setting
 
+
+# ----- 迷你捕获窗的全局热键（Ctrl+Alt+S）-----
+# 与上面那个是**两个独立热键**：Ctrl+Alt+N 是"叫出主窗并新建笔记"，这个只弹一个不抢主窗的
+# 小输入框。合成一个会让老用户熟悉的行为变样，也让"想安静记一句"的人被迫看到整个窗口。
+_capture_hotkey = None
+
+
+def _open_capture_mini():
+    try:
+        _mini_open()
+    except Exception:
+        try:
+            import applog
+            applog.get_logger().exception("全局热键打开捕获窗失败")
+        except Exception:
+            pass
+
+
+def _apply_capture_hotkey_setting(enabled):
+    global _capture_hotkey
+    if not enabled:
+        if _capture_hotkey is not None:
+            _capture_hotkey.stop()
+            _capture_hotkey = None
+        return False
+    if _capture_hotkey is not None and _capture_hotkey.started:
+        return True
+    hk = desktop.GlobalHotkey(_open_capture_mini, vk=desktop.GlobalHotkey.VK_S, hotkey_id=2)
+    hk.start()
+    hk.join(timeout=2)
+    if hk.started:
+        _capture_hotkey = hk
+        return True
+    return False
+
+
+_CAPTURE_HOTKEY_CTL['apply'] = _apply_capture_hotkey_setting
+
 if _tray_is_enabled():
     _start_tray()
 
 if (backend_api.settings_get(HOTKEY_KEY) or '0') == '1':
     _apply_hotkey_setting(True)
+
+if (backend_api.settings_get(CAPTURE_HOTKEY_KEY) or '0') == '1':
+    _apply_capture_hotkey_setting(True)
 
 # 关窗兜底：不等防抖的最后输入由 closing 同步落库；启用托盘时关窗 = 隐藏到托盘
 window.events.closing += make_closing_handler(
@@ -1320,3 +1821,7 @@ _state['quitting'] = True
 _stop_tray()
 if _hotkey is not None:
     _hotkey.stop()
+if _capture_hotkey is not None:
+    _capture_hotkey.stop()
+_mini_close()
+_capture_end(restore=False)
