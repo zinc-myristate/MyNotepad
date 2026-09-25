@@ -2467,6 +2467,29 @@ class Api:
         row = conn.execute("SELECT content FROM templates WHERE id = ?", (template_id,)).fetchone()
         return render_template(row['content'], title) if row else ''
 
+    def notes_create_from_template(self, template_id, title=None, notebook_name=None):
+        """用模板新建一篇笔记：变量在**这一刻**替换一次，之后它就是一普通篇笔记。
+
+        前端两处入口（捕获菜单里点模板名 / 模板抽屉里的「用模板新建」）共用这一条路径——
+        差别只是标题从哪来：菜单里直接用模板名，抽屉里听输入框的。
+        """
+        row = conn.execute("SELECT name, content FROM templates WHERE id = ?",
+                           (template_id,)).fetchone()
+        name = (title or '').strip()
+        if not name and row:
+            name = (row['name'] or '').strip()
+        content = render_template(row['content'], name) if row else ''
+        notebook_id = _find_or_create_notebook(notebook_name) if notebook_name else None
+        note = self.notes_create()
+        fields = {}
+        if content:
+            fields['content'] = content
+        if name:
+            fields['title'] = name
+        if notebook_id:
+            fields['notebook_id'] = notebook_id
+        return self.notes_update(note['id'], fields) if fields else note
+
     def notebook_id_by_name(self, name):
         """给前端用：拿到（或直接创建）某个名字的笔记本 id"""
         nid = _find_or_create_notebook(name)
