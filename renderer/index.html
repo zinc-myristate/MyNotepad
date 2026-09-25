@@ -138,6 +138,12 @@
     <!-- 笔记背景层 -->
     <div id="note-bg-layer" class="bg-layer note-bg-layer"></div>
 
+    <!-- 界面层薄纱（顶部：标题/标签/属性/工具栏；底部：状态栏）
+         两片都是绝对定位 + 尾部渐隐，高度由 08-appearance2.js 按内容区顶边实时算，
+         这样界面层不会与正文区"一刀切" -->
+    <div id="chrome-veil" class="chrome-veil"></div>
+    <div id="bottom-veil" class="bottom-veil"></div>
+
     <!-- 编辑器容器 -->
     <div id="editor-container" class="editor-container">
 

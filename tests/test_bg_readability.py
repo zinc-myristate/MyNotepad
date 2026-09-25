@@ -63,6 +63,30 @@ def _set_input(window, selector, value):
         % (json.dumps(selector), json.dumps(str(value))))
 
 
+# ---------------- 静态：薄纱的 CSS 约定 ----------------
+
+def test_veil_css_conventions():
+    """界面层薄纱必须是"整片 + 磨砂 + mask 渐隐"，且自适应下 Quill 的白玻璃要让位。
+
+    这几点都是踩过坑才定下来的：
+      · 逐行 background-color → 行间空隙露原图（斑马纹）+ 交界处一刀切；
+      · 只用渐变背景、不用 mask → backdrop-filter 的模糊边界又成了新硬边；
+      · 留着 .ql-toolbar 自带的 55% 白玻璃 → 富文本模式多出一条亮带。
+    """
+    css = open(os.path.join(PROJECT_ROOT, 'renderer', 'style.css'), encoding='utf-8').read()
+    assert '.chrome-veil' in css and '.bottom-veil' in css
+    assert 'mask-image: linear-gradient' in css, '薄纱必须用 mask 渐隐'
+    assert 'backdrop-filter: blur' in css, '薄纱必须是磨砂玻璃'
+    assert 'body.adaptive-bg .ql-toolbar.ql-snow' in css
+    idx = css.index('body.adaptive-bg .ql-toolbar.ql-snow')
+    assert 'background: transparent !important' in css[idx:idx + 220], \
+        '自适应模式下 Quill 工具栏的白玻璃应当交还给薄纱'
+    # 界面行自己不该再有底色（那是第一版的斑马纹来源）
+    tone_block = css[css.index('.bg-tone-light, .bg-tone-dark {'):]
+    tone_block = tone_block[:tone_block.index('}')]
+    assert 'background' not in tone_block, '明暗类不该再设底色：%r' % tone_block
+
+
 # ---------------- 单测：后端字段 ----------------
 
 def test_note_has_blur_and_scrim_columns(api, backend_mod):
@@ -107,7 +131,7 @@ def test_dark_image_switches_chrome_to_light_ink(tmp_path, monkeypatch):
         result['scrim'] = window.evaluate_js(
             "getComputedStyle(document.documentElement).getPropertyValue('--ad-scrim').trim()")
         result['veil'] = window.evaluate_js(
-            "getComputedStyle(document.getElementById('editor-status')).backgroundColor")
+            "getComputedStyle(document.getElementById('chrome-veil')).backgroundColor")
         result['shadow'] = window.evaluate_js(
             "getComputedStyle(document.getElementById('editor-status')).textShadow")
 
@@ -167,7 +191,7 @@ def test_two_sliders_blur_and_scrim(tmp_path, monkeypatch):
         result['scrim'] = window.evaluate_js(
             "getComputedStyle(document.documentElement).getPropertyValue('--ad-scrim').trim()")
         result['veil'] = window.evaluate_js(
-            "getComputedStyle(document.getElementById('editor-status')).backgroundColor")
+            "getComputedStyle(document.getElementById('chrome-veil')).backgroundColor")
         # 全局滑杆在笔记自带背景图时**不该**抢（笔记级设置优先），此时它只写设置值
         _set_input(window, '#global-bg-blur', 5)
         time.sleep(0.5)
@@ -212,6 +236,51 @@ def test_global_sliders_apply_when_using_global_background(tmp_path, monkeypatch
     assert r['scrim'] == '0.6', r
     assert backend.api.settings_get('bg_blur') == '6'
     assert abs(float(backend.api.settings_get('ui_scrim')) - 0.6) < 1e-6
+
+
+@pytest.mark.e2e
+def test_chrome_veil_is_one_frosted_layer_that_fades_out(tmp_path, monkeypatch):
+    """界面层是**一整片**磨砂薄纱，且用 mask 把"色调 + 模糊"一起淡出。
+
+    为什么要这条：第一版是逐行加 background-color，工具栏那一行到底就"一刀切"，
+    行与行之间的空隙还会露出原图（斑马纹）——用户看到的正是那条硬边。
+    """
+    ns = load_app_partial(monkeypatch, tmp_path)
+    import backend
+    img = _solid_png(os.path.join(str(tmp_path), 'bg.png'), (600, 400), (40, 60, 90))
+    nid = backend.api.notes_create()['id']
+    backend.api.notes_update(nid, {'title': '薄纱', 'content': '正文\n',
+                                   'bg_type': 'image', 'bg_value': img, 'bg_zoom': 200})
+
+    def actions(window, result):
+        time.sleep(2.5)
+        result['display'] = window.evaluate_js(
+            "getComputedStyle(document.getElementById('chrome-veil')).display")
+        result['top_h'] = window.evaluate_js(
+            "parseInt(document.getElementById('chrome-veil').style.height) || 0")
+        result['bottom_h'] = window.evaluate_js(
+            "parseInt(document.getElementById('bottom-veil').style.height) || 0")
+        result['mask'] = window.evaluate_js(
+            "(getComputedStyle(document.getElementById('chrome-veil')).maskImage || "
+            "getComputedStyle(document.getElementById('chrome-veil')).webkitMaskImage || '')")
+        result['blur'] = window.evaluate_js(
+            "(getComputedStyle(document.getElementById('chrome-veil')).backdropFilter || "
+            "getComputedStyle(document.getElementById('chrome-veil')).webkitBackdropFilter || '')")
+        result['row_bg'] = window.evaluate_js(
+            "getComputedStyle(document.getElementById('md-toolbar')).backgroundColor")
+        result['ql_bg'] = window.evaluate_js(
+            "getComputedStyle(document.getElementById('editor-toolbar')).backgroundColor")
+
+    r = _run(ns, actions)
+    assert 'error' not in r, r.get('error')
+    assert r['display'] == 'block', r
+    assert r['top_h'] > 120 and r['bottom_h'] > 20, r
+    assert 'linear-gradient' in r['mask'], '薄纱必须用 mask 渐隐：%r' % r['mask']
+    assert 'blur' in r['blur'], '薄纱应当是磨砂玻璃：%r' % r['blur']
+    assert r['row_bg'] in ('rgba(0, 0, 0, 0)', 'transparent'), \
+        '界面行自己不该再有底色（会形成斑马纹）：%r' % r['row_bg']
+    assert r['ql_bg'] in ('rgba(0, 0, 0, 0)', 'transparent'), \
+        '自适应模式下 Quill 工具栏的白玻璃应当交还给薄纱：%r' % r['ql_bg']
 
 
 @pytest.mark.e2e

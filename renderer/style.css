@@ -777,10 +777,39 @@ html, body {
   --ad-shadow: 0 1px 3px rgba(0, 0, 0, 0.85);
 }
 .bg-tone-light, .bg-tone-dark {
-  background-color: rgba(var(--ad-veil), var(--ad-scrim, 0));
+  /* 只负责"这一行该用什么颜色的字"；底色交给下面两片整的薄纱（逐行加底色会在
+     行间空隙里露出原图，形成斑马纹，交界处也会一刀切） */
   text-shadow: var(--ad-shadow);
-  transition: background-color var(--transition-fast), color var(--transition-fast);
+  transition: color var(--transition-fast);
 }
+
+/* ====== 界面层薄纱：整片 + 尾部渐隐 ====== */
+/* 绝对定位在 .editor-area 里，z-index 低于 .editor-container(=2)，所以永远在文字下面。
+   高度由 JS 写成行内 height；渐隐段固定 48px，正好落在正文区顶部。 */
+.chrome-veil, .bottom-veil {
+  position: absolute; left: 0; right: 0; z-index: 1;
+  pointer-events: none; display: none;
+}
+.chrome-veil, .bottom-veil {
+  /* 整片磨砂玻璃：色调（--ad-scrim）与模糊一起由 mask 淡出，
+     所以界面层到正文区是"糊→清"的渐变，而不是一条硬边 */
+  background: rgba(var(--ad-veil, 128, 128, 128), var(--ad-scrim, 0));
+  backdrop-filter: blur(8px) saturate(115%);
+  -webkit-backdrop-filter: blur(8px) saturate(115%);
+}
+.chrome-veil {
+  top: 0;
+  -webkit-mask-image: linear-gradient(to bottom, #000 0, #000 calc(100% - 48px), transparent 100%);
+  mask-image: linear-gradient(to bottom, #000 0, #000 calc(100% - 48px), transparent 100%);
+}
+.bottom-veil {
+  bottom: 0;
+  -webkit-mask-image: linear-gradient(to top, #000 0, #000 calc(100% - 40px), transparent 100%);
+  mask-image: linear-gradient(to top, #000 0, #000 calc(100% - 40px), transparent 100%);
+}
+/* 只有开着背景图（自适应）时才显示薄纱 */
+body.adaptive-bg .chrome-veil { display: block; }
+body.adaptive-bg .bottom-veil { display: block; }
 /* 输入框/下拉这些自带底色的控件：跟着薄纱一起走，别在暗底上留一块亮 */
 .bg-tone-dark .find-input, .bg-tone-dark .prop-row input, .bg-tone-dark .prop-row select,
 .bg-tone-dark .my-toolbar-select {
@@ -792,10 +821,19 @@ html, body {
 body.adaptive-bg .sidebar::after { background: var(--ad-border-strong) !important; }
 body.adaptive-bg .sidebar-header { border-bottom: 1px solid var(--ad-border) !important; }
 body.adaptive-bg .sidebar-footer { border-top: 1px solid var(--ad-border) !important; }
+/* 自适应模式：Quill 工具栏自带的 55% 白玻璃交还给薄纱（否则富文本模式下会出现一条亮带） */
 body.adaptive-bg .ql-toolbar.ql-snow {
-  border-top: 1px solid var(--ad-border-strong) !important;
-  border-bottom: 1px solid var(--ad-border-strong) !important;
+  background: transparent !important;
+  backdrop-filter: none !important;
+  -webkit-backdrop-filter: none !important;
 }
+/* 自适应模式下边框一律调淡：薄纱的明暗差已经能分开界面层与正文，再画硬线就突兀 */
+body.adaptive-bg .ql-toolbar.ql-snow {
+  border-top: 1px solid rgba(128, 128, 128, 0.18) !important;
+  border-bottom: 1px solid rgba(128, 128, 128, 0.18) !important;
+}
+body.adaptive-bg #editor-status { border-top-color: rgba(128, 128, 128, 0.18) !important; }
+body.adaptive-bg #tag-bar, body.adaptive-bg .md-toolbar { border-color: rgba(128, 128, 128, 0.18) !important; }
 body.adaptive-bg .editor-area { background: transparent !important; }
 body.adaptive-bg .ql-container.ql-snow { background: transparent !important; }
 body.adaptive-bg .ql-editor { background: transparent !important; }

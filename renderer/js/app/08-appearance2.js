@@ -21,10 +21,10 @@ function activeBgLayer() {
 /** 界面行 → 它压在图片的哪一段（条带划分见 BAND_OF_CHROME）。
  *  为什么按段采样：一张图常常上半亮下半暗，整图一个"明/暗"判断必然有一半界面读不清。 */
 const CHROME_BANDS = {
-  title: ['#title-row'],
+  title: ['#title-row', '#chrome-veil'],
   upper: ['#tag-bar', '#prop-block', '#md-toolbar', '#editor-toolbar', '#font-size-bar'],
   mid: ['.ql-editor', '#md-editor', '#md-preview'],
-  bottom: ['#editor-status', '#find-bar'],
+  bottom: ['#editor-status', '#find-bar', '#bottom-veil'],
 };
 const BAND_RANGES = {           // 占编辑器区域高度的比例（与界面行在屏幕上的位置对应）
   title: [0.00, 0.09],
@@ -136,6 +136,41 @@ export function analyzeImageColor(dataUri, callback) {
 
 const ALL_TONE_SELECTORS = Object.values(CHROME_BANDS).flat();
 
+/** 两片薄纱的高度：按"编辑器内容区顶边"与"状态栏顶边"实时算。
+ *  为什么不用魔法数字：工具栏会换行、md↔富文本切换会让界面层高度变化，
+ *  写死高度时渐隐段就会落在错误的行上（那样交界处反而更明显）。 */
+export function updateChromeVeil() {
+  const container = document.getElementById('editor-container');
+  const top = document.getElementById('chrome-veil');
+  const bottom = document.getElementById('bottom-veil');
+  if (!container || !top || !bottom) return;
+  const content = document.querySelector('#md-editor:not(.hidden)') || document.querySelector('.ql-container')
+    || document.getElementById('md-editor') || document.querySelector('#quill-editor .ql-container');
+  const status = document.getElementById('editor-status');
+  const cTop = container.getBoundingClientRect().top;
+  const contentTop = content ? content.getBoundingClientRect().top - cTop : 0;
+  // 顶部薄纱：盖住界面层，再往正文里多留 48px 做渐隐
+  const topH = Math.max(0, Math.round(contentTop)) + 48;
+  if (top.style.height !== topH + 'px') top.style.height = topH + 'px';
+  const statusTop = status && !status.classList.contains('hidden')
+    ? status.getBoundingClientRect().top - cTop : container.clientHeight;
+  const bottomH = Math.max(0, Math.round(container.clientHeight - statusTop)) + 40;
+  if (bottom.style.height !== bottomH + 'px') bottom.style.height = bottomH + 'px';
+}
+
+/** 界面层高度会因窗口缩放 / 工具栏换行 / 编辑器切换而变化：观察几行界面元素即可 */
+function watchChromeVeil() {
+  if (typeof ResizeObserver === 'undefined') return;
+  const rows = ['#title-row', '#tag-bar', '#prop-block', '#font-size-bar', '#md-toolbar',
+    '#editor-toolbar', '#editor-status'];
+  const ro = new ResizeObserver(() => updateChromeVeil());
+  rows.forEach((sel) => {
+    const el = document.querySelector(sel);
+    if (el) ro.observe(el);
+  });
+  window.addEventListener('resize', updateChromeVeil);
+}
+
 /** 按图片各段明暗，给每一行界面切换文字色（.bg-tone-dark / .bg-tone-light） */
 export function applyChromeTones(colorInfo) {
   const bands = (colorInfo && colorInfo.bands) || null;
@@ -166,11 +201,15 @@ export function applyBackgroundTuning(opts = {}) {
   state.bgScrim = scrim;
 }
 
+let _veilWatched = false;
+
 export function applyAdaptiveUI(colorInfo) {
   const body = document.body;
   body.classList.add('adaptive-bg');
   body.style.setProperty('--ad-border-strong', 'rgba(128,128,128,0.40)');
   applyChromeTones(colorInfo);
+  updateChromeVeil();
+  if (!_veilWatched) { _veilWatched = true; watchChromeVeil(); }
   if (colorInfo) {
     window.pywebview.api.settings_set('adaptive_color', JSON.stringify(colorInfo));
   }
