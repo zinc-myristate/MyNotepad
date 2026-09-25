@@ -294,6 +294,36 @@ class AppApi:
         return self.backend.notes_create_from_link(title)
     def notes_table(self, note_ids=None): return self.backend.notes_table(note_ids)
 
+    # 第 10 轮：模板 / 每日笔记 / 快速捕获
+    def templates_list(self): return self.backend.templates_list()
+    def template_create(self, name, content=''): return self.backend.template_create(name, content)
+    def template_get(self, template_id): return self.backend.template_get(template_id)
+    def template_update(self, template_id, fields):
+        return self.backend.template_update(template_id, fields)
+    def template_delete(self, template_id): return self.backend.template_delete(template_id)
+    def template_render(self, template_id, title=''):
+        return self.backend.template_render(template_id, title)
+    def daily_note_open(self): return self.backend.daily_note_open()
+    def capture_text(self, text, notebook_name=None):
+        return self.backend.capture_text(text, notebook_name)
+    def capture_image(self, src_path, title=None):
+        return self.backend.capture_image(src_path, title)
+
+    def clipboard_capture(self):
+        """读系统剪贴板文本并捕获成笔记（剪贴板只在 Python 侧读，前端不碰）"""
+        text = ''
+        try:
+            import tkinter
+            root = tkinter.Tk()
+            root.withdraw()
+            try:
+                text = root.clipboard_get()
+            finally:
+                root.destroy()
+        except Exception:
+            text = ''
+        return self.backend.capture_text(text) if (text or '').strip() else None
+
     def export_table_csv(self, note_ids=None):
         """导出表格为 CSV（对话框在这一层，写文件在后端——与其它导出同一条规矩）"""
         try:

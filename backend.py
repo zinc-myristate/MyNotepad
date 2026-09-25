@@ -245,6 +245,14 @@ conn.executescript("""
         FOREIGN KEY (src_note_id) REFERENCES notes(id) ON DELETE CASCADE
     );
     CREATE INDEX IF NOT EXISTS idx_links_target ON note_links(target_key);
+    -- 模板（第 10 轮）：新建笔记时可套用，支持 {{date}} {{time}} {{weekday}} {{title}}
+    CREATE TABLE IF NOT EXISTS templates (
+        id TEXT PRIMARY KEY,
+        name TEXT NOT NULL,
+        content TEXT NOT NULL DEFAULT '',
+        sort_order INTEGER NOT NULL DEFAULT 0,
+        created_at TEXT NOT NULL DEFAULT (datetime('now','localtime'))
+    );
     -- 保存的搜索：侧栏"视图"区的数据源
     CREATE TABLE IF NOT EXISTS saved_searches (
         id TEXT PRIMARY KEY,
@@ -1572,6 +1580,50 @@ def _filter_props(ids, conds):
     return out
 
 
+# ====== 模板与快速捕获（第 10 轮）======
+WEEKDAY_CN = ('周一', '周二', '周三', '周四', '周五', '周六', '周日')
+TEMPLATE_VAR_RE = re.compile(r'\{\{\s*(date|time|weekday|title|datetime)\s*\}\}')
+DAILY_NOTEBOOK = '日记'
+INBOX_NOTEBOOK = '收件箱'
+
+
+def render_template(text, title=''):
+    """把模板里的变量换掉（只认这几个，不认识的 `{{...}}` 原样留着）。
+
+    为什么不做通用模板引擎：模板是用户手写的 Markdown，语法越少越不容易和正文打架；
+    替换只在"用模板建笔记"的那一刻发生一次，之后就是普通正文。
+    """
+    now = datetime.now()
+    values = {
+        'date': now.strftime('%Y-%m-%d'),
+        'time': now.strftime('%H:%M'),
+        'weekday': WEEKDAY_CN[now.weekday()],
+        'datetime': now.strftime('%Y-%m-%d %H:%M'),
+        'title': title or '',
+    }
+    return TEMPLATE_VAR_RE.sub(lambda m: values.get(m.group(1), m.group(0)), text or '')
+
+
+def _find_or_create_notebook(name):
+    """按名字找笔记本，没有就建一个（每日笔记/收件箱都靠它保证幂等）"""
+    row = conn.execute("SELECT id FROM notebooks WHERE name = ?", (name,)).fetchone()
+    if row:
+        return row['id']
+    nid = str(uuid.uuid4())
+    conn.execute("INSERT INTO notebooks (id, name, sort_order) VALUES (?,?,?)",
+                 (nid, name, _next_sort_order('notebooks')))
+    return nid
+
+
+def _first_line_title(text, limit=50):
+    """捕获内容 → 标题：取第一行非空文本，太长就截断（列表里显示得下）"""
+    for line in (text or '').splitlines():
+        s = line.strip().lstrip('#').strip()
+        if s:
+            return s[:limit] + ('…' if len(s) > limit else '')
+    return '未命名笔记'
+
+
 def _todo_lines_md(md_text):
     """Markdown → [(idx, text, due, done)]"""
     out = []
@@ -2377,6 +2429,107 @@ class Api:
         _refresh_derived(note_id)
         r = conn.execute("SELECT * FROM note_derived WHERE note_id = ?", (note_id,)).fetchone()
         return dict(r) if r else None
+
+    # ====== 模板（第 10 轮）======
+    def templates_list(self):
+        return [dict(r) for r in conn.execute(
+            "SELECT * FROM templates ORDER BY sort_order, name").fetchall()]
+
+    def template_create(self, name, content=''):
+        tid = str(uuid.uuid4())
+        conn.execute("INSERT INTO templates (id, name, content, sort_order) VALUES (?,?,?,?)",
+                     (tid, (name or '').strip() or '新模板', content or '',
+                      _next_sort_order('templates')))
+        conn.commit()
+        return self.template_get(tid)
+
+    def template_get(self, template_id):
+        row = conn.execute("SELECT * FROM templates WHERE id = ?", (template_id,)).fetchone()
+        return dict(row) if row else None
+
+    def template_update(self, template_id, fields):
+        allowed = {k: v for k, v in (fields or {}).items() if k in ('name', 'content', 'sort_order')}
+        if not allowed:
+            return self.template_get(template_id)
+        sets = ', '.join('%s = ?' % k for k in allowed)
+        conn.execute("UPDATE templates SET %s WHERE id = ?" % sets,
+                     list(allowed.values()) + [template_id])
+        conn.commit()
+        return self.template_get(template_id)
+
+    def template_delete(self, template_id):
+        conn.execute("DELETE FROM templates WHERE id = ?", (template_id,))
+        conn.commit()
+        return True
+
+    def template_render(self, template_id, title=''):
+        """模板 → 渲染后的正文（变量替换一次；模板不存在返回空串）"""
+        row = conn.execute("SELECT content FROM templates WHERE id = ?", (template_id,)).fetchone()
+        return render_template(row['content'], title) if row else ''
+
+    def notebook_id_by_name(self, name):
+        """给前端用：拿到（或直接创建）某个名字的笔记本 id"""
+        nid = _find_or_create_notebook(name)
+        conn.commit()
+        return nid
+
+    # ====== 每日笔记 / 快速捕获（第 10 轮）======
+    def daily_note_open(self):
+        """打开"今天"的笔记：已存在就返回它，不存在才建（连点两次不会生成两篇）。
+
+        标题用 `2026-09-22 周二`（排序即日期序，一眼能看出是哪天）；放在「日记」笔记本；
+        若存在名为「日记」的模板就套用它（没有就建空白笔记）。
+        """
+        now = datetime.now()
+        title = '%s %s' % (now.strftime('%Y-%m-%d'), WEEKDAY_CN[now.weekday()])
+        row = conn.execute(
+            "SELECT id FROM notes WHERE title = ? AND deleted_at IS NULL "
+            "ORDER BY created_at LIMIT 1", (title,)).fetchone()
+        if row:
+            return self.notes_get(row['id'])
+        notebook_id = _find_or_create_notebook(DAILY_NOTEBOOK)
+        tpl = conn.execute("SELECT content FROM templates WHERE name = ? LIMIT 1",
+                           (DAILY_NOTEBOOK,)).fetchone()
+        note = self.notes_create()
+        content = render_template(tpl['content'], title) if tpl else ''
+        if content:
+            self.notes_update(note['id'], {'content': content})
+        return self.notes_update(note['id'], {'title': title, 'notebook_id': notebook_id})
+
+    def capture_text(self, text, notebook_name=None):
+        """快速捕获一段纯文本 → 收件箱里的一篇新笔记（第一行当标题）。
+
+        为什么不再追问用户放哪：捕获的价值就是"不打断"，先收进来、之后再整理。
+        """
+        body = (text or '').strip()
+        if not body:
+            return None
+        notebook_id = _find_or_create_notebook(notebook_name or INBOX_NOTEBOOK)
+        note = self.notes_create()
+        self.notes_update(note['id'], {'content': body})
+        return self.notes_update(note['id'], {
+            'title': _first_line_title(body), 'notebook_id': notebook_id})
+
+    def capture_image(self, src_path, title=None):
+        """把一张图（截图）存成收件箱里的新笔记，并把图复制进附件目录。
+
+        走的是既有的附件机制（`attachments/<note_id>/`），所以导出/备份/复制笔记全都照常可用。
+        """
+        try:
+            if not src_path or not os.path.isfile(src_path):
+                return None
+            notebook_id = _find_or_create_notebook(INBOX_NOTEBOOK)
+            name = title or ('截图 %s' % datetime.now().strftime('%Y-%m-%d %H:%M'))
+            note = self.notes_create()
+            saved = self.file_copy_to_note(src_path, note['id'], 'image')
+            if not saved or not saved.get('filename'):
+                return None
+            rel = 'attachments/%s/%s' % (note['id'], saved['filename'])
+            self.notes_update(note['id'], {'content': '![%s](%s)\n' % (name, rel)})
+            return self.notes_update(note['id'], {'title': name, 'notebook_id': notebook_id})
+        except Exception:
+            applog.get_logger().exception("截图捕获失败")
+            return None
 
     def note_links(self, note_id):
         """一篇笔记的链接关系：指向 / 反向链接 / 指向尚不存在的笔记。

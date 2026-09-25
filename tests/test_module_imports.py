@@ -24,6 +24,25 @@ SKIP_DIRS = {'dist', 'build', '.git', '__pycache__', 'node_modules', '.pytest_ca
 SUBMODULE_RE = re.compile(r'^(?:%s)\.([A-Za-z_]\w*)$' % '|'.join(ROOTS))
 
 
+def _real_submodules():
+    """tkinter 真正的**子模块**清单（动态枚举，别把 `tkinter.Tk` 这种类也算进来）。
+
+    为什么要动态取：写死一份名单会随 Python 版本漂移；而"不判断就直接把
+    `tkinter.<任意标识符>` 当成子模块"会把 `tkinter.Tk()` 这种正常用法误报
+    （第 10 轮的剪贴板捕获就是这么被误伤了一次）。
+    """
+    try:
+        import pkgutil
+        import tkinter
+        return {info.name for info in pkgutil.iter_modules([os.path.dirname(tkinter.__file__)])}
+    except Exception:                                # noqa: BLE001
+        return {'filedialog', 'messagebox', 'simpledialog', 'colorchooser', 'font', 'ttk',
+                'scrolledtext', 'commondialog', 'dnd', 'constants'}
+
+
+REAL_SUBMODULES = _real_submodules()
+
+
 def py_files():
     for base, dirs, files in os.walk(ROOT):
         dirs[:] = [d for d in dirs
@@ -83,7 +102,8 @@ def scan(path):
     local = {}
     bad = []
     for name, func in _enclosing_usage(tree):
-        if not SUBMODULE_RE.match(name):
+        m = SUBMODULE_RE.match(name)
+        if not m or m.group(1) not in REAL_SUBMODULES:
             continue                                # tkinter.Tk 这类不是子模块，跳过
         if name in mod_imports:
             continue
