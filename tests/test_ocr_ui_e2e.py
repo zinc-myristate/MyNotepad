@@ -121,8 +121,10 @@ def test_ocr_panel_recognizes_and_inserts_image_with_text(tmp_path, monkeypatch)
         result['closed'] = not _panel_open(window)
         result['attachments'] = len(backend.api.attachments_list(nid))
         result['body'] = backend.api.notes_get(nid)['content']
-        result['temp_left'] = [f for f in os.listdir(os.path.dirname(img))
-                               if f.startswith('mynotepad_')]
+        # 前端 closeOcr() 对"非附件来源"的图一定会请求删除；这里给的是**用户自己的图**
+        # （没有 mynotepad_ 前缀、也不在系统临时目录），所以后端必须拒绝 —— 顺手删掉
+        # 用户的原图是不可逆的。
+        result['src_intact'] = os.path.isfile(img)
 
     r = _run(ns, actions)
     assert 'error' not in r, r.get('error')
@@ -139,6 +141,7 @@ def test_ocr_panel_recognizes_and_inserts_image_with_text(tmp_path, monkeypatch)
     assert '![识别图片](attachments/%s/' % nid in r['source'], r['source']
     assert r['source'].index('排版') > r['source'].index('![识别图片]'), '文字要在图片下面'
     assert r['body'] and '排版' in r['body']
+    assert r['src_intact'] is True, '用户给的原图被删了——ocr_release 只该删自己造的临时图'
 
 
 @pytest.mark.e2e

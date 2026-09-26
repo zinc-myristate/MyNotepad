@@ -326,6 +326,49 @@ def test_json_payload_passed_to_main_window_is_serialisable():
 
 # ---------------- 第 11 轮：识别文字（OCR）的接线 ----------------
 
+def _touch(path, data=b'x'):
+    """造一个占位文件（写字节，避免编码干扰）"""
+    with open(path, 'wb') as f:
+        f.write(data)
+    return path
+
+
+def test_ocr_release_only_deletes_its_own_temp_files(app_ns, tmp_path, monkeypatch):
+    """`ocr_release` 必须删掉自己造的临时图，但**绝不碰**别人的文件。
+
+    前端 `closeOcr()` 对"非附件来源"的图一定会请求删除（截图 / 剪贴板 / 选图三条路），
+    所以后端这个函数是最后一道闸：删错文件不可逆。
+
+    ⚠️ 这条同时钉住一个基建缺口：`_temp_png` / `_ocr_clipboard_image` / `_ocr_release`
+    原本定义在 app.pyw 的「创建窗口」标记**之后**，而无头测试只 exec 标记前的部分 ——
+    `api.ocr_release()` 直接 NameError（e2e 日志里实测刷了 8 次），
+    "临时图用完就删"这条契约从来没被真正验证过。
+    """
+    import tempfile
+    monkeypatch.setattr(tempfile, 'tempdir', os.path.realpath(str(tmp_path)))
+    api = app_ns['api']
+    temp_root = tempfile.gettempdir()
+
+    mine = os.path.join(temp_root, 'mynotepad_ocr_clip_1.png')
+    _touch(mine)
+    assert api.ocr_release(mine) is True, '自己造的临时图必须删掉'
+    assert not os.path.exists(mine), '临时图没被删掉'
+
+    theirs = os.path.join(temp_root, 'my_important_photo.png')
+    _touch(theirs)
+    assert api.ocr_release(theirs) is False, '没有 mynotepad_ 前缀的图绝不能删'
+    assert os.path.exists(theirs), '把用户的图删了——这是不可逆的'
+
+    outside = os.path.join(str(tmp_path.parent), 'mynotepad_outside.png')
+    _touch(outside)
+    assert api.ocr_release(outside) is False, '不在系统临时目录里的文件绝不能删'
+    assert os.path.exists(outside)
+
+    assert api.ocr_release(None) is False
+    assert api.ocr_release('') is False
+    assert api.ocr_release(os.path.join(temp_root, 'mynotepad_不存在.png')) is False
+
+
 def test_ocr_module_wired_into_frontend():
     main = _read('renderer/js/app/00-main.js')
     boot = _read('renderer/js/app/09-boot.js')

@@ -1154,6 +1154,50 @@ def _resolve_window_geometry(backend=None):
         return {'w': DEFAULT_WIN_W, 'h': DEFAULT_WIN_H, 'x': None, 'y': None}
 
 
+# ====== OCR 临时文件辅助（第 11 轮）======
+# ⚠️ 这三个函数必须留在「创建窗口」标记**之前**：无头测试（conftest.load_app_partial）
+# 只 exec 标记前的部分，而 AppApi 的 ocr_clipboard_image / ocr_release 就在标记前调用它们。
+# 原来它们写在标记之后 —— `api.ocr_release()` 直接 NameError（e2e 日志里实测刷了 8 次），
+# 于是"临时图用完就删"这条契约**从来没被真正验证过**。
+
+def _temp_png(tag):
+    """临时 PNG 的规范命名：系统临时目录 + `mynotepad_` 前缀。
+
+    前缀不是装饰：`_ocr_release` 靠它区分"自己造的"和"用户的图"，删错文件不可逆。
+    """
+    return os.path.join(tempfile.gettempdir(),
+                        'mynotepad_%s_%d.png' % (tag, int(time.time() * 1000)))
+
+
+def _ocr_clipboard_image():
+    """剪贴板里的图片 → 临时 PNG（给 OCR 用）；剪贴板里没有图返回 None。
+
+    只允许写进系统临时目录且文件名带 `mynotepad_` 前缀——`_ocr_release` 会按这个前缀
+    判断"这是我自己的临时文件"，绝不删用户的东西。
+    """
+    path = _temp_png('ocr_clip')
+    return desktop.clipboard_image_to_file(path)
+
+
+def _ocr_release(path):
+    """识别面板用完临时图后清掉它，**只认自己造的临时文件**。
+
+    前端 `closeOcr()` 对"非附件来源"的图一定会请求删除（截图/剪贴板/选图那几条路），
+    所以这里是最后一道闸：路径不在系统临时目录、或文件名没有 `mynotepad_` 前缀，一律
+    拒绝（返回 False）——用户自己选的图绝不能被顺手删掉。
+    """
+    try:
+        p = os.path.abspath(path or '')
+        tmp = os.path.realpath(tempfile.gettempdir())
+        if (p.startswith(tmp) and os.path.basename(p).startswith('mynotepad_')
+                and os.path.isfile(p)):
+            os.remove(p)
+            return True
+    except OSError:
+        pass
+    return False
+
+
 # ====== 创建窗口 ======
 # 单实例互斥：已有实例在运行时聚焦其窗口并退出本进程。
 # 两个进程并发写同一 SQLite（DELETE journal 模式）会撞 database is locked，必须互斥。
@@ -1370,35 +1414,6 @@ def _eval_main(js):
         except Exception:
             pass
         return False
-
-
-def _temp_png(tag):
-    return os.path.join(tempfile.gettempdir(),
-                        'mynotepad_%s_%d.png' % (tag, int(time.time() * 1000)))
-
-
-def _ocr_clipboard_image():
-    """剪贴板里的图片 → 临时 PNG（给 OCR 用）；剪贴板里没有图返回 None。
-
-    只允许写进系统临时目录且文件名带 `mynotepad_` 前缀——`_ocr_release` 会按这个前缀
-    判断"这是我自己的临时文件"，绝不删用户的东西。
-    """
-    path = _temp_png('ocr_clip')
-    return desktop.clipboard_image_to_file(path)
-
-
-def _ocr_release(path):
-    """识别面板用完临时图后清掉它（只认自己造的临时文件）"""
-    try:
-        p = os.path.abspath(path or '')
-        tmp = os.path.realpath(tempfile.gettempdir())
-        if (p.startswith(tmp) and os.path.basename(p).startswith('mynotepad_')
-                and os.path.isfile(p)):
-            os.remove(p)
-            return True
-    except OSError:
-        pass
-    return False
 
 
 def _cleanup_files(*paths):
