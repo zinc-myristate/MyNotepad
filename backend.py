@@ -599,7 +599,7 @@ def _md_inline_escape(text):
 
 
 # 字体/字号/颜色在 Markdown 里靠**白名单内嵌 HTML** 保留（第 6 轮决策）：
-# Obsidian/Typora 能渲染；Joplin 官方说明会丢 HTML。取舍写在 CLAUDE.md 的已知限制里。
+# Obsidian/Typora 能渲染；Joplin 官方说明会丢 HTML —— 这是刻意接受的取舍（见 README「已知限制」）。
 _MD_FONT_CLASSES = {'serif': 'md-font-serif', 'monospace': 'md-font-mono', 'cursive': 'md-font-hand'}
 _MD_FONT_BY_CLASS = {v: k for k, v in _MD_FONT_CLASSES.items()}
 _MD_COLOR_RE = re.compile(r'^(#[0-9a-fA-F]{3,8}|rgba?\([\d\s.,%]+\))$')

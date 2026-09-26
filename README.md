@@ -139,7 +139,6 @@ SQLite 删除或改写大字段后**不会**把空间还给文件系统——图
 ├── build_resources/         # 版本信息 + 打包时收集第三方许可证的脚本
 ├── tests/                   # pytest 单测 + 无头 E2E
 ├── .github/                 # CI / Release 工作流 + Issue 模板
-├── CLAUDE.md                # 开发文档（架构细节 + 更新历史，含"为什么这么写"）
 ├── CONTRIBUTING.md          # 参与开发须知（含代码约定与踩坑清单）
 ├── CHANGELOG.md             # 面向用户的更新日志
 ├── THIRD_PARTY_NOTICES.md   # 第三方组件与许可

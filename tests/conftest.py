@@ -56,14 +56,37 @@ def make_delta_note(backend, title='', content='', notebook_id=None):
 
 
 def load_app_partial(monkeypatch, tmp_path):
-    """加载 app.pyw 的「创建窗口之前」部分（含图像处理函数与 AppApi/api），不启动 GUI。"""
+    """加载 app.pyw 的「创建窗口之前」部分（含图像处理函数与 AppApi/api），不启动 GUI。
+
+    ⚠️ 这一段里含 `Thread(target=_startup_maintenance, daemon=True).start()`
+    （回收站超期清理 + 备份 + 空间回收）。测试里**必须让它只构造、不启动**：
+    那条后台线程会拿 backend 的模块级 sqlite 连接（`check_same_thread=False`）直接读写，
+    而 fixture 同时在换临时库、关连接 —— 实测在 CI 上触发原生崩溃
+    （`Windows fatal exception: access violation`，栈顶是 `backend.purge_expired_trash`）。
+    进程被 abort 后 pytest 缓冲的失败详情全部丢失，只剩一串进度点，排查成本极高。
+    """
     monkeypatch.setenv('MYNOTEPAD_DATA_DIR', str(tmp_path))
     sys.modules.pop('backend', None)
     src = open(APP_PYW, encoding='utf-8').read()
     parts = src.split(APP_SPLIT_MARKER)
     assert len(parts) == 2, 'app.pyw 缺少「创建窗口」分节标记，conftest 需要同步更新'
     ns = {'__name__': 'app_partial', '__file__': APP_PYW}
-    exec(compile(parts[0], 'app.pyw', 'exec'), ns)
+
+    import threading as _threading
+
+    real_thread = _threading.Thread
+
+    class _NotStartedThread(real_thread):
+        """保留构造行为，start() 变成空操作（测试里不允许有后台维护线程）"""
+
+        def start(self):
+            return None
+
+    try:
+        _threading.Thread = _NotStartedThread
+        exec(compile(parts[0], 'app.pyw', 'exec'), ns)
+    finally:
+        _threading.Thread = real_thread
     return ns
 
 

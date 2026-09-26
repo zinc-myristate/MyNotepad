@@ -136,9 +136,16 @@ def test_language_label_falls_back_to_tag():
 
 # ---------------- 真引擎（没有引擎就跳过）----------------
 
-def _need_engine():
+def _need_engine(lang=None):
+    """没有引擎就跳过；给了 lang 还要求**那个语言包真的装了**。
+
+    ⚠️ 只检查"有没有引擎"是不够的：GitHub Actions 的 windows-latest 装了英文引擎、
+    却没装中文语言包，守卫会放行，后面的中文识别用例必然失败（实测 7 条全挂）。
+    """
     if not ocr.ocr_ready():
         pytest.skip('这台机器没有可用的 Windows OCR 引擎/语言包')
+    if lang and lang not in ocr.available_languages():
+        pytest.skip('这台机器没有安装 %s 的 OCR 语言包' % lang)
 
 
 def _make_image(path, lines, size=(900, 240)):
@@ -165,7 +172,7 @@ def test_available_languages_lists_something():
 
 def test_recognize_real_image(tmp_path):
     """真识别：中文正文 + 折行 + 列表项 → 段落还原正确"""
-    _need_engine()
+    _need_engine('zh-Hans-CN')
     img = _make_image(os.path.join(str(tmp_path), 'shot.png'), [
         '第一段文字跨行排版测试，内容比较长，',
         '所以被排版折成了两行显示。',
@@ -183,7 +190,7 @@ def test_recognize_real_image(tmp_path):
 
 def test_recognize_list_items_stay_separate(tmp_path):
     """真识别只保证"内容都在、顺序对"——逐字精度是引擎的事，不该由测试来赌"""
-    _need_engine()
+    _need_engine('zh-Hans-CN')
     img = _make_image(os.path.join(str(tmp_path), 'list.png'), [
         '正文说明',
         '1. 第一项',
@@ -197,7 +204,7 @@ def test_recognize_list_items_stay_separate(tmp_path):
 
 
 def test_recognize_default_language_is_chinese(tmp_path):
-    _need_engine()
+    _need_engine(ocr.OCR_LANG_DEFAULT)
     img = _make_image(os.path.join(str(tmp_path), 'a.png'), ['中文测试'])
     res = ocr.recognize(img)
     assert res['ok'] is True and res['lang'] == ocr.OCR_LANG_DEFAULT
@@ -222,7 +229,7 @@ def test_recognize_missing_file():
 
 def test_recognize_blank_image_has_no_text(tmp_path):
     """纯白图：ok=True 但没有文字（界面据此提示"没认出文字"）"""
-    _need_engine()
+    _need_engine(ocr.OCR_LANG_DEFAULT)
     from PIL import Image
     path = os.path.join(str(tmp_path), 'blank.png')
     Image.new('RGB', (400, 200), 'white').save(path)
@@ -237,7 +244,7 @@ def test_recognize_short_text_is_not_silently_empty(tmp_path):
     （引擎在"字太少/字太小"这种边界上时好时坏——1× 有时认得出、有时直接返回空行，
      所以这里只断言最终有字；放大重试的机制本身由下面那条用桩函数确定性地测。）
     """
-    _need_engine()
+    _need_engine(ocr.OCR_LANG_DEFAULT)
     img = _make_image(os.path.join(str(tmp_path), 'short.png'), ['图片里的字'])
     res = ocr.recognize(img)
     assert res['ok'] is True, res
@@ -247,7 +254,7 @@ def test_recognize_short_text_is_not_silently_empty(tmp_path):
 
 def test_recognize_upscales_when_first_pass_finds_nothing(tmp_path, monkeypatch):
     """第一遍什么都没认出来时，必须放大再试（并用放大后的图）"""
-    _need_engine()
+    _need_engine(ocr.OCR_LANG_DEFAULT)
     img = _make_image(os.path.join(str(tmp_path), 'short.png'), ['图片里的字'])
     real = ocr._recognize_one
     seen = []
@@ -269,7 +276,7 @@ def test_recognize_upscales_when_first_pass_finds_nothing(tmp_path, monkeypatch)
 
 def test_recognize_does_not_upscale_when_first_pass_works(tmp_path):
     """正常图不该白做一次放大（多花几十毫秒）"""
-    _need_engine()
+    _need_engine(ocr.OCR_LANG_DEFAULT)
     img = _make_image(os.path.join(str(tmp_path), 'long.png'),
                       ['第一段文字跨行排版测试，内容比较长，', '所以被排版折成了两行显示。'])
     res = ocr.recognize(img)
