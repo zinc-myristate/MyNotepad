@@ -3,6 +3,7 @@
 import importlib
 import os
 import sys
+import time
 
 import pytest
 
@@ -107,3 +108,28 @@ def app_ns(tmp_path, monkeypatch):
     except Exception:
         pass
     sys.modules.pop('backend', None)
+
+
+def wait_for_js(window, expression, expected=None, timeout=20.0, interval=0.25):
+    """轮询 JS 表达式，直到等于 expected（expected=None 时直到取到真值）或超时。
+
+    返回**最后一次取到的值**，超时也返回 —— 让调用方的 assert 给出原本的报错信息，
+    而不是抛一个与真因无关的超时异常。
+
+    ⚠️ 为什么必须有它：无头 WebView2 在 CI 上比开发机慢得多，而 e2e 里大量用
+    "sleep 固定秒数 + 一次性取值"。那等于把"断言行为"变成"断言机器有多快"——实测
+    `test_format_badge_e2e.py::test_badge_converts_to_markdown_then_restores` 就在 CI 上
+    偶发读到还没刷新完的 'MD'（本地怎么跑都过、上一轮 CI 也是绿的）。
+    等条件成立再断言才是稳的写法；**不要**用加长 sleep 来"修"这类问题。
+    """
+    deadline = time.time() + timeout
+    while True:
+        value = window.evaluate_js(expression)
+        if expected is None:
+            if value:
+                return value
+        elif value == expected:
+            return value
+        if time.time() >= deadline:
+            return value
+        time.sleep(interval)

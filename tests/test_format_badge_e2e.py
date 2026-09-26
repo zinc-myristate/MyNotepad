@@ -10,7 +10,7 @@ import threading
 import time
 
 import pytest
-from conftest import PROJECT_ROOT, load_app_partial, make_delta_note
+from conftest import PROJECT_ROOT, load_app_partial, make_delta_note, wait_for_js
 
 RENDERER = PROJECT_ROOT + '/renderer'
 
@@ -61,9 +61,9 @@ def test_badge_converts_to_markdown_then_restores(tmp_path, monkeypatch):
         window.evaluate_js("document.getElementById('btn-confirm-ok').click();")
 
     def actions(window, result):
-        time.sleep(1.5)                              # 等启动自动选中
-        result['badge_before'] = window.evaluate_js(
-            "document.getElementById('btn-note-format').textContent")
+        # 等启动自动选中 + 徽标刷新完：CI 上固定 sleep 读到的可能还是启动前的 'MD'
+        result['badge_before'] = wait_for_js(
+            window, "document.getElementById('btn-note-format').textContent", '富文本')
         click_badge(window)
         time.sleep(0.9)
         result['dialog_visible'] = window.evaluate_js(
@@ -71,10 +71,10 @@ def test_badge_converts_to_markdown_then_restores(tmp_path, monkeypatch):
         result['dialog_text'] = window.evaluate_js(
             "document.getElementById('confirm-message').textContent")
         confirm(window)
-        time.sleep(2.0)
-        result['format_after'] = window.evaluate_js("window.__app.state.noteFormat")
-        result['badge_after'] = window.evaluate_js(
-            "document.getElementById('btn-note-format').textContent")
+        # 轮询到状态真的切过去为止（固定 sleep 在 CI 上会读到转换还没落地的中间态）
+        result['format_after'] = wait_for_js(window, "window.__app.state.noteFormat", 'md')
+        result['badge_after'] = wait_for_js(
+            window, "document.getElementById('btn-note-format').textContent", 'MD')
         result['md_visible'] = window.evaluate_js(
             "!document.getElementById('md-editor').classList.contains('hidden')")
         result['source'] = window.evaluate_js(
@@ -88,8 +88,7 @@ def test_badge_converts_to_markdown_then_restores(tmp_path, monkeypatch):
         result['dialog_text2'] = window.evaluate_js(
             "document.getElementById('confirm-message').textContent")
         confirm(window)
-        time.sleep(2.0)
-        result['format_restored'] = window.evaluate_js("window.__app.state.noteFormat")
+        result['format_restored'] = wait_for_js(window, "window.__app.state.noteFormat", 'delta')
         result['quill_visible'] = window.evaluate_js(
             "!document.getElementById('quill-editor').classList.contains('hidden')")
         result['quill_text'] = window.evaluate_js(
@@ -124,7 +123,7 @@ def test_badge_hidden_without_note_and_reports_lossy_path(tmp_path, monkeypatch)
     ns = load_app_partial(monkeypatch, tmp_path)
 
     def actions(window, result):
-        time.sleep(1.2)
+        wait_for_js(window, "!!(window.__app && window.__app.state)")   # 等应用启动完
         result['hidden_no_note'] = window.evaluate_js(
             "document.getElementById('btn-note-format').classList.contains('hidden')")
         window.evaluate_js("document.getElementById('btn-new-note').click();")
