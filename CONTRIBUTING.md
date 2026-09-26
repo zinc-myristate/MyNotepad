@@ -58,6 +58,25 @@ CI（`.github/workflows/ci.yml`）会跑同样的三步，**e2e 失败会直接�
    并在 `MyNotepad.spec` 里确认能被打包**（前端库要离线自带，不要 CDN）。
 5. 改了 `notes` 表结构？写进 `backend.py` 的 `ALTER TABLE` 迁移区（老库要能平滑升级）。
 
+## 发版清单（维护者）
+
+版本号只有一个真相源：**`build_resources/version_info.txt`**（写进 exe 的 `FileVersion` /
+`ProductVersion`），tag 名必须与它一致（例如文件里是 `1.2.0.0` → 打 `v1.2.0`）。
+仓库里刻意不放自动 bump 脚本——两处版本号手工改一下，比多一个要维护的工具更省事。
+
+1. 改 `build_resources/version_info.txt` 里的 **`filevers` / `prodvers`**（元组，如 `(1, 2, 0, 0)`）
+   与 **`FileVersion` / `ProductVersion`** 两个字符串（`'1.2.0.0'`）——**四处都要改**，少一处就会出现
+   "属性里显示旧版本号"。
+2. 把 [CHANGELOG.md](CHANGELOG.md) 顶部的「## 未发布（日期）」改成「## v1.2.0（日期）」，并在下面开一个新的空「未发布」段。
+3. 本地跑一遍 `python -m ruff check .` + `python -m pytest`，再 `python build.py` 确认打包与冒烟都过。
+4. `git tag v1.2.0 -m "一句话说明"` → `git push origin master` → `git push origin v1.2.0`。
+5. [`release.yml`](.github/workflows/release.yml) 会自动：跑测试 → PyInstaller → 复制
+   `LICENSE` / `THIRD_PARTY_NOTICES.md` 进包 → 冒烟 → **校验产物里有 `licenses/` 且没有私人数据**
+   → 出 `MyNotepad-v1.2.0-windows-x64.zip` → 建 Release（release notes 自动生成）。
+6. 顺手把 GitHub Release 说明补两句"这一版用户能感知的变化"（自动生成的只是 PR/提交列表）。
+
+> 想让某个版本**不**发 Release（例如纯文档改动），就别打 tag——tag 是唯一的触发条件。
+
 ## 发布前检查（维护者）
 
 打 tag 让 [`release.yml`](.github/workflows/release.yml) 自动构建是最省事也最安全的路子：
