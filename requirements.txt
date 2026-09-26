@@ -26,6 +26,7 @@ winrt-Windows.Storage.Streams==3.2.1
 
 # 测试依赖
 pytest==9.1.1
+pytest-rerunfailures==16.7   # 仅 CI 的 e2e job 用（--reruns）：无头 WebView2 在 runner 上时序不稳
 ruff==0.16.7              # 代码检查（CI 里是阻断步骤，本地：python -m ruff check .）
 
 # 打包依赖（pyinstaller 不在运行时依赖里，故单独列出）

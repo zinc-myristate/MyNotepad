@@ -23,9 +23,13 @@ jobs:
       - name: Run unit tests
         run: python -m pytest
 
-  # 无头 webview 窗口在 CI 上依赖桌面会话/WebView2 时序，理论上可能 flaky，
-  # 因此这里**不**加 continue-on-error：本地连跑多轮均为 15/15 全绿，UI 回归必须能拦住提交。
-  # 若日后在 CI 上出现与代码无关的随机失败，再加回 `continue-on-error: true` 并在此注明原因。
+  # 无头 webview 窗口在 CI 上依赖桌面会话/WebView2 时序，实测会偶发**与代码无关**的随机失败：
+  # 同一个用例本地连跑多轮全绿、上一轮 CI 也绿，下一轮却挂在"元素还没渲染出来 / 状态还没落地"上
+  # （徽标读到启动前的旧值、点击时 querySelector 返回 null 等，已连续踩到三个不同用例）。
+  # 所以这里只给 e2e 加**重试**（--reruns 2），而不是 continue-on-error：
+  #   · 真回归会连挂 3 次，照样拦住提交（门禁强度不变）；
+  #   · 纯时序抖动被重试吸收，不再让 master 无端变红。
+  # 单测 job **不**加重试——它是确定性的，重试只会掩盖真问题。
   e2e:
     runs-on: windows-latest
     needs: test
@@ -37,7 +41,7 @@ jobs:
       - name: Install dependencies
         run: python -m pip install -r requirements.txt
       - name: Run headless E2E tests
-        run: python -m pytest -m e2e
+        run: python -m pytest -m e2e --reruns 2 --reruns-delay 5
 
   # 打包冒烟：仅主分支，构建 exe 并启动 5 秒验证
   package:
