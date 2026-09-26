@@ -12,8 +12,9 @@
 即可（绿色便携版，数据存在同目录 `data\`）。需要 **Windows 10 1809+ / Windows 11**；
 系统若缺 WebView2 运行时，装一次 [WebView2 Runtime](https://developer.microsoft.com/microsoft-edge/webview2/) 即可。
 
-<!-- 截图：拍好后放到 docs/screenshots/（主界面 / Markdown 双栏 / 深色主题 / 自定义背景），然后取消下面注释
 ![主界面](docs/screenshots/main.png)
+
+<!-- 其余截图待补（Markdown 双栏 / 深色主题 / 自定义背景）：拍好后放到 docs/screenshots/ 再取消注释
 ![Markdown 双栏编辑](docs/screenshots/markdown.png)
 -->
 
