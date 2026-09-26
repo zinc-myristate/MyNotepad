@@ -22,9 +22,17 @@ import ocr
 RENDERER = PROJECT_ROOT + '/renderer'
 
 
-def _need_engine():
+def _need_engine(lang=None):
+    """没有引擎就跳过；给了 lang 还要求**那个语言包真的装了**。
+
+    ⚠️ 只检查"有没有引擎"不够：GitHub Actions 的 windows-latest 装了英文引擎、
+    却没装中文语言包，守卫会放行，后面的中文识别用例必然认不出字（实测 e2e 4 条全挂，
+    识别结果是空串或乱码）。这与 tests/test_ocr.py 里是同一个坑。
+    """
     if not ocr.ocr_ready():
         pytest.skip('这台机器没有可用的 Windows OCR 引擎/语言包')
+    if lang and lang not in ocr.available_languages():
+        pytest.skip('这台机器没有安装 %s 的 OCR 语言包' % lang)
 
 
 def _make_image(path, lines, size=(760, 200)):
@@ -87,7 +95,7 @@ def _open_from_capture(window, path, note_id):
 @pytest.mark.e2e
 def test_ocr_panel_recognizes_and_inserts_image_with_text(tmp_path, monkeypatch):
     """截图路径：面板里真识别出字 → 插入当前笔记 = 图片 + 文字（图在上）"""
-    _need_engine()
+    _need_engine(ocr.OCR_LANG_DEFAULT)
     ns = load_app_partial(monkeypatch, tmp_path)
     import backend
     img = _make_image(os.path.join(str(tmp_path), 'shot.png'),
@@ -136,7 +144,7 @@ def test_ocr_panel_recognizes_and_inserts_image_with_text(tmp_path, monkeypatch)
 @pytest.mark.e2e
 def test_ocr_panel_copy_and_save_as_note(tmp_path, monkeypatch):
     """复制（成功后收起面板）与存为新笔记（进「收件箱」、标题取识别文字第一行）"""
-    _need_engine()
+    _need_engine(ocr.OCR_LANG_DEFAULT)
     ns = load_app_partial(monkeypatch, tmp_path)
     import backend
     img = _make_image(os.path.join(str(tmp_path), 'a.png'), ['会议纪要：周一上午十点'])
@@ -179,7 +187,7 @@ def test_ocr_panel_copy_and_save_as_note(tmp_path, monkeypatch):
 @pytest.mark.e2e
 def test_ocr_language_switch_is_remembered(tmp_path, monkeypatch):
     """换语言会重新识别，并把选择存进设置（下次直接用）"""
-    _need_engine()
+    _need_engine(ocr.OCR_LANG_DEFAULT)
     langs = ocr.available_languages()
     if len(langs) < 2:
         pytest.skip('这台机器只装了一种 OCR 语言，测不了切换')
@@ -213,7 +221,7 @@ def test_ocr_language_switch_is_remembered(tmp_path, monkeypatch):
 @pytest.mark.e2e
 def test_ocr_attachment_right_click_inserts_below_that_image(tmp_path, monkeypatch):
     """图片右键识别：文字插在**那张图**下面（Markdown 与富文本各一次）"""
-    _need_engine()
+    _need_engine(ocr.OCR_LANG_DEFAULT)
     ns = load_app_partial(monkeypatch, tmp_path)
     import backend
     img = _make_image(os.path.join(str(tmp_path), 'c.png'), ['图里的文字在这里'])
@@ -270,7 +278,7 @@ def test_ocr_attachment_right_click_inserts_below_that_image(tmp_path, monkeypat
 @pytest.mark.e2e
 def test_ocr_editor_image_right_click_inserts_below_embed(tmp_path, monkeypatch):
     """同一件事在**富文本**笔记里：右键编辑器里的图片 → 文字插在那个 embed 之后"""
-    _need_engine()
+    _need_engine(ocr.OCR_LANG_DEFAULT)
     ns = load_app_partial(monkeypatch, tmp_path)
     import backend
     img = _make_image(os.path.join(str(tmp_path), 'd.png'), ['图片里的字'])
