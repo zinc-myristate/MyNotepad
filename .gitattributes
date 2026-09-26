@@ -1,0 +1,24 @@
+# 换行归一：索引里统一 LF，工作区按下面各条给
+* text=auto eol=lf
+
+# Windows 脚本必须是 CRLF（cmd 解析 .bat 时才不会在 goto/label 上翻车）
+*.bat text eol=crlf
+*.vbs text eol=crlf
+*.ps1 text eol=crlf
+
+# 二进制
+*.ico binary
+*.png binary
+*.jpg binary
+*.jpeg binary
+*.gif binary
+*.db binary
+*.zip binary
+*.exe binary
+
+# 第三方离线库：不算"本项目的代码"，也不进 diff（GitHub 语言统计应当反映项目自身）
+renderer/quill.js linguist-vendored linguist-generated -diff
+renderer/quill.snow.css linguist-vendored
+renderer/katex/** linguist-vendored
+renderer/vendor/** linguist-vendored
+resources/haarcascade_frontalface_default.xml linguist-vendored -diff

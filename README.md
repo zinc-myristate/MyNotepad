@@ -2,8 +2,20 @@
 
 > Windows 桌面本地记事本 —— Python + pywebview 架构，纸质笔记本风格。
 > 数据完全本地存储，便携模式（数据跟随 exe 目录），可拷到 U 盘随身携带。
+> **不联网、不写注册表（除非你主动开「开机自启」）、不采集任何数据。**
 
+[![CI](https://github.com/zinc-myristate/MyNotepad/actions/workflows/ci.yml/badge.svg)](https://github.com/zinc-myristate/MyNotepad/actions/workflows/ci.yml)
+[![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](LICENSE)
 ![tech](https://img.shields.io/badge/Python-3.14-blue) ![UI](https://img.shields.io/badge/UI-pywebview-green) ![DB](https://img.shields.io/badge/DB-SQLite%20(FTS5)-lightgrey)
+
+**下载**：到 [Releases](../../releases) 下载 `MyNotepad-*-windows-x64.zip`，解压后双击 `MyNotepad.exe`
+即可（绿色便携版，数据存在同目录 `data\`）。需要 **Windows 10 1809+ / Windows 11**；
+系统若缺 WebView2 运行时，装一次 [WebView2 Runtime](https://developer.microsoft.com/microsoft-edge/webview2/) 即可。
+
+<!-- 截图：拍好后放到 docs/screenshots/（主界面 / Markdown 双栏 / 深色主题 / 自定义背景），然后取消下面注释
+![主界面](docs/screenshots/main.png)
+![Markdown 双栏编辑](docs/screenshots/markdown.png)
+-->
 
 ---
 
@@ -21,7 +33,7 @@
 | 🕐 历史版本 | Ctrl+S 手动保存生成快照，每笔记最多 50 个，可预览 / 恢复 / 删除 |
 | ⏰ 提醒系统 | 自然语言输入（「明天下午3点」「每周五9:00」）、重复提醒（每天/每周/工作日/每月/每年）、Toast 通知、稍后提醒；**配合托盘常驻，关掉窗口也照常提醒** |
 | 🖥 桌面集成 | **关窗驻留托盘**（提醒继续生效，右键托盘可退出/开自启）、**开机自启**、**记住窗口大小与位置** |
-| 🎨 外观 | 4 套浅色主题 + **深色主题**（可跟随系统深浅色自动切换）/ 双层背景系统（全局层 + 笔记层；自定义图片背景下**按图分区自动切深字/亮字** + 背景模糊 + 界面不透明度）/ 封面系统（4 类型） |
+| 🎨 外观 | 4 套浅色主题 + **深色主题**（可跟随系统深浅色自动切换）/ 双层背景系统（全局层 + 笔记层；自定义图片背景下**按图分区自动切深字/亮字** + 背景模糊 + **界面不透明度 / 正文不透明度两个滑杆**，正文薄纱拉到 0% 就是纯沉浸式）/ 封面系统（4 类型） |
 | ✍️ 富文本 | Quill.js v2：加粗/斜体/颜色/自定义字体字号、待办清单、表格、图片（拖拽+滚轮缩放）、附件卡片、装饰分割线、贴纸印章、Emoji |
 | 🧮 数学公式 | KaTeX 行内/块级公式，点击可编辑 |
 | 📤 导出 | HTML / TXT / DOCX / XLSX / PDF（系统打印）/ **Markdown**（图片自动复制到同级 `.assets/`）/ **导入 Markdown** / **一键全库备份 ZIP** / **按笔记本或标签导出**（解压即可作为独立库打开） |
@@ -40,24 +52,31 @@
 | Markdown 栈 | markdown-it（渲染）+ CodeMirror 5（源码编辑）+ DOMPurify（消毒）+ highlight.js（代码高亮），全部离线自带、无 CDN |
 | 加密 | `cryptography`（AES-256-GCM） |
 | 打包 | PyInstaller（`MyNotepad.spec`） |
-| 测试 | pytest（498 单测 + 81 无头 E2E） |
+| 测试 | pytest（500 单测 + 87 无头 E2E）、ruff |
 
 ## 快速开始
+
+**系统要求**：Windows 10 1809+ / Windows 11（依赖系统自带的 WebView2 运行时）。
+开发还需要 Python **3.14**。
+
+**直接用**（推荐）：从 [Releases](../../releases) 下载 zip 解压即用，数据放在 `dist\MyNotepad\data\`。
 
 **开发运行**（需要 Python 3.14 及依赖）：
 
 ```bash
-pip install pywebview cryptography Pillow pystray opencv-contrib-python numpy python-docx openpyxl pytest
-python app.pyw          # 或 py -3.14 app.pyw
+pip install -r requirements.txt     # 版本已全部锁死（见文件内注释）
+python app.pyw                      # 或 py -3.14 app.pyw
 ```
 
 **打包分发**：
 
 ```bash
-pyinstaller MyNotepad.spec   # 产物在 dist/MyNotepad/
+python build.py                     # 推荐：关实例 → 备份 data → PyInstaller → 还原 → 修快捷方式 → 冒烟
 ```
 
-**便捷启动**：`启动.bat` / `启动.vbs`（桌面快捷方式）；`诊断.bat` 排查环境问题。
+**便捷启动**：`启动.bat` / `启动.vbs`（打包版）；`诊断.bat` 排查环境问题（只读，输出可直接贴到 issue）。
+
+**贡献与反馈**：见 [CONTRIBUTING.md](CONTRIBUTING.md)；安全漏洞请按 [SECURITY.md](SECURITY.md) 走私密渠道。
 
 ## 数据与安全
 
@@ -77,10 +96,14 @@ pyinstaller MyNotepad.spec   # 产物在 dist/MyNotepad/
 ## 测试
 
 ```bash
-py -3.14 -m pytest                 # 498 单测（自动隔离临时数据目录）
-py -3.14 -m pytest -m e2e          # 64 无头 pywebview 端到端
+py -3.14 -m pytest                 # 500 单测（自动隔离临时数据目录）
+py -3.14 -m pytest -m e2e          # 87 无头 pywebview 端到端（真开窗口，约 10 分钟）
 python -m ruff check .             # 代码检查（配置见 pyproject.toml）
 ```
+
+CI（[`.github/workflows/ci.yml`](.github/workflows/ci.yml)）在 windows-latest 上跑同样三步：
+ruff + 单测 → 无头 E2E → master 分支额外做一次打包冒烟；打 tag 时由
+[`release.yml`](.github/workflows/release.yml) 出 Windows 包并自动附到 Release。
 
 ## 打包
 
@@ -108,13 +131,19 @@ SQLite 删除或改写大字段后**不会**把空间还给文件系统——图
 ├── backend.py               # 后端 API（数据库/加密/搜索/备份/提醒/导出）
 ├── applog.py                # 崩溃兜底日志
 ├── build.py                 # 打包脚本（备份-构建-还原-修快捷方式-冒烟）
-├── MyNotepad.spec           # PyInstaller 打包配置
+├── MyNotepad.spec           # PyInstaller 打包配置（含依赖许可证收集）
 ├── pyproject.toml           # ruff 配置
 ├── renderer/                # 前端（ES 模块图 + Quill/KaTeX + 4 主题样式）
-├── data/                    # 运行时数据
+├── data/                    # 运行时数据（gitignore）
 ├── resources/               # 图标 + 人脸检测模型
+├── build_resources/         # 版本信息 + 打包时收集第三方许可证的脚本
 ├── tests/                   # pytest 单测 + 无头 E2E
-└── CLAUDE.md                # 开发文档（架构细节 + 更新历史）
+├── .github/                 # CI / Release 工作流 + Issue 模板
+├── CLAUDE.md                # 开发文档（架构细节 + 更新历史，含"为什么这么写"）
+├── CONTRIBUTING.md          # 参与开发须知（含代码约定与踩坑清单）
+├── CHANGELOG.md             # 面向用户的更新日志
+├── THIRD_PARTY_NOTICES.md   # 第三方组件与许可
+└── LICENSE                  # MIT
 ```
 
 ## 提醒与「关掉窗口还响不响」
@@ -293,6 +322,21 @@ python restore.py --from notes-20260920-235857.db
    （属性行里有转换入口；转换本身有备份与内容守恒校验）
 9. **双链暂不做输入自动补全**：`[[` 不会弹出候选列表（要点在于先有可跳转、有反向链接，
    补全属于手感优化）；双链匹配的是**标题**，不是文件名或 UUID
+10. **只有 Windows 版**：界面依赖 WebView2、OCR 依赖 Windows 自带引擎、桌面集成（托盘/全局热键/
+    开机自启）走 Win32 API，没有跨平台计划
+11. **没有云同步、没有账号、没有移动端**：同步请把整个应用目录（含 `data/`）放进坚果云 / OneDrive，
+    但**不要在应用运行时让同步盘覆盖文件**（见上一节）
+
+## 许可证
+
+本项目以 [MIT 许可证](LICENSE) 发布，可自由使用、修改、分发（含商用），只需保留版权声明。
+
+自带的第三方组件（Quill / KaTeX / markdown-it / DOMPurify / CodeMirror / highlight.js、
+OpenCV 人脸检测数据、以及打包进 exe 的 Python 依赖）各自的许可与出处见
+[THIRD_PARTY_NOTICES.md](THIRD_PARTY_NOTICES.md)；`python build.py` 会把每个依赖自带的许可证副本
+一并收进产物的 `licenses/` 目录。
+
+> 想在文档/截图里用这个项目？欢迎，但请**不要**使用他人享有著作权的图片（游戏/动漫角色图等）作为素材。
 
 ## 窗口尺寸与位置
 

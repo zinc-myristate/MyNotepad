@@ -1,8 +1,28 @@
+# 运行时数据与产物
 data/
 dist/
 build/
 data_backup*/
+_predist-backup*/
+pytmp*/
+
+# Python
 __pycache__/
 *.pyc
-debug.log
-pytmp*/
+*.pyo
+.venv/
+venv/
+.pytest_cache/
+.ruff_cache/
+
+# 日志（error.log / debug.log 里可能有本机路径）
+*.log
+
+# 本地开发工具配置（不进公开仓库：`.claude/` 是个人自动化 hook，`.superpowers/` 是会话产物）
+.claude/
+.superpowers/
+
+# Windows 杂物
+Thumbs.db
+desktop.ini
+*.lnk

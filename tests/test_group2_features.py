@@ -89,7 +89,7 @@ def test_quick_switch_esc_and_fuzzy(tmp_path, monkeypatch):
     ns = load_app_partial(monkeypatch, tmp_path)
     import backend
     nid = backend.api.notes_create()['id']
-    backend.api.notes_update(nid, {'title': 'MATS1192 复习笔记',
+    backend.api.notes_update(nid, {'title': 'Markdown 19 条技巧',
                                    'content': '{"ops":[{"insert":"x\\n"}]}'})
     other = backend.api.notes_create()['id']
     backend.api.notes_update(other, {'title': '菜谱', 'content': '{"ops":[{"insert":"y\\n"}]}'})
@@ -99,7 +99,7 @@ def test_quick_switch_esc_and_fuzzy(tmp_path, monkeypatch):
             "document.dispatchEvent(new KeyboardEvent('keydown',"
             "{key:'p', ctrlKey:true, bubbles:true, cancelable:true}));")
         time.sleep(0.5)
-        # "m19" 不是 "MATS1192 复习笔记" 的连续子串，但字符按顺序出现 → 子序列应命中
+        # "m19" 不是 "Markdown 19 条技巧" 的连续子串，但字符按顺序出现 → 子序列应命中
         window.evaluate_js(
             "var i = document.getElementById('quick-switch-input'); i.value = 'm19';"
             "i.dispatchEvent(new Event('input', {bubbles:true}));")
@@ -117,7 +117,7 @@ def test_quick_switch_esc_and_fuzzy(tmp_path, monkeypatch):
     res = _run(ns, actions)
     assert 'error' not in res, res
     titles = json.loads(res['fuzzy'])
-    assert titles == ['MATS1192 复习笔记'], '子序列 m19 应命中 MATS1192；实际 %r' % titles
+    assert titles == ['Markdown 19 条技巧'], '子序列 m19 应命中；实际 %r' % titles
     assert res['closed'] == 'none', 'Esc 应关闭面板'
 
 

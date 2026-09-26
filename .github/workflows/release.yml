@@ -1,0 +1,106 @@
+name: Release
+
+# 打 tag（v1.2.3）时构建 Windows 包并挂到 Release；也可以在 Actions 页面手动触发，
+# 手动触发只产出 artifact（不建 Release）。
+on:
+  push:
+    tags: ['v*']
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  build:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.14'
+          cache: pip
+
+      - name: Install dependencies
+        run: python -m pip install -r requirements.txt pyinstaller
+
+      - name: Lint + unit tests
+        run: |
+          python -m ruff check .
+          python -m pytest
+
+      - name: Build (PyInstaller)
+        run: pyinstaller MyNotepad.spec
+
+      # 许可与归属必须随二进制一起分发：LICENSE 是项目自身的，THIRD_PARTY_NOTICES 列出全部第三方组件；
+      # 各依赖的许可证副本由 MyNotepad.spec 里的 collect_licenses 收进 dist/MyNotepad/licenses/。
+      - name: Bundle license notices
+        shell: pwsh
+        run: Copy-Item LICENSE, THIRD_PARTY_NOTICES.md -Destination dist\MyNotepad\
+
+      - name: Smoke test
+        shell: pwsh
+        run: |
+          $env:MYNOTEPAD_DATA_DIR = "$env:RUNNER_TEMP\smoke"
+          $p = Start-Process -FilePath "dist\MyNotepad\MyNotepad.exe" -PassThru
+          Start-Sleep -Seconds 8
+          if ($p.HasExited) { Write-Error "应用启动后 8 秒内退出（exit code: $($p.ExitCode)）"; exit 1 }
+          Stop-Process -Id $p.Id
+          Write-Host "冒烟通过：应用运行 8 秒无崩溃"
+
+      - name: Verify license files landed in the package
+        shell: pwsh
+        run: |
+          $lic = Get-ChildItem dist\MyNotepad\_internal\licenses -Directory -ErrorAction SilentlyContinue
+          if (-not $lic -or $lic.Count -lt 10) { Write-Error "产物里没有收集到依赖许可证（$($lic.Count) 个包）"; exit 1 }
+          Write-Host "产物内含 $($lic.Count) 个依赖的许可证副本"
+          if (-not (Test-Path dist\MyNotepad\THIRD_PARTY_NOTICES.md)) { Write-Error "缺少 THIRD_PARTY_NOTICES.md"; exit 1 }
+
+      # 隐私闸门：dist 里如果混进了真实笔记库（本地手工 build.py 打包时会把 data/ 还原进去，
+      # 那是用户自己的笔记），绝不允许打成 zip 发出去。CI 构建天然没有 data/，这条只是保险。
+      - name: Ensure no personal data is shipped
+        shell: pwsh
+        run: |
+          $db = "dist\MyNotepad\data\notes.db"
+          if (Test-Path $db) {
+            $size = (Get-Item $db).Length
+            if ($size -gt 4096) { Write-Error "产物里带着 data\notes.db（$size 字节）——请先删除 dist\MyNotepad\data 再发布"; exit 1 }
+            Write-Host "data\notes.db 存在但只有 $size 字节（空库），放行"
+          } else {
+            Write-Host "产物里没有 data\notes.db，OK"
+          }
+          foreach ($d in @("attachments", "backgrounds", "backups", "custom_icon")) {
+            $p = Join-Path "dist\MyNotepad\data" $d
+            if (Test-Path $p) {
+              $n = (Get-ChildItem $p -Recurse -File -ErrorAction SilentlyContinue | Measure-Object).Count
+              if ($n -gt 0) { Write-Error "产物里的 data\$d 有 $n 个文件——那是私人数据，不要发布"; exit 1 }
+            }
+          }
+          Write-Host "隐私闸门通过：产物里没有私人数据"
+
+      - name: Zip
+        shell: pwsh
+        run: |
+          $name = if ($env:GITHUB_REF_TYPE -eq 'tag') { $env:GITHUB_REF_NAME } else { "dev-$env:GITHUB_SHA".Substring(0, 12) }
+          Compress-Archive -Path dist\MyNotepad\* -DestinationPath "MyNotepad-$name-windows-x64.zip"
+          Get-Item MyNotepad-*.zip | Select-Object Name, Length
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: MyNotepad-windows-x64
+          path: MyNotepad-*.zip
+          if-no-files-found: error
+
+      - name: Publish release
+        if: startsWith(github.ref, 'refs/tags/')
+        uses: softprops/action-gh-release@v2
+        with:
+          files: MyNotepad-*.zip
+          generate_release_notes: true
+          body: |
+            解压后双击 `MyNotepad.exe` 即可运行（绿色便携版，数据存在同目录 `data\`）。
+
+            - 需要 **Windows 10 1809+ / Windows 11**（依赖系统自带的 WebView2 运行时；
+              老机器若缺少，装一次 [WebView2 Runtime](https://developer.microsoft.com/microsoft-edge/webview2/) 即可）
+            - 本程序**不联网、不写注册表**（除非你主动开启「开机自启」）、不采集任何数据
+            - 许可：[MIT](LICENSE)；第三方组件见 `THIRD_PARTY_NOTICES.md` 与包内 `licenses/`

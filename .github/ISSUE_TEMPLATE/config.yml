@@ -1,0 +1,8 @@
+blank_issues_enabled: true
+contact_links:
+  - name: 安全漏洞（请不要开公开 issue）
+    url: https://github.com/zinc-myristate/MyNotepad/security/advisories/new
+    about: 用私密安全通告报告，见 SECURITY.md
+  - name: 使用问题 / 讨论
+    url: https://github.com/zinc-myristate/MyNotepad/discussions
+    about: 不确定是不是 bug、想聊用法，来 Discussions

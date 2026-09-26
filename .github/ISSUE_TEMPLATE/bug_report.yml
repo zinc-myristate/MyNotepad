@@ -1,0 +1,82 @@
+name: Bug 反馈
+description: 报告一个可以复现的问题
+title: "[Bug] "
+labels: ["bug"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        感谢反馈！**请先确认这是最新版本的问题**（Releases 页的包，或 `git pull` 后的源码运行）。
+        另外：请**不要**把你的私人笔记内容贴进来，正文摘要 / 截图也请打码。
+
+  - type: dropdown
+    id: install
+    attributes:
+      label: 怎么运行的
+      options:
+        - 从 Releases 下载的 exe
+        - 源码运行（python app.pyw）
+        - 自己用 build.py 打包的
+    validations:
+      required: true
+
+  - type: input
+    id: version
+    attributes:
+      label: 版本 / 提交
+      description: Release 的 tag，或 `git rev-parse --short HEAD` 的输出
+    validations:
+      required: true
+
+  - type: input
+    id: windows
+    attributes:
+      label: Windows 版本与显示缩放
+      placeholder: "例：Windows 11 23H2，缩放 150%"
+    validations:
+      required: true
+
+  - type: textarea
+    id: what
+    attributes:
+      label: 现象
+      description: 你看到什么、期望什么。涉及界面的问题请附截图（记得打码笔记内容）
+    validations:
+      required: true
+
+  - type: textarea
+    id: steps
+    attributes:
+      label: 复现步骤
+      placeholder: |
+        1. 打开…
+        2. 点击…
+        3. 出现…
+    validations:
+      required: true
+
+  - type: textarea
+    id: diagnose
+    attributes:
+      label: 诊断输出（推荐）
+      description: 在仓库目录双击 `诊断.bat`，把输出贴进来（它只读，不含笔记内容）。打包版也可运行 `MyNotepad.exe --ocr-selftest` 看 OCR 是否可用
+      render: text
+    validations:
+      required: false
+
+  - type: textarea
+    id: log
+    attributes:
+      label: error.log（如果程序崩溃过）
+      description: 位置：`data\error.log`（打包版在 `dist\MyNotepad\data\error.log`）。日志**不含**笔记正文
+      render: text
+    validations:
+      required: false
+
+  - type: checkboxes
+    id: confirm
+    attributes:
+      label: 确认
+      options:
+        - label: 我已在最新版本上复现，且没有在正文/截图里泄露私人笔记内容
+          required: true

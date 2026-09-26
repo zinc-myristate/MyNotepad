@@ -1,0 +1,33 @@
+name: 功能建议
+description: 提一个想法或改进
+title: "[建议] "
+labels: ["enhancement"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        这个项目的取舍原则写在 README 的「已知限制」里，提之前可以先看一眼——
+        有些"没做"是刻意的（例如：不做云同步、不联网、不替用户决定抢系统全局热键）。
+
+  - type: textarea
+    id: problem
+    attributes:
+      label: 你想解决什么问题
+      description: 描述场景比描述方案更有用
+    validations:
+      required: true
+
+  - type: textarea
+    id: idea
+    attributes:
+      label: 你设想的做法（可选）
+    validations:
+      required: false
+
+  - type: textarea
+    id: alternatives
+    attributes:
+      label: 现在你怎么绕过（可选）
+      description: 例：用模板、用搜索语法、用导出…… 说明现有功能为什么不够
+    validations:
+      required: false
