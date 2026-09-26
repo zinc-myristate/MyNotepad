@@ -18,17 +18,23 @@ function activeBgLayer() {
   return null;
 }
 
-/** 界面行 → 它压在图片的哪一段（条带划分见 BAND_OF_CHROME）。
+/** 界面行 → 它压在图片的哪一段（条带划分见 BAND_RANGES）。
  *  为什么按段采样：一张图常常上半亮下半暗，整图一个"明/暗"判断必然有一半界面读不清。 */
 const CHROME_BANDS = {
   title: ['#title-row', '#chrome-veil'],
   upper: ['#tag-bar', '#prop-block', '#md-toolbar', '#editor-toolbar', '#font-size-bar'],
-  mid: ['.ql-editor', '#md-editor', '#md-preview'],
+  mid: ['.ql-editor', '#md-editor', '#md-preview', '#content-veil'],
   bottom: ['#editor-status', '#find-bar', '#bottom-veil'],
 };
+/** 正文里**装字**的那几个元素（薄纱不在其中：它只借 mid 段的明暗取色） */
+const CONTENT_INK_SELECTORS = ['.ql-editor', '#md-editor', '#md-preview'];
 const BAND_RANGES = {           // 占编辑器区域高度的比例（与界面行在屏幕上的位置对应）
   title: [0.00, 0.09],
   upper: [0.09, 0.27],
+  // 正文带再拆上下两段：正文区跨度最大（0.30~0.72），一个判定必然照顾不到"上亮下暗"的图。
+  // 两段一致 → 单色墨够用；两段不一致 → 走 .bg-ink-mixed 的描边兜底（见 applyChromeTones）。
+  midTop: [0.28, 0.50],
+  midBottom: [0.50, 0.74],
   mid: [0.30, 0.72],
   bottom: [0.92, 1.00],
 };
@@ -135,27 +141,45 @@ export function analyzeImageColor(dataUri, callback) {
 }
 
 const ALL_TONE_SELECTORS = Object.values(CHROME_BANDS).flat();
+const TONE_CLASSES = ['bg-tone-dark', 'bg-tone-light', 'bg-ink-mixed'];
 
-/** 两片薄纱的高度：按"编辑器内容区顶边"与"状态栏顶边"实时算。
+/** 两片界面薄纱往正文里的渐隐长度（CSS 的 mask 里写着同样的 48px / 40px，别只改一边） */
+const VEIL_FADE_TOP = 48;
+const VEIL_FADE_BOTTOM = 40;
+
+/** 三片薄纱的高度：按"编辑器内容区顶边"与"状态栏顶边"实时算。
  *  为什么不用魔法数字：工具栏会换行、md↔富文本切换会让界面层高度变化，
  *  写死高度时渐隐段就会落在错误的行上（那样交界处反而更明显）。 */
 export function updateChromeVeil() {
   const container = document.getElementById('editor-container');
   const top = document.getElementById('chrome-veil');
   const bottom = document.getElementById('bottom-veil');
+  const content = document.getElementById('content-veil');
   if (!container || !top || !bottom) return;
-  const content = document.querySelector('#md-editor:not(.hidden)') || document.querySelector('.ql-container')
+  const inkArea = document.querySelector('#md-editor:not(.hidden)') || document.querySelector('.ql-container')
     || document.getElementById('md-editor') || document.querySelector('#quill-editor .ql-container');
   const status = document.getElementById('editor-status');
   const cTop = container.getBoundingClientRect().top;
-  const contentTop = content ? content.getBoundingClientRect().top - cTop : 0;
+  const contentTop = inkArea ? inkArea.getBoundingClientRect().top - cTop : 0;
   // 顶部薄纱：盖住界面层，再往正文里多留 48px 做渐隐
-  const topH = Math.max(0, Math.round(contentTop)) + 48;
+  const topH = Math.max(0, Math.round(contentTop)) + VEIL_FADE_TOP;
   if (top.style.height !== topH + 'px') top.style.height = topH + 'px';
   const statusTop = status && !status.classList.contains('hidden')
     ? status.getBoundingClientRect().top - cTop : container.clientHeight;
-  const bottomH = Math.max(0, Math.round(container.clientHeight - statusTop)) + 40;
+  const bottomH = Math.max(0, Math.round(container.clientHeight - statusTop)) + VEIL_FADE_BOTTOM;
   if (bottom.style.height !== bottomH + 'px') bottom.style.height = bottomH + 'px';
+
+  // 正文薄纱（第三片）：上下两片之外剩下的那块。**必须**让它的渐隐段与前两片的渐隐段完全重合——
+  // 三片薄纱的 alpha 是相加的，首尾相接就会出现两条新的硬边（"突兀的一块"就是这么来的）：
+  //   上边 = 内容区顶边 - 48（顶部薄纱正是在这里开始变淡）
+  //   下边 = 状态栏顶边 + 40（底部薄纱正是在这里开始变淡）
+  // 于是总不透明度沿 y 连续：c → c+k → k → c，没有任何跳变。
+  if (content) {
+    const cvTop = Math.max(0, Math.round(contentTop)) - VEIL_FADE_TOP;
+    const cvH = Math.max(0, (Math.max(0, Math.round(statusTop)) + VEIL_FADE_BOTTOM) - cvTop);
+    if (content.style.top !== cvTop + 'px') content.style.top = cvTop + 'px';
+    if (content.style.height !== cvH + 'px') content.style.height = cvH + 'px';
+  }
 }
 
 /** 界面层高度会因窗口缩放 / 工具栏换行 / 编辑器切换而变化：观察几行界面元素即可 */
@@ -184,24 +208,72 @@ export function applyChromeTones(colorInfo) {
       el.classList.toggle('bg-tone-light', !dark);
     });
   });
+  // 正文带拆出的上下两段一明一暗（"混合底"）：单色墨必然有一半读不清，于是给正文描边兜底。
+  // 这是这轮划的界——**不做**"滚动跟随"（正文滚动时按视口位置换墨会抖，而且没法测），
+  // 混合底用"描边 + 加厚阴影"解决；两段一致时（绝大多数图）不加，保持干净的字形。
+  const midTop = bands && bands.midTop, midBottom = bands && bands.midBottom;
+  const mixed = !!(midTop && midBottom && midTop.dark !== midBottom.dark);
+  CONTENT_INK_SELECTORS.forEach((sel) => {
+    const el = document.querySelector(sel);
+    if (el) el.classList.toggle('bg-ink-mixed', mixed);
+  });
 }
 
-/** 「背景模糊」与「界面不透明度」：前者给图降噪，后者只给界面行加薄纱 */
+/** 「背景模糊」与「界面不透明度 / 正文不透明度」：前者给图降噪，后两者只给界面行与正文区加薄纱 */
 export function applyBackgroundTuning(opts = {}) {
   const blur = Number(opts.blur) || 0;
   const scrim = opts.scrim === undefined ? 0.3 : Number(opts.scrim) || 0;
+  const contentScrim = opts.contentScrim === undefined
+    ? Number(state.bgContentScrim === undefined ? 0.3 : state.bgContentScrim) || 0
+    : Number(opts.contentScrim) || 0;
   [dom.globalBgLayer, dom.noteBgLayer].forEach((el) => {
     if (!el) return;
     // 模糊会让边缘透出底色，所以顺带放大一点点盖住（1 + 2*blur% 的幅度足够）
     el.style.filter = blur > 0 ? 'blur(' + blur + 'px)' : '';
     el.style.transform = blur > 0 ? 'scale(' + (1 + Math.min(0.12, blur * 0.008)) + ')' : '';
   });
-  document.documentElement.style.setProperty('--ad-scrim', String(Math.max(0, Math.min(1, scrim))));
+  const clamp01 = (v) => String(Math.max(0, Math.min(1, v)));
+  document.documentElement.style.setProperty('--ad-scrim', clamp01(scrim));
+  document.documentElement.style.setProperty('--ad-content-scrim', clamp01(contentScrim));
   state.bgBlur = blur;
   state.bgScrim = scrim;
+  state.bgContentScrim = contentScrim;
 }
 
 let _veilWatched = false;
+let _adaptiveSeq = 0;   // 分析请求序号：迟到的回调直接丢弃（连点主题/连切笔记会乱序）
+
+/** 当前那层图上正在显示的图片 URL（data: 或 file:///），没有图则 null */
+function activeBgImageUrl() {
+  const layer = activeBgLayer();
+  if (!layer) return null;
+  const raw = (layer.style.backgroundImage || '').trim();
+  const m = /^url\((['"]?)(.*)\1\)$/.exec(raw);
+  return m && m[2] ? m[2] : null;
+}
+
+/** 按「当前真正可见的那一层图」决定自适应层的去留。
+ *
+ *  为什么要有它：判断依据必须是**屏幕上有不有图**，而不是 settings 里的 bg_type。
+ *  曾经的写法散在 applyGlobalBackground() / applyNoteBackground() 里，两处都是
+ *  "全局背景 = 主题色 → clearAdaptiveUI()" —— 可图完全可能挂在**笔记层**
+ *  （notes.bg_type='image'，全局层本来就是默认的「主题色」），于是点一下主题
+ *  就把整个自适应层清掉：
+ *    · body.adaptive-bg 没了 → .ql-toolbar 恢复自带的 55% 白玻璃（backdrop blur）
+ *      = 一条硬边亮块，正是用户报的"突兀的一块"；
+ *    · 两片薄纱 display:none（界面行直接压在原图上）；
+ *    · .bg-tone-* 被摘掉 → 墨色回落成主题色 → 深色图上变暗底暗字，读不清。
+ *  现在统一走这里：有图就**重算**（主题变了 --bg-editor 也变了，正是重算的理由），没图才清。 */
+export function refreshAdaptiveUI() {
+  const url = activeBgImageUrl();
+  if (!url) { clearAdaptiveUI(); return; }
+  const seq = ++_adaptiveSeq;
+  analyzeImageColor(url, (info) => {
+    if (seq !== _adaptiveSeq) return;        // 期间又换了背景/主题，这份结果已经过期
+    if (!info) { clearAdaptiveUI(); return; }
+    applyAdaptiveUI(info);
+  });
+}
 
 export function applyAdaptiveUI(colorInfo) {
   const body = document.body;
@@ -222,7 +294,7 @@ export function clearAdaptiveUI() {
   // 去掉所有行上的明暗类：不留"上一次图片"的配色
   ALL_TONE_SELECTORS.forEach((sel) => {
     const el = document.querySelector(sel);
-    if (el) el.classList.remove('bg-tone-dark', 'bg-tone-light');
+    if (el) el.classList.remove(...TONE_CLASSES);
   });
   window.pywebview.api.settings_set('adaptive_color', '');
 }

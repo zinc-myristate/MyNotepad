@@ -762,35 +762,55 @@ html, body {
   --text-primary: #22201D;
   --text-secondary: rgba(34, 32, 29, 0.88);
   --text-muted: rgba(34, 32, 29, 0.68);
+  /* --text-very-muted 是占位符「开始写点什么…」与极淡说明文字用的：不覆盖它的话，
+     浅色主题那支 #C5BFB8 压在图上等于隐形（实测：截图上占位符完全看不见） */
+  --text-very-muted: rgba(34, 32, 29, 0.42);
   --border-light: rgba(60, 58, 54, 0.35);
   --border-color: rgba(60, 58, 54, 0.45);
   --ad-veil: 255, 255, 255;
   --ad-shadow: 0 1px 2px rgba(255, 255, 255, 0.85);
+  --ad-stroke: rgba(255, 255, 255, 0.65);
 }
 .bg-tone-dark {
   --text-primary: #F5F5F2;
   --text-secondary: rgba(245, 245, 242, 0.90);
   --text-muted: rgba(245, 245, 242, 0.72);
+  --text-very-muted: rgba(245, 245, 242, 0.52);
   --border-light: rgba(255, 255, 255, 0.30);
   --border-color: rgba(255, 255, 255, 0.40);
   --ad-veil: 16, 18, 22;
   --ad-shadow: 0 1px 3px rgba(0, 0, 0, 0.85);
+  --ad-stroke: rgba(0, 0, 0, 0.55);
 }
 .bg-tone-light, .bg-tone-dark {
-  /* 只负责"这一行该用什么颜色的字"；底色交给下面两片整的薄纱（逐行加底色会在
+  /* 只负责"这一行该用什么颜色的字"；底色交给上面三片整的薄纱（逐行加底色会在
      行间空隙里露出原图，形成斑马纹，交界处也会一刀切） */
   text-shadow: var(--ad-shadow);
   transition: color var(--transition-fast);
+  /* 必须**显式**再写一次 color：`.ql-editor` 自己没有 color 声明（富文本正文的颜色是从祖先
+     继承来的），只重定义变量的话富文本正文压根不跟随明暗。真机实测：深色图上 .ql-editor
+     带着 .bg-tone-dark，算出来的字色却还是主题的深墨（正文 vs 背景对比度只有 1.28:1，
+     而"看不见正文"正是用户报的第二个症状）。md 源码（.CodeMirror）与 md 预览（.md-preview）
+     都自己声明了 color: var(--text-primary)，所以这个坑只有富文本会踩。 */
+  color: var(--text-primary);
+}
+
+/* 正文"混合底"（上半亮下半暗）：单色墨必然有一半读不清，于是给字描边。
+   paint-order: stroke 让描边画在字形**下面**——默认是后画描边，笔画会被吃掉（粗体直接糊成一团）。
+   只对装了字的正文元素生效（.ql-editor / md 源码 / md 预览），且只在两段判定打架时挂上。 */
+.bg-ink-mixed {
+  -webkit-text-stroke: 0.7px var(--ad-stroke, rgba(0, 0, 0, 0.5));
+  paint-order: stroke;
 }
 
 /* ====== 界面层薄纱：整片 + 尾部渐隐 ====== */
 /* 绝对定位在 .editor-area 里，z-index 低于 .editor-container(=2)，所以永远在文字下面。
    高度由 JS 写成行内 height；渐隐段固定 48px，正好落在正文区顶部。 */
-.chrome-veil, .bottom-veil {
+.chrome-veil, .bottom-veil, .content-veil {
   position: absolute; left: 0; right: 0; z-index: 1;
   pointer-events: none; display: none;
 }
-.chrome-veil, .bottom-veil {
+.chrome-veil, .bottom-veil, .content-veil {
   /* 整片磨砂玻璃：色调（--ad-scrim）与模糊一起由 mask 淡出，
      所以界面层到正文区是"糊→清"的渐变，而不是一条硬边 */
   background: rgba(var(--ad-veil, 128, 128, 128), var(--ad-scrim, 0));
@@ -807,9 +827,21 @@ html, body {
   -webkit-mask-image: linear-gradient(to top, #000 0, #000 calc(100% - 40px), transparent 100%);
   mask-image: linear-gradient(to top, #000 0, #000 calc(100% - 40px), transparent 100%);
 }
+/* 正文薄纱（第三片，2026-09-26）：只在正文区盖一层，强度走自己的变量 —— 0% 就是原来的纯沉浸式。
+   top/height 由 updateChromeVeil() 写成行内值：上边 = 内容区顶边 - 48px、下边 = 状态栏顶边 + 40px，
+   于是它的渐隐段与上下两片的渐隐段**逐像素重合**（三片薄纱的 alpha 是相加的，首尾相接就会
+   多出两条硬边，那正是用户报的「突兀的一块」）。下面的 48px / 40px 必须与
+   08-appearance2.js 的 VEIL_FADE_TOP / VEIL_FADE_BOTTOM 一致。 */
+.content-veil {
+  top: 0;
+  background: rgba(var(--ad-veil, 128, 128, 128), var(--ad-content-scrim, 0.3));
+  -webkit-mask-image: linear-gradient(to bottom, transparent 0, #000 48px, #000 calc(100% - 40px), transparent 100%);
+  mask-image: linear-gradient(to bottom, transparent 0, #000 48px, #000 calc(100% - 40px), transparent 100%);
+}
 /* 只有开着背景图（自适应）时才显示薄纱 */
 body.adaptive-bg .chrome-veil { display: block; }
 body.adaptive-bg .bottom-veil { display: block; }
+body.adaptive-bg .content-veil { display: block; }
 /* 输入框/下拉这些自带底色的控件：跟着薄纱一起走，别在暗底上留一块亮 */
 .bg-tone-dark .find-input, .bg-tone-dark .prop-row input, .bg-tone-dark .prop-row select,
 .bg-tone-dark .my-toolbar-select {

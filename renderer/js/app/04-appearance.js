@@ -5,7 +5,7 @@ import { $, $$, NotepadConfig, closePanel, dom, openPanel, showToast, state } fr
 import { syncNoteFields } from './02-editor.js';
 import { renderNoteList } from './03-notes.js';
 import { analyzeImageColor, applyAdaptiveUI, applyBackgroundTuning, buildCoverPanel,
-  clearAdaptiveUI } from './08-appearance2.js';
+  refreshAdaptiveUI, updateChromeVeil } from './08-appearance2.js';
 import { debounce } from '../shared/utils.js';
 
 export async function loadSettings(retryCount = 0) {
@@ -23,6 +23,8 @@ export async function loadSettings(retryCount = 0) {
     try { const pos = JSON.parse(settings.bg_pos || '{"x":50,"y":50}'); state.globalBg.posX = pos.x; state.globalBg.posY = pos.y; globalBgPos = pos; } catch(e) {}
     state.globalBg.blur = parseFloat(settings.bg_blur) || 0;
     state.globalBg.scrim = settings.ui_scrim === undefined ? 0.3 : (parseFloat(settings.ui_scrim) || 0);
+    state.globalBg.contentScrim = settings.content_scrim === undefined
+      ? 0.3 : (parseFloat(settings.content_scrim) || 0);
     syncBgTuningSliders();
 
     applyTheme(state.currentTheme);
@@ -74,11 +76,14 @@ function applyTheme(themeName) {
     opt.classList.toggle('active', opt.dataset.theme === themeName);
   });
 
-  // 如果全局背景是主题色，随主题变化
-  if (state.globalBg.type === 'color') {
-    applyGlobalBackground();
-
-  }
+  // 主题一变，自适应界面层必须**重算**，而不是消失：
+  //   · --bg-editor 跟着换了，而它是"图没盖满处"的采样底色（当成白底会把上下两条界面行判反）；
+  //   · 界面行的度量也可能变一点，薄纱高度顺手重算。
+  // 这里以前是 `if (globalBg.type === 'color') applyGlobalBackground()`，而那条分支里写着
+  // clearAdaptiveUI() —— 图挂在**笔记层**时全局层本来就是「主题色」，于是点一下主题就把整个
+  // 自适应层抹掉：工具栏恢复自带的 55% 白玻璃（硬边亮块）、墨色回落成主题色（深图上是暗字）。
+  updateChromeVeil();
+  refreshAdaptiveUI();
 }
 
 // 系统深浅色切换时，若正处在「跟随系统」就立刻跟着变（Windows 设置里改主题无需重启应用）
@@ -92,7 +97,9 @@ async function applyGlobalBackground() {
   if (state.globalBg.type === 'color' || !state.globalBg.value) {
     dom.globalBgLayer.style.backgroundImage = '';
     dom.globalBgLayer.style.opacity = '';
-    clearAdaptiveUI();
+    // 「全局 = 主题色」不等于"屏幕上没有背景图"：图可能挂在笔记层。
+    // 所以这里交给 refreshAdaptiveUI() 按**当前真正可见的那一层**决定清还是重算。
+    refreshAdaptiveUI();
   } else if (state.globalBg.type === 'image' && state.globalBg.value) {
     const imgPath = state.globalBg.value;
     const zoom = state.globalBg.zoom || 100;
@@ -142,7 +149,7 @@ export async function applyNoteBackground(note) {
     dom.noteBgLayer.style.backgroundImage = '';
     dom.noteBgLayer.style.opacity = '';
     state.noteBgImagePath = null;
-    clearAdaptiveUI();
+    refreshAdaptiveUI();
   } else if (bgType === 'image' && note.bg_value) {
     // 自定义图片 → 隐藏全局层，只显示笔记自己的背景图
     dom.globalBgLayer.style.backgroundImage = '';
@@ -181,21 +188,37 @@ export async function applyNoteBackground(note) {
   }
 }
 
-// ====== 背景模糊 / 界面不透明度（2026-09-22） ======
-// 两者都是"背景图相关的观感设置"：模糊给花图降噪，界面不透明度只给工具栏/状态栏这些
-// 界面行盖一层主题色薄纱（0% = 完全透明）。存在笔记上（有自定义背景图时）与全局设置里，
-// 与透明度/缩放/位置同一套规则。
+// ====== 背景模糊 / 界面不透明度 / 正文不透明度（2026-09-22，第三项 2026-09-26） ======
+// 三者都是"背景图相关的观感设置"：模糊给花图降噪，界面不透明度只给工具栏/状态栏这些
+// 界面行盖一层主题色薄纱，正文不透明度给正文区盖一层（0% = 完全沉浸，图全透明可见）。
+// 存在笔记上（有自定义背景图时）与全局设置里，与透明度/缩放/位置同一套规则。
+function globalContentScrim() {
+  const v = state.globalBg.contentScrim;
+  return v === undefined || v === null ? 0.3 : Number(v) || 0;
+}
+
+/** 笔记级「正文不透明度」：NULL = 没单独设过 → 跟随全局（不给存量笔记强加一层薄纱） */
+function noteContentScrim(note) {
+  const v = note ? note.content_scrim : null;
+  if (v === undefined || v === null || v === '') return null;
+  return Number(v) || 0;
+}
+
 function currentBgTuning(note) {
   if (note && note.bg_type === 'image') {
+    const own = noteContentScrim(note);
     return { blur: Number(note.bg_blur) || 0,
              scrim: note.ui_scrim === undefined || note.ui_scrim === null
-               ? 0.3 : Number(note.ui_scrim) };
+               ? 0.3 : Number(note.ui_scrim),
+             contentScrim: own === null ? globalContentScrim() : own };
   }
   if (state.noteBgImagePath && state.activeNoteId && note === undefined) {
     // 笔记级背景正在显示但调用方没给 note：沿用 state 里记着的那份
-    return { blur: Number(state.bgBlur) || 0, scrim: Number(state.bgScrim ?? 0.3) };
+    return { blur: Number(state.bgBlur) || 0, scrim: Number(state.bgScrim ?? 0.3),
+             contentScrim: Number(state.bgContentScrim ?? 0.3) };
   }
-  return { blur: Number(state.globalBg.blur) || 0, scrim: Number(state.globalBg.scrim ?? 0.3) };
+  return { blur: Number(state.globalBg.blur) || 0, scrim: Number(state.globalBg.scrim ?? 0.3),
+           contentScrim: globalContentScrim() };
 }
 
 function applyCurrentTuning(note) {
@@ -206,21 +229,29 @@ function applyCurrentTuning(note) {
 export function syncBgTuningSliders(note) {
   const globalBlur = Number(state.globalBg.blur) || 0;
   const globalScrim = Math.round((state.globalBg.scrim ?? 0.3) * 100);
+  const globalContent = Math.round(globalContentScrim() * 100);
   if ($('#global-bg-blur')) {
     $('#global-bg-blur').value = globalBlur;
     $('#global-bg-blur-val').textContent = globalBlur + 'px';
     $('#global-ui-scrim').value = globalScrim;
     $('#global-ui-scrim-val').textContent = globalScrim + '%';
+    $('#global-content-scrim').value = globalContent;
+    $('#global-content-scrim-val').textContent = globalContent + '%';
   }
   if (!note) return;
   const noteBlur = Number(note.bg_blur) || 0;
   const noteScrim = Math.round((note.ui_scrim === undefined || note.ui_scrim === null
     ? 0.3 : Number(note.ui_scrim)) * 100);
+  // 笔记没单独设过「正文不透明度」（NULL）时，滑杆就显示**当前生效**的那个值（= 全局值）
+  const ownContent = noteContentScrim(note);
+  const noteContent = Math.round((ownContent === null ? globalContentScrim() : ownContent) * 100);
   if ($('#note-bg-blur') && note.bg_type === 'image') {
     $('#note-bg-blur').value = noteBlur;
     $('#note-bg-blur-val').textContent = noteBlur + 'px';
     $('#note-ui-scrim').value = noteScrim;
     $('#note-ui-scrim-val').textContent = noteScrim + '%';
+    $('#note-content-scrim').value = noteContent;
+    $('#note-content-scrim-val').textContent = noteContent + '%';
   }
 }
 
@@ -419,6 +450,14 @@ $('#global-ui-scrim').addEventListener('input', () => {
   window.pywebview.api.settings_set('ui_scrim', String(val / 100));
   applyCurrentTuning();
 });
+// 全局「正文不透明度」：0% = 完全沉浸（正文区全透明），越大正文越好读
+$('#global-content-scrim').addEventListener('input', () => {
+  const val = parseInt($('#global-content-scrim').value);
+  $('#global-content-scrim-val').textContent = val + '%';
+  state.globalBg.contentScrim = val / 100;
+  window.pywebview.api.settings_set('content_scrim', String(val / 100));
+  applyCurrentTuning();
+});
 
 // 笔记背景模糊 / 界面不透明度
 $('#note-bg-blur').addEventListener('input', async () => {
@@ -427,7 +466,8 @@ $('#note-bg-blur').addEventListener('input', async () => {
   if (state.activeNoteId) {
     await window.pywebview.api.notes_update(state.activeNoteId, { bg_blur: val });
     syncNoteFields(state.activeNoteId, { bg_blur: val });
-    applyBackgroundTuning({ blur: val, scrim: Number(state.bgScrim ?? 0.3) });
+    applyBackgroundTuning({ blur: val, scrim: Number(state.bgScrim ?? 0.3),
+                            contentScrim: Number(state.bgContentScrim ?? 0.3) });
   }
 });
 $('#note-ui-scrim').addEventListener('input', async () => {
@@ -436,7 +476,19 @@ $('#note-ui-scrim').addEventListener('input', async () => {
   if (state.activeNoteId) {
     await window.pywebview.api.notes_update(state.activeNoteId, { ui_scrim: val / 100 });
     syncNoteFields(state.activeNoteId, { ui_scrim: val / 100 });
-    applyBackgroundTuning({ blur: Number(state.bgBlur) || 0, scrim: val / 100 });
+    applyBackgroundTuning({ blur: Number(state.bgBlur) || 0, scrim: val / 100,
+                            contentScrim: Number(state.bgContentScrim ?? 0.3) });
+  }
+});
+// 笔记「正文不透明度」：一旦拖动就写进这篇笔记（NULL = 跟随全局的那份默认被"钉"住）
+$('#note-content-scrim').addEventListener('input', async () => {
+  const val = parseInt($('#note-content-scrim').value);
+  $('#note-content-scrim-val').textContent = val + '%';
+  if (state.activeNoteId) {
+    await window.pywebview.api.notes_update(state.activeNoteId, { content_scrim: val / 100 });
+    syncNoteFields(state.activeNoteId, { content_scrim: val / 100 });
+    applyBackgroundTuning({ blur: Number(state.bgBlur) || 0, scrim: Number(state.bgScrim ?? 0.3),
+                            contentScrim: val / 100 });
   }
 });
 
@@ -528,7 +580,8 @@ $('#btn-clear-note-bg').addEventListener('click', async () => {
 });
 
 // ====== 背景面板滚轮调节（透明度 + 缩放 + 图标圆角） ======
-['#global-bg-opacity','#global-bg-zoom','#note-bg-opacity','#note-bg-zoom','#icon-radius'].forEach(sel => {
+['#global-bg-opacity','#global-bg-zoom','#note-bg-opacity','#note-bg-zoom','#icon-radius',
+ '#global-content-scrim','#note-content-scrim'].forEach(sel => {
   const el = $(sel);
   if (!el) return;
   el.addEventListener('wheel', (e) => {

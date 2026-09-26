@@ -199,6 +199,11 @@ try: conn.execute("ALTER TABLE notes ADD COLUMN bg_blur REAL DEFAULT 0")
 except Exception: pass
 try: conn.execute("ALTER TABLE notes ADD COLUMN ui_scrim REAL DEFAULT 0.3")
 except Exception: pass
+# 正文薄纱（2026-09-26）：路线 B 的沉浸式把正文区留成全透明，花图下的正文必然有一半读不清，
+# 所以给正文区也开一个滑杆。**刻意不给默认值**：NULL = 没单独设过 → 跟随全局设置，
+# 这样存量笔记不会凭空多出一层薄纱（全局那份默认 30%，用户拉一下才有笔记级的值）。
+try: conn.execute("ALTER TABLE notes ADD COLUMN content_scrim REAL")
+except Exception: pass
 # ====== 派生索引（第 7 轮）：正文的"可查询侧面" ======
 # 为什么单独建表而不是每次现扫：待办聚合 / todo:/has: 搜索 / 字数统计 / 表格视图 / OCR
 # 都要读正文的派生信息，各扫一遍既慢又容易口径不一致。这里统一在**保存时**一次算好。
@@ -266,7 +271,7 @@ conn.commit()
 
 # 默认设置
 for k, v in [('theme', 'white'), ('bg_type', 'color'), ('bg_value', ''), ('bg_opacity', '1.0'),
-             ('bg_blur', '0'), ('ui_scrim', '0.3')]:
+             ('bg_blur', '0'), ('ui_scrim', '0.3'), ('content_scrim', '0.3')]:
     conn.execute("INSERT OR IGNORE INTO settings VALUES (?, ?)", (k, v))
 conn.commit()
 
@@ -2187,7 +2192,7 @@ class Api:
         return self.notes_get(nid)
 
     def notes_update(self, note_id, fields):
-        allowed = {'title', 'content', 'bg_type', 'bg_value', 'bg_opacity', 'bg_zoom', 'bg_pos_x', 'bg_pos_y', 'bg_blur', 'ui_scrim', 'sort_order', 'is_pinned', 'is_favorite', 'paper_style', 'paper_color', 'cover_type', 'cover_value', 'notebook_id'}
+        allowed = {'title', 'content', 'bg_type', 'bg_value', 'bg_opacity', 'bg_zoom', 'bg_pos_x', 'bg_pos_y', 'bg_blur', 'ui_scrim', 'content_scrim', 'sort_order', 'is_pinned', 'is_favorite', 'paper_style', 'paper_color', 'cover_type', 'cover_value', 'notebook_id'}
         # 回收站中的笔记不可更新
         if not conn.execute("SELECT 1 FROM notes WHERE id = ? AND deleted_at IS NULL", (note_id,)).fetchone():
             return None

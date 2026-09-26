@@ -185,6 +185,9 @@
          这样界面层不会与正文区"一刀切" -->
     <div id="chrome-veil" class="chrome-veil"></div>
     <div id="bottom-veil" class="bottom-veil"></div>
+    <!-- 正文薄纱（第三片，2026-09-26）：只在正文区盖一层同色薄纱，给"图吃字"兜底。
+         渐变段与前两片**完全重合**（三片 alpha 相加，首尾相接会多出两条硬边） -->
+    <div id="content-veil" class="content-veil"></div>
 
     <!-- 编辑器容器 -->
     <div id="editor-container" class="editor-container">
@@ -570,6 +573,10 @@
             界面不透明度：<input type="range" id="global-ui-scrim" min="0" max="100" value="30" step="5">
             <span id="global-ui-scrim-val">30%</span>
           </label>
+          <label class="opacity-slider" title="给正文区也盖一层主题色薄纱，花图下的正文更好读（0% = 完全沉浸，图全透明可见）">
+            正文不透明度：<input type="range" id="global-content-scrim" min="0" max="100" value="30" step="5">
+            <span id="global-content-scrim-val">30%</span>
+          </label>
           <div class="bg-pos-controls">
             <span>位置：</span>
             <button id="bg-pos-up" class="bg-pos-btn" title="上移"><svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"><path d="M12 19V5M5 12l7-7 7 7"/></svg></button>
@@ -617,6 +624,10 @@
           <label class="opacity-slider" title="只在工具栏/状态栏这些界面行上盖一层主题色薄纱（0% = 完全透明）">
             界面不透明度：<input type="range" id="note-ui-scrim" min="0" max="100" value="30" step="5">
             <span id="note-ui-scrim-val">30%</span>
+          </label>
+          <label class="opacity-slider" title="给正文区也盖一层主题色薄纱，花图下的正文更好读（0% = 完全沉浸，图全透明可见；默认跟随全局）">
+            正文不透明度：<input type="range" id="note-content-scrim" min="0" max="100" value="30" step="5">
+            <span id="note-content-scrim-val">30%</span>
           </label>
           <div class="bg-pos-controls">
             <span>位置：</span>

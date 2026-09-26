@@ -47,10 +47,11 @@ export const state = {
   isLoading: false,
   isSaving: false,
   currentTheme: 'white',
-  globalBg: { type: 'color', value: '', opacity: 1.0, zoom: 100, posX: 50, posY: 50, blur: 0, scrim: 0.3 },
-  // 当前生效的背景模糊/界面薄纱（笔记级背景优先，见 04-appearance 的 currentBgTuning）
+  globalBg: { type: 'color', value: '', opacity: 1.0, zoom: 100, posX: 50, posY: 50, blur: 0, scrim: 0.3, contentScrim: 0.3 },
+  // 当前生效的背景模糊/界面薄纱/正文薄纱（笔记级背景优先，见 04-appearance 的 currentBgTuning）
   bgBlur: 0,
   bgScrim: 0.3,
+  bgContentScrim: 0.3,
   noteBgImagePath: null,    // 当前笔记自定义背景图片的绝对路径
   searchQuery: '',          // 当前搜索词（列表摘要据此高亮）
   searchSnippets: {},       // note_id -> 命中片段（后端 notes_search 返回，仅命中集）
