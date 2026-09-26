@@ -64,6 +64,13 @@ def load_app_partial(monkeypatch, tmp_path):
     而 fixture 同时在换临时库、关连接 —— 实测在 CI 上触发原生崩溃
     （`Windows fatal exception: access violation`，栈顶是 `backend.purge_expired_trash`）。
     进程被 abort 后 pytest 缓冲的失败详情全部丢失，只剩一串进度点，排查成本极高。
+
+    ⚠️ 拦的是 **`Thread.start` 方法**，不是 `threading.Thread` 这个类本身。`desktop.py` 里
+    `class GlobalHotkey(threading.Thread)` / `class ReminderWatcher(threading.Thread)`
+    是 **import 时**求值基类的，而这个 import 正落在下面 exec 的窗口内：早先"换掉整个
+    Thread 类"的写法会让它们永久继承那个假基类 —— `GlobalHotkey.start()` 变成空操作，
+    `join()` 抛 `cannot join thread before it is started`（全量跑时 desktop 已被导入过，
+    掩盖了它；单跑 `test_window_persistence.py` 才暴露）。
     """
     monkeypatch.setenv('MYNOTEPAD_DATA_DIR', str(tmp_path))
     sys.modules.pop('backend', None)
@@ -74,19 +81,19 @@ def load_app_partial(monkeypatch, tmp_path):
 
     import threading as _threading
 
-    real_thread = _threading.Thread
+    real_start = _threading.Thread.start
 
-    class _NotStartedThread(real_thread):
-        """保留构造行为，start() 变成空操作（测试里不允许有后台维护线程）"""
-
-        def start(self):
+    def _start_unless_maintenance(self):
+        """放行其它线程，只让「启动维护线程」这一次 start() 变成空操作"""
+        if getattr(getattr(self, '_target', None), '__name__', '') == '_startup_maintenance':
             return None
+        return real_start(self)
 
     try:
-        _threading.Thread = _NotStartedThread
+        _threading.Thread.start = _start_unless_maintenance
         exec(compile(parts[0], 'app.pyw', 'exec'), ns)
     finally:
-        _threading.Thread = real_thread
+        _threading.Thread.start = real_start
     return ns
 
 

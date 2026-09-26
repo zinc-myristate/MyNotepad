@@ -7,10 +7,16 @@
   · 没有保存过 / 存的是坏数据 → 行为必须与改造前完全一致（用默认尺寸居中）；
   · 关闭处理器在 tray=None 时行为不变（测试与未启用托盘时必须能真正关掉窗口）。
 """
+import threading as _threading
 import time
 
 import pytest
 from conftest import load_app_partial
+
+# 在**任何 fixture 运行之前**把真类与真方法记下来：conftest 加载 app.pyw 时会临时拦一层
+# Thread.start，这个测试用来确认它拦完必须还原、且从没动过类本身。
+_REAL_THREAD_CLASS = _threading.Thread
+_REAL_THREAD_START = _threading.Thread.start
 
 
 def _clamp(ns, w, h, work_area, prefer=None):
@@ -84,10 +90,19 @@ class TestSavedGeometryRoundtrip:
         assert app_ns['_load_saved_geometry'](api) is None
 
     def test_resolve_uses_saved_then_clamps(self, app_ns, api):
+        """保存的尺寸优先于默认尺寸，但两者都要过工作区钳制。
+
+        ⚠️ 不能硬编码 1000×700：CI 运行器的虚拟屏幕比开发机小得多，高度会被钳成
+        `工作区高 - reserve`（实测 672 而不是 700）。这里改成断言**钳制规则本身**——
+        结果必须等于「拿保存值去调同一个纯函数」的结果；只有工作区真装得下时才要求原样。
+        """
         api.settings_set('window_geometry', '{"w": 1000, "h": 700, "x": 40, "y": 30}')
         geo = app_ns['_resolve_window_geometry'](api)
-        assert geo['w'] == 1000 and geo['h'] == 700
         wa = app_ns['_get_work_area']()
+        exp_w, exp_h, _, _ = app_ns['clamp_window_geometry'](1000, 700, wa)
+        assert (geo['w'], geo['h']) == (exp_w, exp_h), '保存的尺寸必须走钳制，而不是被忽略'
+        if wa and wa[2] >= 1000 and wa[3] - app_ns['_WORKAREA_RESERVE'] >= 700:
+            assert (geo['w'], geo['h']) == (1000, 700), '工作区装得下时必须原样用保存值'
         if wa:
             assert geo['x'] is not None
 
@@ -179,6 +194,23 @@ class TestClosingHandlerWithTray:
         while time.time() < deadline and win.calls.count('hide') < 2:
             time.sleep(0.05)
         assert win.calls.count('hide') == 2, '第二次关闭应同样隐藏（状态已回到 idle）'
+
+
+def test_loading_app_partial_leaves_threading_intact(app_ns):
+    """加载 app.pyw 前半段**不能**动 `threading.Thread` 这个类本身。
+
+    ⚠️ 踩过的坑：conftest 为了别启动后台维护线程，最早是把一个"start() 是空操作"的假类
+    挂到 `threading.Thread` 上。可 `desktop.GlobalHotkey` / `desktop.ReminderWatcher` 都是
+    `class X(threading.Thread)` —— 基类在 **import 时**求值，而这个 import 正落在加载窗口里，
+    于是它们永久继承假基类：`GlobalHotkey.start()` 成了空操作，`join()` 抛
+    "cannot join thread before it is started"。全量跑时 desktop 早被导入过、掩盖了它，
+    单跑本文件才暴露。拦 `Thread.start` 方法（而不是换类）即可，这条测试把它钉住。
+    """
+    import desktop
+    assert _threading.Thread is _REAL_THREAD_CLASS, 'threading.Thread 被换掉了'
+    assert _threading.Thread.start is _REAL_THREAD_START, 'Thread.start 没还原'
+    assert desktop.GlobalHotkey.__mro__[1] is _REAL_THREAD_CLASS, 'GlobalHotkey 的基类被污染'
+    assert desktop.ReminderWatcher.__mro__[1] is _REAL_THREAD_CLASS, 'ReminderWatcher 的基类被污染'
 
 
 class TestGlobalHotkey:
