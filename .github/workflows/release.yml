@@ -38,15 +38,30 @@ jobs:
         shell: pwsh
         run: Copy-Item LICENSE, THIRD_PARTY_NOTICES.md -Destination dist\MyNotepad\
 
+      # Tcl/Tk 数据闸门：缺一个，运行时的 pyi_rth__tkinter 就直接抛异常，打包版**根本起不来**。
+      # 2026-09-27 真发过这样一版：CI 的 Python 3.14 用 Tcl 9，PyInstaller 的发现逻辑（隔离子进程里
+      # `tkinter.Tcl()` 抛错就 return None）静默不收数据，而当时的冒烟只判"进程活着"没拦住。
+      - name: Verify Tcl/Tk data landed in the bundle
+        run: python build_resources/tcl_tk_data.py dist/MyNotepad
+
+      # 冒烟分两层：
+      #   ① 功能冒烟 —— 跑一次自检并要求**产出文件**，能抓住"启动即抛异常"这一类问题；
+      #   ② 界面冒烟 —— 正常启动 8 秒不许退出。
+      # ⚠️ 只判"进程还活着"是不够的：启动异常会弹**模态异常框**，进程因为弹窗而活着 —— 坏包
+      # 就是这样被判成通过并发出去的。所以功能冒烟必须留下一个"真的跑起来了"的物证。
       - name: Smoke test
         shell: pwsh
         run: |
           $env:MYNOTEPAD_DATA_DIR = "$env:RUNNER_TEMP\smoke"
-          $p = Start-Process -FilePath "dist\MyNotepad\MyNotepad.exe" -PassThru
+          $selftest = "$env:RUNNER_TEMP\selftest.json"
+          $p = Start-Process -FilePath "dist\MyNotepad\MyNotepad.exe" -ArgumentList '--ocr-selftest','--out',$selftest -PassThru -Wait
+          if (-not (Test-Path $selftest)) { Write-Error "功能冒烟失败：自检没有产出文件，冻结运行时没起来（exit code: $($p.ExitCode)）"; exit 1 }
+          Write-Host "功能冒烟通过，自检输出：$(Get-Content $selftest -Raw)"
+          $p2 = Start-Process -FilePath "dist\MyNotepad\MyNotepad.exe" -PassThru
           Start-Sleep -Seconds 8
-          if ($p.HasExited) { Write-Error "应用启动后 8 秒内退出（exit code: $($p.ExitCode)）"; exit 1 }
-          Stop-Process -Id $p.Id
-          Write-Host "冒烟通过：应用运行 8 秒无崩溃"
+          if ($p2.HasExited) { Write-Error "界面冒烟失败：应用启动后 8 秒内退出（exit code: $($p2.ExitCode)）"; exit 1 }
+          Stop-Process -Id $p2.Id
+          Write-Host "界面冒烟通过：应用运行 8 秒无崩溃"
 
       - name: Verify license files landed in the package
         shell: pwsh

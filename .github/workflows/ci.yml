@@ -58,12 +58,21 @@ jobs:
         run: python -m pip install -r requirements.txt pyinstaller
       - name: Build
         run: pyinstaller MyNotepad.spec
+      # 与 release.yml 同一套闸门：Tcl/Tk 数据缺一个，打包版就起不来（2026-09-27 的教训）
+      - name: Verify Tcl/Tk data landed in the bundle
+        run: python build_resources/tcl_tk_data.py dist/MyNotepad
       - name: Smoke test
         shell: pwsh
         run: |
           $env:MYNOTEPAD_DATA_DIR = "$env:RUNNER_TEMP\smoke"
-          $p = Start-Process -FilePath "dist\MyNotepad\MyNotepad.exe" -PassThru
+          $selftest = "$env:RUNNER_TEMP\selftest.json"
+          # ① 功能冒烟：自检必须产出文件（证明冻结运行时真的跑起来了，不只是"进程没退出"）
+          $p = Start-Process -FilePath "dist\MyNotepad\MyNotepad.exe" -ArgumentList '--ocr-selftest','--out',$selftest -PassThru -Wait
+          if (-not (Test-Path $selftest)) { Write-Error "功能冒烟失败：自检没有产出文件（exit code: $($p.ExitCode)）"; exit 1 }
+          Write-Host "功能冒烟通过，自检输出：$(Get-Content $selftest -Raw)"
+          # ② 界面冒烟：正常启动 5 秒不许退出
+          $p2 = Start-Process -FilePath "dist\MyNotepad\MyNotepad.exe" -PassThru
           Start-Sleep -Seconds 5
-          if ($p.HasExited) { Write-Error "应用启动后 5 秒内退出（exit code: $($p.ExitCode)）"; exit 1 }
-          Stop-Process -Id $p.Id
-          Write-Host "冒烟通过：应用运行 5 秒无崩溃"
+          if ($p2.HasExited) { Write-Error "界面冒烟失败：应用启动后 5 秒内退出（exit code: $($p2.ExitCode)）"; exit 1 }
+          Stop-Process -Id $p2.Id
+          Write-Host "界面冒烟通过：应用运行 5 秒无崩溃"

@@ -1,0 +1,143 @@
+# -*- coding: utf-8 -*-
+"""Tcl/Tk 数据目录：给 `MyNotepad.spec` 兜底收集，也给测试与 CI 闸门直接调用。
+
+## 为什么需要它（2026-09-27 发出去过一个坏包）
+
+PyInstaller 的 Tcl/Tk 发现逻辑在 `PyInstaller/utils/hooks/tcl_tk.py::_get_tcl_tk_info()`：
+它在**隔离子进程**里 `import tkinter; tkinter.Tcl()`，一旦抛 `TclError`（Tcl 找不到自己的
+脚本库）就 **`return None` —— 不报错、不警告**，于是 Tcl/Tk 的数据目录一个都不进包。
+而运行时的 `pyi_rth__tkinter` 仍然会去 `sys._MEIPASS/_tcl_data`、`_tk_data` 找数据，
+找不到就抛：
+
+    FileNotFoundError: Tcl data directory "...\\_internal\\_tcl_data" not found.
+
+—— 打包版**根本起不来**（弹一个模态异常框）。实测触发条件很隐蔽：CI 的 Python 3.14 用
+Tcl **9.0**、开发机是 8.6，于是只有 CI 构建出坏包；而 CI 的"启动后存活 8 秒"冒烟**恰好**
+被那个模态框骗过（进程因为弹窗而活着），坏包就这样发了出去。
+
+## 这里怎么做
+
+**不启动 Tcl**（那正是会失败的地方），改为在构建解释器的安装目录里按**文件标记**找：
+Tcl 的库目录里有 `init.tcl`、Tk 的库目录里有 `tk.tcl`。
+放进包里的目标目录名必须与 PyInstaller 的 `TclTkInfo.TCL_ROOTNAME` / `TK_ROOTNAME`
+（'_tcl_data' / '_tk_data'）一致 —— 运行时钩子就是按这两个名字找的（有测试钉住这一点）。
+"""
+
+import os
+
+#: 与 PyInstaller 的 `TclTkInfo` 保持一致（tests 里会直接比对，改名会当场失败）
+TCL_ROOTNAME = '_tcl_data'
+TK_ROOTNAME = '_tk_data'
+
+_TCL_MARKER = 'init.tcl'   # Tcl 库目录的标记文件
+_TK_MARKER = 'tk.tcl'      # Tk 库目录的标记文件
+
+
+def candidate_roots(base_prefix, prefix=None, env=None):
+    """候选父目录（按优先级去重）：安装目录下的 `tcl/`，以及 `$TCL_LIBRARY` 所在目录。"""
+    env = os.environ if env is None else env
+    raw = []
+    for p in (base_prefix, prefix):
+        if p:
+            raw.append(os.path.join(p, 'tcl'))
+    lib = env.get('TCL_LIBRARY')
+    if lib:
+        raw.append(os.path.dirname(os.path.abspath(lib)))
+    out, seen = [], set()
+    for r in raw:
+        key = os.path.normcase(os.path.normpath(r))
+        if key not in seen:
+            seen.add(key)
+            out.append(r)
+    return out
+
+
+def _has_marker(d, marker):
+    return os.path.isfile(os.path.join(d, marker))
+
+
+def find_data_dirs(roots):
+    """在候选父目录里找 (Tcl 目录, Tk 目录)；找不到的那个返回 None。
+
+    只看**文件标记**，不启动 Tcl —— 这正是与 PyInstaller 那套逻辑的区别
+    （它靠 `tkinter.Tcl()` 问 Tcl 自己，问不到就静默放弃）。
+    """
+    tcl_dir = tk_dir = None
+    for root in roots:
+        if not root or not os.path.isdir(root):
+            continue
+        for name in sorted(os.listdir(root)):
+            d = os.path.join(root, name)
+            if not os.path.isdir(d):
+                continue
+            low = name.lower()
+            if tcl_dir is None and low.startswith('tcl') and _has_marker(d, _TCL_MARKER):
+                tcl_dir = d
+            elif tk_dir is None and low.startswith('tk') and _has_marker(d, _TK_MARKER):
+                tk_dir = d
+        if tcl_dir and tk_dir:
+            break
+    return tcl_dir, tk_dir
+
+
+def collect(base_prefix, prefix=None, env=None):
+    """返回可直接追加到 spec `datas` 的项：`[(源目录, '_tcl_data' | '_tk_data'), ...]`。
+
+    只包含**真正找到**的那些：缺一个就少一项，由调用方决定是中止构建还是继续。
+    """
+    tcl_dir, tk_dir = find_data_dirs(candidate_roots(base_prefix, prefix, env))
+    out = []
+    if tcl_dir:
+        out.append((tcl_dir, TCL_ROOTNAME))
+    if tk_dir:
+        out.append((tk_dir, TK_ROOTNAME))
+    return out
+
+
+def hook_dest_names(data_files):
+    """从 PyInstaller 的 `tcltk_info.data_files`（3 元 TOC）里取出它已经收到的顶层目标名。"""
+    names = set()
+    for entry in data_files or []:
+        dest = str(entry[0]).replace('\\', '/')
+        head = dest.split('/', 1)[0]
+        if head in (TCL_ROOTNAME, TK_ROOTNAME):
+            names.add(head)
+    return names
+
+
+def verify_bundle(bundle_root):
+    """校验打包产物里 Tcl/Tk 数据都在；返回缺失的目标目录名列表（空 = 通过）。
+
+    CI 用它当**发版闸门**（`python -c` 调用）：缺一个就不许打 zip、更不许发 Release。
+    `bundle_root` 传 `dist/MyNotepad`，数据在它下面的 `_internal/`（PyInstaller 6 的布局）。
+    """
+    missing = []
+    for name in (TCL_ROOTNAME, TK_ROOTNAME):
+        for base in (os.path.join(bundle_root, '_internal'), bundle_root):
+            d = os.path.join(base, name)
+            if os.path.isdir(d) and _has_marker(
+                    d, _TCL_MARKER if name == TCL_ROOTNAME else _TK_MARKER):
+                break
+        else:
+            missing.append(name)
+    return missing
+
+
+def main(argv=None):
+    """命令行入口：`python build_resources/tcl_tk_data.py [产物目录]`（默认 dist/MyNotepad）。"""
+    import sys
+    args = list(sys.argv[1:] if argv is None else argv)
+    target = args[0] if args else os.path.join('dist', 'MyNotepad')
+    if not os.path.isdir(target):
+        print('找不到产物目录：%s' % target)
+        return 2
+    missing = verify_bundle(target)
+    if missing:
+        print('缺少 Tcl/Tk 数据目录：%s（打包版会因 pyi_rth__tkinter 抛异常而起不来）' % '、'.join(missing))
+        return 1
+    print('Tcl/Tk 数据目录已就位：%s' % target)
+    return 0
+
+
+if __name__ == '__main__':
+    raise SystemExit(main())
