@@ -172,6 +172,82 @@ class TestDiagnostics:
         assert all('children' not in r for r in info['roots'])
 
 
+class TestZipfsLayout:
+    """Tcl/Tk 9 在部分 Windows 发行版里把脚本库打成了 zip（实测：Python 3.14.7 的 toolcache）。
+
+    runner 的公开诊断注解给出了铁证：
+        info library = "//zipfs:/lib/tcl/tcl_library"
+        <prefix>\\tcl 下只有 libtcl9.0.4.zip / libtk9.0.4.zip，没有任何库目录
+    —— 磁盘上没有目录，PyInstaller 收不到、目录扫描也扫不到。这里覆盖"从 zip 解出来"这条路。
+    """
+
+    def _zip(self, path, entries):
+        import zipfile
+        os.makedirs(os.path.dirname(str(path)), exist_ok=True)
+        with zipfile.ZipFile(str(path), 'w') as zf:
+            for name in entries:
+                zf.writestr(name, '# stub')
+
+    def test_extracts_tcl_and_tk_from_separate_zips(self, tmp_path):
+        tcl_root = tmp_path / 'py' / 'tcl'
+        self._zip(tcl_root / 'libtcl9.0.4.zip',
+                  ['lib/tcl/tcl_library/init.tcl', 'lib/tcl/tcl_library/encoding/ascii.enc'])
+        self._zip(tcl_root / 'libtk9.0.4.zip',
+                  ['lib/tk/tk_library/tk.tcl', 'lib/tk/tk_library/ttk/ttk.tcl'])
+        pairs = tkdata.collect(str(tmp_path / 'py'), env={}, workdir=str(tmp_path / 'work'))
+        got = {dest: src for src, dest in pairs}
+        assert set(got) == {tkdata.TCL_ROOTNAME, tkdata.TK_ROOTNAME}
+        assert os.path.isfile(os.path.join(got[tkdata.TCL_ROOTNAME], 'init.tcl'))
+        assert os.path.isfile(os.path.join(got[tkdata.TK_ROOTNAME], 'tk.tcl'))
+        assert os.path.isfile(os.path.join(got[tkdata.TK_ROOTNAME], 'ttk', 'ttk.tcl')), \
+            '子树要按相对结构解开（少了 ttk 主题，Tk 界面会缺主题）'
+
+    def test_extracts_both_from_one_zip(self, tmp_path):
+        tcl_root = tmp_path / 'py' / 'tcl'
+        self._zip(tcl_root / 'libtcl9.0.4.zip',
+                  ['lib/tcl/tcl_library/init.tcl', 'lib/tk/tk_library/tk.tcl'])
+        pairs = tkdata.collect(str(tmp_path / 'py'), env={}, workdir=str(tmp_path / 'work'))
+        assert {dest for _src, dest in pairs} == {tkdata.TCL_ROOTNAME, tkdata.TK_ROOTNAME}
+
+    def test_disk_layout_wins_over_zip(self, tmp_path):
+        """磁盘上有真目录时不该去解 zip（少花时间、也少一层不确定性）"""
+        base = tmp_path / 'py'
+        self._mk_dir(base / 'tcl' / 'tcl8.6', 'init.tcl')
+        self._mk_dir(base / 'tcl' / 'tk8.6', 'tk.tcl')
+        self._zip(base / 'tcl' / 'libtcl9.0.4.zip', ['lib/tcl/tcl_library/init.tcl'])
+        pairs = tkdata.collect(str(base), env={}, workdir=str(tmp_path / 'work'))
+        assert all(os.path.basename(src) in ('tcl8.6', 'tk8.6') for src, _d in pairs)
+
+    def test_falls_back_to_library_dir_name_when_no_marker(self, tmp_path):
+        """标记文件认不出来时，按 Tcl 9 的目录名兜底（`tcl_library` / `tk_library`）。
+
+        这条线索来自 runner 的公开诊断：`info library = "//zipfs:/lib/tcl/tcl_library"`。
+        """
+        tcl_root = tmp_path / 'py' / 'tcl'
+        self._zip(tcl_root / 'libtcl9.0.4.zip',
+                  ['lib/tcl/tcl_library/some-unknown-init.tclx',
+                   'lib/tk/tk_library/some-unknown.tclx'])
+        pairs = tkdata.collect(str(tmp_path / 'py'), env={}, workdir=str(tmp_path / 'work'))
+        assert {dest for _src, dest in pairs} == {tkdata.TCL_ROOTNAME, tkdata.TK_ROOTNAME}
+
+    def test_broken_zip_is_ignored(self, tmp_path):
+        tcl_root = tmp_path / 'py' / 'tcl'
+        os.makedirs(str(tcl_root))
+        (tcl_root / 'libtcl9.0.4.zip').write_text('not a zip', encoding='utf-8')
+        assert tkdata.collect(str(tmp_path / 'py'), env={}, workdir=str(tmp_path / 'work')) == []
+
+    def test_diagnostics_lists_zips(self, tmp_path):
+        import json as _json
+        base = tmp_path / 'py'
+        self._zip(base / 'tcl' / 'libtcl9.0.4.zip', ['lib/tcl/tcl_library/init.tcl'])
+        info = _json.loads(tkdata.diagnostics(base_prefix=str(base), prefix=str(base), env={}))
+        assert info['tcl_zips'] == ['libtcl9.0.4.zip']
+
+    def _mk_dir(self, d, marker):
+        os.makedirs(str(d), exist_ok=True)
+        (d / marker).write_text('# stub', encoding='utf-8')
+
+
 # ---------------- 2. 产物闸门（verify_bundle） ----------------
 
 class TestVerifyBundle:
