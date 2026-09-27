@@ -4,6 +4,21 @@ import sys
 
 from PyInstaller.utils.hooks import collect_dynamic_libs, collect_submodules
 
+
+def _say(msg):
+    """往构建日志里写一行 —— **只输出 ASCII**。
+
+    打包脚本可能在 stdout 编码是 cp1252 的环境里跑（英文版 Windows Server 的 runner 就是），
+    中文/箭头这类字符会抛 `UnicodeEncodeError` 把构建直接打崩：2026-09-27 排查"Tcl/Tk 数据
+    没进包"时，两次构建都死在一句中文 print 上（而不是死在真正的逻辑上）。构建日志宁可用
+    英文，也不要因为"写日志"而失败。
+    """
+    try:
+        print(msg.encode('ascii', 'replace').decode('ascii'))
+    except Exception:                                            # noqa: BLE001
+        pass
+
+
 # 图片文字识别（第 11 轮）走 winrt 投影：真正的实现是 winrt 包下面的一堆
 # `_winrt_*.pyd` 扩展 + msvcp140.dll，PyInstaller 既没有内置 hook、也不会自动
 # 顺着 `from winrt.windows.media.ocr import ...` 把这些二进制收进去。
@@ -19,7 +34,7 @@ try:
     from collect_licenses import collect_license_datas
     _license_datas = collect_license_datas()
 except Exception as _exc:                                        # noqa: BLE001
-    print('[spec] 收集第三方许可证失败（不影响打包）：%r' % (_exc,))
+    _say('[spec] collect_license_datas() failed (build continues): %r' % (_exc,))
     _license_datas = []
 
 # Tcl/Tk 数据目录：tkinter 起不来 = 打包版一启动就弹异常框（2026-09-27 真发过这样一个包）。
@@ -35,7 +50,7 @@ try:
     from PyInstaller.utils.hooks.tcl_tk import tcltk_info as _tcltk_info
     _hook_dests = hook_dest_names(_tcltk_info.data_files)
 except Exception as _exc:                                        # noqa: BLE001
-    print('[spec] 读不到 PyInstaller 的 Tcl/Tk 发现结果（改用兜底）：%r' % (_exc,))
+    _say('[spec] cannot read PyInstaller Tcl/Tk discovery (using fallback): %r' % (_exc,))
     _hook_dests = set()
 
 _tcl_tk_extra = []
@@ -43,13 +58,13 @@ _missing_tcl_tk = [name for name in (TCL_ROOTNAME, TK_ROOTNAME) if name not in _
 if _missing_tcl_tk:
     _found = {dest: src for src, dest in _collect_tcl_tk(sys.base_prefix, sys.prefix)}
     _tcl_tk_extra = [(_found[name], name) for name in _missing_tcl_tk if name in _found]
-    print('[spec] PyInstaller 没收到的 Tcl/Tk 数据 %s → 兜底补上：%s'
-          % (_missing_tcl_tk, [src for src, _ in _tcl_tk_extra]))
+    _say('[spec] PyInstaller missed %s -> fallback collects: %s'
+         % (_missing_tcl_tk, [src for src, _ in _tcl_tk_extra]))
     if len(_tcl_tk_extra) != len(_missing_tcl_tk):
         # 中止构建，并把诊断放进 **GitHub Actions 注解**（公开可读；job 日志要登录才能看）
-        _msg = ('找不到 Tcl/Tk 数据目录（%s），tkinter 起不来 → 产物必然是坏的。诊断：%s'
-                % ('、'.join(_missing_tcl_tk), _tcl_tk_diag()))
-        print('::error title=Tcl/Tk 数据缺失::%s' % _msg)
+        _msg = ('Tcl/Tk data dirs not found (%s): tkinter cannot start, so the artifact would be '
+                'broken. diagnostics=%s' % (', '.join(_missing_tcl_tk), _tcl_tk_diag()))
+        _say('::error title=Tcl/Tk data missing::%s' % _msg)
         raise SystemExit(_msg)
 
 _all_datas = [('renderer', 'renderer'), ('resources', 'resources')] + _license_datas + _tcl_tk_extra

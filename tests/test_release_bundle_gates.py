@@ -254,3 +254,64 @@ class TestWiring:
         i_zip = wf.index('Compress-Archive')
         i_rel = wf.index('Publish release')
         assert i_gate < i_zip < i_rel, '闸门要排在打 zip 之前'
+
+
+# ---------------- 4. 构建日志的编码（这一条是真踩出来的） ----------------
+
+class TestBuildLoggingIsAsciiSafe:
+    """构建脚本往日志里写东西**不能失败** —— 2026-09-27 连续两次构建都死在一句中文 print 上。
+
+    经过：runner 的 Python stdout 是 cp1252（英文版 Windows Server），
+    `print('[spec] ... → 兜底补上：...')` 抛 `UnicodeEncodeError` → PyInstaller 进程挂掉 →
+    构建失败。**真正的逻辑（兜底收集）其实没被验证到**，排障还因为"job 日志未登录读不到"
+    多花了两轮。所以：spec 的日志一律 ASCII，工作流再把 Python 输出统一成 UTF-8。
+    """
+
+    def test_spec_prints_only_ascii(self):
+        import ast
+        src = _read(SPEC)
+        tree = ast.parse(src)
+        bad = []
+        for node in ast.walk(tree):
+            if not isinstance(node, ast.Call):
+                continue
+            fn = node.func
+            name = getattr(fn, 'id', None) or getattr(fn, 'attr', None)
+            if name not in ('print', '_say'):
+                continue
+            for arg in ast.walk(node):
+                if isinstance(arg, ast.Constant) and isinstance(arg.value, str):
+                    if any(ord(ch) > 127 for ch in arg.value):
+                        bad.append(arg.value[:60])
+        assert not bad, 'spec 的构建日志必须只用 ASCII（cp1252 上会崩）：%s' % bad
+
+    def test_gate_cli_survives_cp1252_stdout(self, tmp_path):
+        """用 cp1252 的 stdout 跑闸门：不许抛 UnicodeEncodeError，退出码照常"""
+        import subprocess
+        script = os.path.join(PROJECT_ROOT, 'build_resources', 'tcl_tk_data.py')
+        env = dict(os.environ, PYTHONIOENCODING='cp1252')
+        env.pop('PYTHONUTF8', None)
+        # 坏包 → 期望 exit 1 且没有编码异常
+        r = subprocess.run([sys.executable, script, str(tmp_path / 'nope')],
+                           capture_output=True, text=True, env=env)
+        assert r.returncode == 2, r
+        assert 'UnicodeEncodeError' not in r.stderr
+        # 好包 → 期望 exit 0
+        good = tmp_path / 'good' / '_internal'
+        for name, marker in ((tkdata.TCL_ROOTNAME, 'init.tcl'), (tkdata.TK_ROOTNAME, 'tk.tcl')):
+            os.makedirs(str(good / name))
+            (good / name / marker).write_text('# stub', encoding='utf-8')
+        r2 = subprocess.run([sys.executable, script, str(tmp_path / 'good')],
+                            capture_output=True, text=True, env=env)
+        assert r2.returncode == 0, r2
+        assert 'UnicodeEncodeError' not in r2.stderr
+
+    def test_diagnostics_is_pure_ascii(self):
+        """诊断要穿过 cp1252 的 stdout 与 Actions 注解：非 ASCII 路径转成 \\uXXXX，信息不丢"""
+        text = tkdata.diagnostics()
+        assert text.isascii(), '诊断必须是纯 ASCII'
+
+    @pytest.mark.parametrize('name', ['release.yml', 'ci.yml'])
+    def test_workflows_force_utf8_python_output(self, name):
+        wf = _read(os.path.join(WORKFLOWS, name))
+        assert 'PYTHONIOENCODING' in wf, '%s 要把 Python 输出统一成 UTF-8' % name

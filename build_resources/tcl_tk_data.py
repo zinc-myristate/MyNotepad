@@ -163,22 +163,29 @@ def diagnostics(base_prefix=None, prefix=None, env=None):
             info['tkinter']['info_library_error'] = repr(exc)[:200]
     except Exception as exc:                                      # noqa: BLE001
         info['tkinter'] = {'import_error': repr(exc)[:200]}
-    return json.dumps(info, ensure_ascii=False)
+    # ensure_ascii=True：诊断要穿过 cp1252 的 stdout 与 Actions 注解，ASCII 才最稳（路径里的
+    # 非 ASCII 会变成 \uXXXX，信息不丢）
+    return json.dumps(info, ensure_ascii=True)
 
 
 def main(argv=None):
-    """命令行入口：`python build_resources/tcl_tk_data.py [产物目录]`（默认 dist/MyNotepad）。"""
+    """命令行入口：`python build_resources/tcl_tk_data.py [产物目录]`（默认 dist/MyNotepad）。
+
+    输出**只用 ASCII**：这个命令是 CI 的发版闸门，而 runner 的 stdout 可能是 cp1252 ——
+    中文 print 会抛 UnicodeEncodeError，把"闸门本身"变成失败原因（2026-09-27 实测踩到）。
+    """
     import sys
     args = list(sys.argv[1:] if argv is None else argv)
     target = args[0] if args else os.path.join('dist', 'MyNotepad')
     if not os.path.isdir(target):
-        print('找不到产物目录：%s' % target)
+        print('bundle dir not found: %s' % target)
         return 2
     missing = verify_bundle(target)
     if missing:
-        print('缺少 Tcl/Tk 数据目录：%s（打包版会因 pyi_rth__tkinter 抛异常而起不来）' % '、'.join(missing))
+        print('missing Tcl/Tk data dirs in %s: %s '
+              '(the frozen app would die in pyi_rth__tkinter)' % (target, ', '.join(missing)))
         return 1
-    print('Tcl/Tk 数据目录已就位：%s' % target)
+    print('Tcl/Tk data dirs OK in: %s' % target)
     return 0
 
 

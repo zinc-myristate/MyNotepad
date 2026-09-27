@@ -2,6 +2,12 @@ name: CI
 
 on: [push, pull_request]
 
+# 同 release.yml：runner 的 stdout 是 cp1252，Python 输出统一成 UTF-8，
+# 免得脚本里一句中文 print 就把构建打成 UnicodeEncodeError。
+env:
+  PYTHONIOENCODING: utf-8
+  PYTHONUTF8: '1'
+
 jobs:
   test:
     runs-on: windows-latest

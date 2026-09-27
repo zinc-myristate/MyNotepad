@@ -10,6 +10,12 @@ on:
 permissions:
   contents: write
 
+# Python 输出统一 UTF-8：runner 的 stdout 是 cp1252（英文版 Windows Server），构建脚本里
+# 任何一句中文 print 都会 UnicodeEncodeError 把构建打崩 —— 2026-09-27 就是这么挂的两次。
+env:
+  PYTHONIOENCODING: utf-8
+  PYTHONUTF8: '1'
+
 jobs:
   build:
     runs-on: windows-latest
