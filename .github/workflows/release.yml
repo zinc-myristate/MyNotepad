@@ -29,8 +29,19 @@ jobs:
           python -m ruff check .
           python -m pytest
 
+      # Build 的输出**捕获下来**：构建失败时把末尾几行打成 `::error::` 注解。
+      # 为什么：Actions 的 job 日志未登录读不到（403），而注解是公开可读的 ——
+      # 2026-09-27 排 "Tcl/Tk 数据没进包" 时就卡在"看不到日志"上。
       - name: Build (PyInstaller)
-        run: pyinstaller MyNotepad.spec
+        shell: pwsh
+        run: |
+          python -m PyInstaller MyNotepad.spec 2>&1 | Tee-Object -FilePath build.log
+          if ($LASTEXITCODE -ne 0) {
+            $tail = ((Get-Content build.log -Tail 30) -join ' | ')
+            if ($tail.Length -gt 1800) { $tail = $tail.Substring($tail.Length - 1800) }
+            Write-Host "::error title=PyInstaller 构建失败::$tail"
+            exit 1
+          }
 
       # 许可与归属必须随二进制一起分发：LICENSE 是项目自身的，THIRD_PARTY_NOTICES 列出全部第三方组件；
       # 各依赖的许可证副本由 MyNotepad.spec 里的 collect_licenses 收进 dist/MyNotepad/licenses/。

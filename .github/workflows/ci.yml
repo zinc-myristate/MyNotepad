@@ -56,8 +56,17 @@ jobs:
           python-version: '3.14'
       - name: Install dependencies
         run: python -m pip install -r requirements.txt pyinstaller
+      # 同 release.yml：失败原因打成 `::error::` 注解（日志未登录读不到，注解公开可读）
       - name: Build
-        run: pyinstaller MyNotepad.spec
+        shell: pwsh
+        run: |
+          python -m PyInstaller MyNotepad.spec 2>&1 | Tee-Object -FilePath build.log
+          if ($LASTEXITCODE -ne 0) {
+            $tail = ((Get-Content build.log -Tail 30) -join ' | ')
+            if ($tail.Length -gt 1800) { $tail = $tail.Substring($tail.Length - 1800) }
+            Write-Host "::error title=PyInstaller 构建失败::$tail"
+            exit 1
+          }
       # 与 release.yml 同一套闸门：Tcl/Tk 数据缺一个，打包版就起不来（2026-09-27 的教训）
       - name: Verify Tcl/Tk data landed in the bundle
         run: python build_resources/tcl_tk_data.py dist/MyNotepad
