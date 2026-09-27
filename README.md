@@ -13,8 +13,10 @@
 系统若缺 WebView2 运行时，装一次 [WebView2 Runtime](https://developer.microsoft.com/microsoft-edge/webview2/) 即可。
 
 ![主界面](docs/screenshots/main.png)
+![深色主题](docs/screenshots/dark.png)
+![自定义背景](docs/screenshots/background.png)
 
-<!-- 其余截图待补（Markdown 双栏 / 深色主题 / 自定义背景）：拍好后放到 docs/screenshots/ 再取消注释
+<!-- Markdown 双栏截图待补：拍好后放到 docs/screenshots/markdown.png 再取消下面这行注释
 ![Markdown 双栏编辑](docs/screenshots/markdown.png)
 -->
 
