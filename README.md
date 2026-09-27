@@ -53,7 +53,7 @@
 | Markdown 栈 | markdown-it（渲染）+ CodeMirror 5（源码编辑）+ DOMPurify（消毒）+ highlight.js（代码高亮），全部离线自带、无 CDN |
 | 加密 | `cryptography`（AES-256-GCM） |
 | 打包 | PyInstaller（`MyNotepad.spec`） |
-| 测试 | pytest（546 单测 + 92 无头 E2E）、ruff |
+| 测试 | pytest（553 单测 + 93 无头 E2E）、ruff |
 
 ## 快速开始
 
@@ -97,8 +97,8 @@ python build.py                     # 推荐：关实例 → 备份 data → PyI
 ## 测试
 
 ```bash
-py -3.14 -m pytest                 # 546 单测（自动隔离临时数据目录）
-py -3.14 -m pytest -m e2e          # 92 无头 pywebview 端到端（真开窗口，约 10 分钟）
+py -3.14 -m pytest                 # 553 单测（自动隔离临时数据目录）
+py -3.14 -m pytest -m e2e          # 93 无头 pywebview 端到端（真开窗口，约 10 分钟）
 python -m ruff check .             # 代码检查（配置见 pyproject.toml）
 ```
 
@@ -248,7 +248,7 @@ Markdown 笔记可以在正文最上方写属性：
 **待办**写在笔记正文里就是普通 Markdown 文本（因此别的软件也认）：
 
 ```markdown
-- [ ] 交季度报告 📅 2026-09-25
+- [ ] 交季度报告 @2026-09-25
 - [x] 已经做完的事
 ```
 
@@ -256,7 +256,9 @@ Markdown 笔记可以在正文最上方写属性：
 - 面板里勾选会**直接写回原文**（Markdown 改 `- [ ]`→`- [x]`；富文本笔记翻行属性）；
   写回前会核对文本，正文被改过就拒绝并让你刷新——不会翻错一条
 - 勾待办**不创建历史版本**（否则 50 条历史会被待办刷满）
-- 日期语法是 Obsidian Tasks 的 `📅 YYYY-MM-DD`；不带日期的待办落在「无日期」里
+- 日期写 `@2026-09-25` 就行；Obsidian Tasks 的 `📅 2026-09-25` 同样认（两种写法等价）。
+  只认完整的 `YYYY-MM-DD`，所以 `a@b.com`、`@某人` 不会被误当成日期；不带日期的落在「无日期」里
+- **加密笔记不参与待办与统计**（与“搜索不索引密文正文”同一条隐私约定）
 - **加密笔记不参与待办与统计**（与“搜索不索引密文正文”同一条隐私约定）
 
 **保存的搜索**：把 `tag:数学 todo:open` 这类查询存成侧栏「视图」里的一个条目，点一下套用。
