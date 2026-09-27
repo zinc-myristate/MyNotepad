@@ -133,3 +133,26 @@ def test_gitattributes_marks_vendored_frontend():
         assert token in text, '.gitattributes 少了 %s' % token
     assert '*.bat text eol=crlf' in text and '*.vbs text eol=crlf' in text, \
         'Windows 脚本要固定 CRLF，否则 cmd 解析可能翻车'
+
+
+# ---------------- 门面：社交预览图 ----------------
+
+def test_social_preview_meets_github_spec():
+    """`Settings → Social preview` 的图有硬规格：PNG/JPG/GIF、至少 640x320、**小于 1 MB**。
+
+    这张图是别人在聊天软件/社交平台贴链接时的卡片。规格不对 GitHub 会拒收（或退回灰块），
+    而"图看着好好的"完全看不出问题 —— 所以按 GitHub 的文档把这几条钉住，
+    免得哪天换了截图重生成时悄悄超限。重生成脚本：`docs/make_social_preview.py`。
+    """
+    path = os.path.join(PROJECT_ROOT, 'docs', 'social-preview.png')
+    assert os.path.isfile(path), 'docs/social-preview.png 缺失（Social preview 上传用）'
+    size = os.path.getsize(path)
+    assert size < 1024 * 1024, 'GitHub 上限 1 MB，当前 %d 字节（%.1f KB）' % (size, size / 1024)
+    with open(path, 'rb') as fh:
+        head = fh.read(8)
+    assert head.startswith(b'\x89PNG\r\n\x1a\n'), '必须是真 PNG —— 改扩展名骗不过 GitHub'
+    from PIL import Image
+    with Image.open(path) as im:
+        assert im.format == 'PNG'
+        assert im.size[0] >= 640 and im.size[1] >= 320, 'GitHub 要求至少 640x320，当前 %s' % (im.size,)
+        assert im.size == (1280, 640), '推荐尺寸 1280x640，当前 %s' % (im.size,)
