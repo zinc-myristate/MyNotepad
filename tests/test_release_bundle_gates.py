@@ -104,6 +104,74 @@ class TestFindDataDirs:
         assert tkdata.TK_ROOTNAME == tcl_tk.TclTkInfo.TK_ROOTNAME
 
 
+class TestMarkersAreTolerant:
+    """判定"这是 Tcl/Tk 库目录"不能只认 init.tcl / tk.tcl。
+
+    runner 上的 Python 3.14 用的是 **Tcl 9**，库目录布局与 8.6 有出入；只认单个文件名
+    会让兜底在那台机器上又找不到数据（第一次修复就是那样没修好）。所以再认两个旁证。
+    """
+
+    def _dir(self, root, name, *files):
+        d = os.path.join(str(root), name)
+        os.makedirs(d, exist_ok=True)
+        for f in files:
+            p = os.path.join(d, f)
+            os.makedirs(os.path.dirname(p), exist_ok=True)
+            with open(p, 'w', encoding='utf-8') as fh:
+                fh.write('# stub')
+        return d
+
+    def test_tcl_dir_with_only_tclindex(self, tmp_path):
+        root = tmp_path / 'tcl'
+        self._dir(root, 'tcl9.0', 'tclIndex')
+        self._dir(root, 'tk9.0', 'tk.tcl')
+        tcl_dir, tk_dir = tkdata.find_data_dirs([str(root)])
+        assert os.path.basename(tcl_dir) == 'tcl9.0' and tk_dir
+
+    def test_tcl_dir_with_only_encoding_table(self, tmp_path):
+        root = tmp_path / 'tcl'
+        self._dir(root, 'tcl9.0', os.path.join('encoding', 'ascii.enc'))
+        assert tkdata.find_data_dirs([str(root)])[0]
+
+    def test_tk_dir_with_only_ttk_theme(self, tmp_path):
+        root = tmp_path / 'tcl'
+        self._dir(root, 'tcl9.0', 'init.tcl')
+        self._dir(root, 'tk9.0', os.path.join('ttk', 'ttk.tcl'))
+        assert tkdata.find_data_dirs([str(root)])[1]
+
+    def test_lib_tcl_root_is_also_searched(self, tmp_path):
+        """有的发行版把库放在 <prefix>/lib/tcl 下"""
+        root = tmp_path / 'lib' / 'tcl'
+        self._dir(root, 'tcl8.6', 'init.tcl')
+        self._dir(root, 'tk8.6', 'tk.tcl')
+        pairs = tkdata.collect(str(tmp_path), env={})
+        assert {dest for _src, dest in pairs} == {tkdata.TCL_ROOTNAME, tkdata.TK_ROOTNAME}
+
+    def test_empty_dir_is_never_accepted(self, tmp_path):
+        os.makedirs(str(tmp_path / 'tcl' / 'tcl9.0'))
+        os.makedirs(str(tmp_path / 'tcl' / 'tk9.0'))
+        assert tkdata.find_data_dirs([str(tmp_path / 'tcl')]) == (None, None)
+
+
+class TestDiagnostics:
+    def test_single_line_json(self):
+        """诊断要能直接塞进 GitHub Actions 的注解 —— 注解不支持换行，多行会被截断"""
+        import json as _json
+        text = tkdata.diagnostics()
+        assert '\n' not in text and '\r' not in text
+        info = _json.loads(text)
+        for key in ('python', 'base_prefix', 'prefix', 'roots', 'tkinter'):
+            assert key in info, '诊断缺少 %s' % key
+
+    def test_reports_roots_even_when_missing(self, tmp_path):
+        import json as _json
+        info = _json.loads(tkdata.diagnostics(
+            base_prefix=str(tmp_path / 'nope'), prefix=str(tmp_path / 'nope2'), env={}))
+        assert info['roots'], '即使一个候选目录都不存在，也要把它们列出来'
+        assert all(r['exists'] is False for r in info['roots'])
+        assert all('children' not in r for r in info['roots'])
+
+
 # ---------------- 2. 产物闸门（verify_bundle） ----------------
 
 class TestVerifyBundle:

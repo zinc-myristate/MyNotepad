@@ -29,7 +29,8 @@ except Exception as _exc:                                        # noqa: BLE001
 # 这里按文件标记兜底；两条路都没找到就**中止构建** —— 宁可打包失败，也不发一个起不来的包。
 # 详细背景见 build_resources/tcl_tk_data.py 顶部。
 sys.path.insert(0, os.path.join(SPECPATH, 'build_resources'))
-from tcl_tk_data import TCL_ROOTNAME, TK_ROOTNAME, collect as _collect_tcl_tk, hook_dest_names
+from tcl_tk_data import (TCL_ROOTNAME, TK_ROOTNAME, collect as _collect_tcl_tk,
+                         diagnostics as _tcl_tk_diag, hook_dest_names)
 try:
     from PyInstaller.utils.hooks.tcl_tk import tcltk_info as _tcltk_info
     _hook_dests = hook_dest_names(_tcltk_info.data_files)
@@ -45,10 +46,11 @@ if _missing_tcl_tk:
     print('[spec] PyInstaller 没收到的 Tcl/Tk 数据 %s → 兜底补上：%s'
           % (_missing_tcl_tk, [src for src, _ in _tcl_tk_extra]))
     if len(_tcl_tk_extra) != len(_missing_tcl_tk):
-        raise SystemExit(
-            '[spec] 打包中止：找不到 Tcl/Tk 数据目录（%s）。tkinter 会起不来，产物必然是坏的；'
-            '请检查构建用的 Python 是否带完整 Tcl/Tk：%s'
-            % ('、'.join(_missing_tcl_tk), sys.base_prefix))
+        # 中止构建，并把诊断放进 **GitHub Actions 注解**（公开可读；job 日志要登录才能看）
+        _msg = ('找不到 Tcl/Tk 数据目录（%s），tkinter 起不来 → 产物必然是坏的。诊断：%s'
+                % ('、'.join(_missing_tcl_tk), _tcl_tk_diag()))
+        print('::error title=Tcl/Tk 数据缺失::%s' % _msg)
+        raise SystemExit(_msg)
 
 _all_datas = [('renderer', 'renderer'), ('resources', 'resources')] + _license_datas + _tcl_tk_extra
 

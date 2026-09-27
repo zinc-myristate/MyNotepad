@@ -29,17 +29,21 @@ import os
 TCL_ROOTNAME = '_tcl_data'
 TK_ROOTNAME = '_tk_data'
 
-_TCL_MARKER = 'init.tcl'   # Tcl 库目录的标记文件
-_TK_MARKER = 'tk.tcl'      # Tk 库目录的标记文件
+# 判定"这是 Tcl/Tk 的库目录"的标记：**任一**命中即可。
+# 不能只认 init.tcl / tk.tcl —— Tcl 9 的库目录布局与 8.6 有出入（实测 runner 上就是 Tcl 9），
+# 所以再认两个稳定存在的旁证（编码表目录、ttk 主题目录）。
+_TCL_MARKERS = ('init.tcl', 'tclIndex', os.path.join('encoding', 'ascii.enc'))
+_TK_MARKERS = ('tk.tcl', 'tclIndex', os.path.join('ttk', 'ttk.tcl'))
 
 
 def candidate_roots(base_prefix, prefix=None, env=None):
-    """候选父目录（按优先级去重）：安装目录下的 `tcl/`，以及 `$TCL_LIBRARY` 所在目录。"""
+    """候选父目录（按优先级去重）：安装目录下的 `tcl/`、`lib/tcl/`，以及 `$TCL_LIBRARY` 所在目录。"""
     env = os.environ if env is None else env
     raw = []
     for p in (base_prefix, prefix):
         if p:
             raw.append(os.path.join(p, 'tcl'))
+            raw.append(os.path.join(p, 'lib', 'tcl'))
     lib = env.get('TCL_LIBRARY')
     if lib:
         raw.append(os.path.dirname(os.path.abspath(lib)))
@@ -52,8 +56,8 @@ def candidate_roots(base_prefix, prefix=None, env=None):
     return out
 
 
-def _has_marker(d, marker):
-    return os.path.isfile(os.path.join(d, marker))
+def _has_marker(d, markers):
+    return any(os.path.exists(os.path.join(d, m)) for m in markers)
 
 
 def find_data_dirs(roots):
@@ -71,9 +75,9 @@ def find_data_dirs(roots):
             if not os.path.isdir(d):
                 continue
             low = name.lower()
-            if tcl_dir is None and low.startswith('tcl') and _has_marker(d, _TCL_MARKER):
+            if tcl_dir is None and low.startswith('tcl') and _has_marker(d, _TCL_MARKERS):
                 tcl_dir = d
-            elif tk_dir is None and low.startswith('tk') and _has_marker(d, _TK_MARKER):
+            elif tk_dir is None and low.startswith('tk') and _has_marker(d, _TK_MARKERS):
                 tk_dir = d
         if tcl_dir and tk_dir:
             break
@@ -112,15 +116,54 @@ def verify_bundle(bundle_root):
     `bundle_root` 传 `dist/MyNotepad`，数据在它下面的 `_internal/`（PyInstaller 6 的布局）。
     """
     missing = []
-    for name in (TCL_ROOTNAME, TK_ROOTNAME):
+    for name, markers in ((TCL_ROOTNAME, _TCL_MARKERS), (TK_ROOTNAME, _TK_MARKERS)):
         for base in (os.path.join(bundle_root, '_internal'), bundle_root):
             d = os.path.join(base, name)
-            if os.path.isdir(d) and _has_marker(
-                    d, _TCL_MARKER if name == TCL_ROOTNAME else _TK_MARKER):
+            if os.path.isdir(d) and _has_marker(d, markers):
                 break
         else:
             missing.append(name)
     return missing
+
+
+def diagnostics(base_prefix=None, prefix=None, env=None):
+    """给 CI 报错用的一行诊断：解释器路径、候选目录里到底有什么、tkinter 能不能起来。
+
+    为什么要它：产物构建失败时，**排障要用的 job 日志需要登录才能读**；而 GitHub Actions 的
+    `::error::` 注解是公开可读的。spec 在决定中止构建前会把它打进注解里，这样"为什么找不到
+    Tcl/Tk"一眼可见，不用去翻日志。
+    """
+    import json
+    import sys
+    base_prefix = sys.base_prefix if base_prefix is None else base_prefix
+    prefix = sys.prefix if prefix is None else prefix
+    roots = candidate_roots(base_prefix, prefix, env)
+    info = {
+        'python': sys.version.split()[0],
+        'base_prefix': base_prefix,
+        'prefix': prefix,
+        'TCL_LIBRARY': (os.environ if env is None else env).get('TCL_LIBRARY'),
+        'roots': [],
+        'tkinter': None,
+    }
+    for r in roots:
+        entry = {'path': r, 'exists': os.path.isdir(r)}
+        if entry['exists']:
+            entry['children'] = sorted(os.listdir(r))[:24]
+        info['roots'].append(entry)
+    try:
+        import _tkinter
+        info['tkinter'] = {'file': getattr(_tkinter, '__file__', None),
+                           'TCL_VERSION': _tkinter.TCL_VERSION,
+                           'TK_VERSION': _tkinter.TK_VERSION}
+        try:
+            import tkinter
+            info['tkinter']['info_library'] = tkinter.Tcl().eval('info library')
+        except Exception as exc:                                  # noqa: BLE001
+            info['tkinter']['info_library_error'] = repr(exc)[:200]
+    except Exception as exc:                                      # noqa: BLE001
+        info['tkinter'] = {'import_error': repr(exc)[:200]}
+    return json.dumps(info, ensure_ascii=False)
 
 
 def main(argv=None):
