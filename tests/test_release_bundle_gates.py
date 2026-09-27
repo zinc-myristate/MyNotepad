@@ -22,8 +22,10 @@
 2. 目标目录名与 PyInstaller 的 `TclTkInfo` 常量一致（运行时钩子按那两个名字找）；
 3. spec 与两个工作流里确实接了闸门（缺数据要中止构建、冒烟要有功能那一层）。
 """
+import json
 import os
 import re
+import shutil
 import sys
 
 import pytest
@@ -104,11 +106,14 @@ class TestFindDataDirs:
         assert tkdata.TK_ROOTNAME == tcl_tk.TclTkInfo.TK_ROOTNAME
 
 
-class TestMarkersAreTolerant:
-    """判定"这是 Tcl/Tk 库目录"不能只认 init.tcl / tk.tcl。
+class TestMarkersAreStrict:
+    """标记必须**互斥**：`tclIndex` 不能当"这是 Tcl/Tk 库"的依据。
 
-    runner 上的 Python 3.14 用的是 **Tcl 9**，库目录布局与 8.6 有出入；只认单个文件名
-    会让兜底在那台机器上又找不到数据（第一次修复就是那样没修好）。所以再认两个旁证。
+    2026-09-27 发出去过一个坏包：`_tk_data` 与 `_tcl_data` 逐文件相同（装的其实是 Tcl 库、
+    里面**没有 tk.tcl**），而闸门放行了 —— 因为当时的标记里有 `tclIndex`：
+    Tcl 8.6 与 9.0 的库目录**都有**它，于是"这是 Tk 库"被 Tcl 库满足了。
+    实测 runner 解出来的 Tcl 9 布局（`init.tcl` / `clock.tcl` / `encoding/` / `tzdata/`）
+    说明 `init.tcl` 一直是可靠标记，不需要那种"旁证"。
     """
 
     def _dir(self, root, name, *files):
@@ -121,17 +126,30 @@ class TestMarkersAreTolerant:
                 fh.write('# stub')
         return d
 
-    def test_tcl_dir_with_only_tclindex(self, tmp_path):
+    def test_marker_sets_are_mutually_exclusive(self):
+        """两套标记不许有交集，也不许含两库都有的文件名（这正是坏包的成因）"""
+        assert not (set(tkdata._TCL_MARKERS) & set(tkdata._TK_MARKERS))
+        for marker in tuple(tkdata._TCL_MARKERS) + tuple(tkdata._TK_MARKERS):
+            assert marker.replace('\\', '/') not in ('tclIndex', 'encoding'), \
+                '%s 两库都可能有，不能当判据' % marker
+
+    def test_tcl_index_alone_is_nobody_s_library(self, tmp_path):
+        """只有 tclIndex 的目录：既不是 Tcl 库，也**不许被认成 Tk 库**"""
         root = tmp_path / 'tcl'
-        self._dir(root, 'tcl9.0', 'tclIndex')
+        only_index = self._dir(root, 'tcl9.0', 'tclIndex')
+        assert not tkdata._has_marker(only_index, tkdata._TCL_MARKERS)
+        assert not tkdata._has_marker(only_index, tkdata._TK_MARKERS)
         self._dir(root, 'tk9.0', 'tk.tcl')
         tcl_dir, tk_dir = tkdata.find_data_dirs([str(root)])
-        assert os.path.basename(tcl_dir) == 'tcl9.0' and tk_dir
+        assert tcl_dir is None, '只有 tclIndex 的目录不算 Tcl 库'
+        assert os.path.basename(tk_dir) == 'tk9.0'
 
-    def test_tcl_dir_with_only_encoding_table(self, tmp_path):
+    def test_real_tcl_9_layout_is_recognised(self, tmp_path):
+        """实测的 Tcl 9.0 库顶层（从坏包解出来的那份）：init.tcl / clock.tcl / encoding/ / tzdata/"""
         root = tmp_path / 'tcl'
-        self._dir(root, 'tcl9.0', os.path.join('encoding', 'ascii.enc'))
-        assert tkdata.find_data_dirs([str(root)])[0]
+        d = self._dir(root, 'tcl9.0', 'init.tcl', 'clock.tcl', 'icu.tcl',
+                      os.path.join('encoding', 'ascii.enc'), os.path.join('tzdata', 'UTC'))
+        assert tkdata.find_data_dirs([str(root)])[0] == d
 
     def test_tk_dir_with_only_ttk_theme(self, tmp_path):
         root = tmp_path / 'tcl'
@@ -218,17 +236,40 @@ class TestZipfsLayout:
         pairs = tkdata.collect(str(base), env={}, workdir=str(tmp_path / 'work'))
         assert all(os.path.basename(src) in ('tcl8.6', 'tk8.6') for src, _d in pairs)
 
-    def test_falls_back_to_library_dir_name_when_no_marker(self, tmp_path):
-        """标记文件认不出来时，按 Tcl 9 的目录名兜底（`tcl_library` / `tk_library`）。
+    def test_tcl_zip_never_fills_tk_data(self, tmp_path):
+        """★ 坏包复刻：tcl 的 zip **按名字排序更靠前**，而且它的库目录里也有 `tclIndex`。
 
-        这条线索来自 runner 的公开诊断：`info library = "//zipfs:/lib/tcl/tcl_library"`。
+        旧代码就是把 `tclIndex` 当"Tk 库"的判据，在 `libtcl9.0.4.zip` 里命中后
+        把整个 Tcl 库解成了 `_tk_data`，真正的 tk zip 因为"已经收到 _tk_data"被跳过 ——
+        发出去的 v1.0.0 就是这样少了 tk.tcl（点击选图片/选附件才报 Tk 错）。
+        """
+        tcl_root = tmp_path / 'py' / 'tcl'
+        self._zip(tcl_root / 'libtcl9.0.4.zip',
+                  ['lib/tcl/tcl_library/init.tcl', 'lib/tcl/tcl_library/tclIndex',
+                   'lib/tcl/tcl_library/clock.tcl', 'lib/tcl/tcl_library/tzdata/UTC'])
+        self._zip(tcl_root / 'libtk9.0.4.zip',
+                  ['lib/tk/tk_library/tk.tcl', 'lib/tk/tk_library/tclIndex',
+                   'lib/tk/tk_library/ttk/ttk.tcl'])
+        pairs = tkdata.collect(str(tmp_path / 'py'), env={}, workdir=str(tmp_path / 'work'))
+        got = {dest: src for src, dest in pairs}
+        tk_src = got[tkdata.TK_ROOTNAME]
+        assert os.path.isfile(os.path.join(tk_src, 'tk.tcl'))
+        assert os.path.isfile(os.path.join(tk_src, 'ttk', 'ttk.tcl'))
+        assert not os.path.isfile(os.path.join(tk_src, 'init.tcl')), \
+            '_tk_data 里混进了 Tcl 的 init.tcl —— 这正是 v1.0.0 坏包的形状'
+
+    def test_unknown_layout_is_not_guessed(self, tmp_path):
+        """认不出标记时**宁可一个都不给**：构建期由 spec 大声失败，而不是发一个装错数据的包。
+
+        旧版会按目录名（`tcl_library` / `tk_library`）兜底 —— 那条"线索"给出的是未经证实的根，
+        v1.0.0 坏包的 `_tk_data` 就是这么定下来的。现在只认标记。
         """
         tcl_root = tmp_path / 'py' / 'tcl'
         self._zip(tcl_root / 'libtcl9.0.4.zip',
                   ['lib/tcl/tcl_library/some-unknown-init.tclx',
                    'lib/tk/tk_library/some-unknown.tclx'])
         pairs = tkdata.collect(str(tmp_path / 'py'), env={}, workdir=str(tmp_path / 'work'))
-        assert {dest for _src, dest in pairs} == {tkdata.TCL_ROOTNAME, tkdata.TK_ROOTNAME}
+        assert pairs == []
 
     def test_broken_zip_is_ignored(self, tmp_path):
         tcl_root = tmp_path / 'py' / 'tcl'
@@ -293,6 +334,50 @@ class TestVerifyBundle:
     def test_cli_returns_zero_on_good(self, tmp_path):
         assert tkdata.main([self._bundle(str(tmp_path / 'cli-ok'))]) == 0
 
+    def test_tk_data_holding_a_tcl_library_is_rejected(self, tmp_path):
+        """★ 复刻**已发布的那个坏包**：`_tk_data` 与 `_tcl_data` 内容相同。
+
+        实测那一版的 `_internal\\_tk_data`：顶层是 `cookiejar/ encoding/ tcltest/ tzdata/ …`
+        （Tcl 9 的库），有 `init.tcl`、有 `tclIndex`，**没有 tk.tcl**。
+        含 `tclIndex` 的宽松标记会把它判成"Tk 数据在" ⇒ 闸门放行 ⇒ 坏包发到 Release。
+        """
+        root = tmp_path / 'bad'
+        internal = os.path.join(str(root), '_internal')
+        tcl_lib = os.path.join(internal, tkdata.TCL_ROOTNAME)
+        for rel in ('init.tcl', 'clock.tcl', 'tclIndex', os.path.join('tzdata', 'UTC')):
+            p = os.path.join(tcl_lib, rel)
+            os.makedirs(os.path.dirname(p), exist_ok=True)
+            with open(p, 'w', encoding='utf-8') as fh:
+                fh.write('# stub')
+        shutil.copytree(tcl_lib, os.path.join(internal, tkdata.TK_ROOTNAME))
+        assert tkdata.verify_bundle(str(root)) == [tkdata.TK_ROOTNAME], \
+            'Tcl 库被当成 Tk 数据时必须判失败（这正是 v1.0.0 漏掉的那一关）'
+
+    def test_cli_failure_reports_the_scene(self, tmp_path, capsys):
+        """失败时要把现场打进输出：Actions 的 job 日志要登录才能读，注解是唯一公开通道"""
+        root = tmp_path / 'bad2'
+        internal = os.path.join(str(root), '_internal', tkdata.TK_ROOTNAME)
+        os.makedirs(internal)
+        with open(os.path.join(internal, 'init.tcl'), 'w', encoding='utf-8') as fh:
+            fh.write('# stub')
+        assert tkdata.main([str(root)]) == 1
+        out = capsys.readouterr().out
+        assert 'bundle report' in out and 'markers_hit' in out, \
+            '闸门失败必须自带证据（哪个目录、命中了哪些标记）'
+        assert out.isascii(), '输出要能穿过 cp1252 的 stdout'
+
+    def test_describe_bundle_explains_a_wrong_tk_dir(self, tmp_path):
+        internal = os.path.join(str(tmp_path / 'x'), '_internal')
+        tk = os.path.join(internal, tkdata.TK_ROOTNAME)
+        os.makedirs(os.path.join(tk, 'tzdata'))
+        with open(os.path.join(tk, 'init.tcl'), 'w', encoding='utf-8') as fh:
+            fh.write('# stub')
+        report = tkdata.describe_bundle(str(tmp_path / 'x'))
+        tk_info = report[tkdata.TK_ROOTNAME]
+        assert tk_info['exists'] is True and tk_info['ok'] is False
+        assert 'init.tcl' in tk_info['top'] and tk_info['markers_hit'] == []
+        assert report[tkdata.TCL_ROOTNAME]['exists'] is False
+
 
 # ---------------- 3. 接线：spec 与两个工作流都必须带闸门 ----------------
 
@@ -323,13 +408,73 @@ class TestWiring:
         assert re.search(r'Test-Path\s+\$selftest', wf), \
             '%s 必须断言自检**产出了文件**（这才是"冻结运行时起来了"的物证）' % name
 
+    @pytest.mark.parametrize('name', ['release.yml', 'ci.yml'])
+    def test_workflows_prove_tk_works(self, name):
+        """静态闸门会被"数据装错"骗过（v1.0.0 就是），所以工作流必须真起一次 Tk"""
+        wf = _read(os.path.join(WORKFLOWS, name))
+        assert '--tk-selftest' in wf, '%s 要在冻结产物里跑 Tk 自检' % name
+        for key in ('tk_data_ok', 'tk_ok'):
+            assert key in wf, '%s 的 Tk 冒烟要断言 %s' % (name, key)
+
     def test_release_workflow_gate_runs_before_zip_and_release(self):
         """闸门必须在打 zip / 建 Release 之前 —— 顺序反了就等于没闸门"""
         wf = _read(os.path.join(WORKFLOWS, 'release.yml'))
         i_gate = wf.index('tcl_tk_data.py')
+        i_tk = wf.index('--tk-selftest')
         i_zip = wf.index('Compress-Archive')
         i_rel = wf.index('Publish release')
-        assert i_gate < i_zip < i_rel, '闸门要排在打 zip 之前'
+        assert i_gate < i_tk < i_zip < i_rel, '两道 Tcl/Tk 闸门都要排在打 zip 之前'
+
+
+# ---------------- 3b. 冻结产物里的 Tk 自检（`--tk-selftest`） ----------------
+
+class TestTkSelfTestInTheFrozenApp:
+    """静态闸门只能证明"目录里有标记文件"；这一层在**冻结产物里**真起一个 Tk。
+
+    v1.0.0 的坏包能过静态闸门（`_tk_data` 里有 `tclIndex`），而 `tkinter.Tk()` 会当场抛错 ——
+    app.pyw 里的选图片 / 选附件 / 换背景（`tkinter.filedialog`）与确认框（`messagebox`）
+    会全部失效，用户看到的却是"主界面好好的"。
+    """
+
+    def test_app_exposes_the_cli_entry(self):
+        src = _read(os.path.join(PROJECT_ROOT, 'app.pyw'))
+        assert "'--tk-selftest' in sys.argv" in src, 'app.pyw 要有 --tk-selftest 入口'
+        # 退出码必须由这两个判据决定（CI 靠它当闸门）
+        assert "payload['tk_data_ok'] and payload['tk_ok']" in src
+
+    def test_selftest_reports_a_working_tk(self, app_ns):
+        """开发态（Tcl 8.6 在磁盘上）跑一次：Tk 真能起来，两个对话框子模块可用"""
+        info = app_ns['tk_selftest']()
+        assert info['tk_ok'] is True, info
+        assert info['filedialog'] and info['messagebox'], info
+        assert info['tk_patchlevel'], info
+
+    def test_cli_writes_the_report_and_fails_without_tk_data(self, app_ns, tmp_path):
+        """`--out` 要写文件（打包版是窗口模式，没有控制台可看），退出码要**由报告里的判据决定**。
+
+        开发态仓库根下没有 `_tk_data` ⇒ 数据判据为假 ⇒ 退出码 1：这就是"缺数据 = 失败"的语义，
+        CI 正是靠它当闸门。（"Tk 在开发机上真能用"由上一条测试负责，这里不重复断言 ——
+        否则这条会变成"断言这台机器有没有桌面"，那是两回事。）
+        """
+        out = tmp_path / 'tk.json'
+        code = app_ns['tk_selftest_from_argv'](['--tk-selftest', '--out', str(out)])
+        assert out.is_file()
+        payload = json.loads(out.read_text(encoding='utf-8'))
+        assert set(payload) >= {'frozen', 'tk_data_ok', 'tk_ok', 'filedialog', 'messagebox'}
+        assert payload['frozen'] is False, payload
+        assert payload['tk_data_ok'] is False, '开发态仓库根下不该有 _tk_data：%s' % payload
+        assert code == (0 if (payload['tk_data_ok'] and payload['tk_ok']) else 1) == 1, payload
+
+    def test_broken_tk_data_is_reported(self, app_ns, tmp_path):
+        """把 EXE_DIR 指到一个"`_tk_data` 里装的是 Tcl 库"的假产物上：必须报数据不对"""
+        exe_dir = tmp_path / 'fake-dist'
+        tk_data = exe_dir / '_internal' / '_tk_data'
+        tk_data.mkdir(parents=True)
+        (tk_data / 'init.tcl').write_text('# stub', encoding='utf-8')
+        app_ns['tk_selftest'].__globals__['EXE_DIR'] = str(exe_dir)
+        info = app_ns['tk_selftest']()
+        assert info['tk_data_ok'] is False, info
+        assert info['tk_data_markers'] == [] and 'init.tcl' in info['tk_data_top']
 
 
 # ---------------- 4. 构建日志的编码（这一条是真踩出来的） ----------------

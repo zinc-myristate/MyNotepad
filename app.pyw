@@ -51,6 +51,91 @@ else:
     BASE_DIR = os.path.dirname(os.path.abspath(__file__))
     EXE_DIR = BASE_DIR
 
+# ====== 打包版的 Tcl/Tk 自检：`MyNotepad.exe --tk-selftest [--out 结果.json]` ======
+# 为什么要有：`tkinter.filedialog`（选图片 / 选附件 / 选背景）、`tkinter.messagebox`（确认框）、
+# `tkinter.Tk()`（图标处理）全靠产物里的 `_tk_data`（Tk 的脚本库 tk.tcl + ttk/）。
+# 2026-09-27 发出去过一个 `_tk_data` 里装的是 **Tcl 库**的包：主界面照常能用，
+# 一点「选择图片」才报 Tk 错 —— 而当时的静态闸门被宽松标记（`tclIndex`）骗过了。
+# 所以这里在**冻结产物里**真起一个 Tk 解释器，把"数据在不在 + 到底能不能用"一次问清；
+# 结果同时写文件（打包版是窗口模式，没有控制台可看）。
+TK_DATA_MARKERS = ('tk.tcl', os.path.join('ttk', 'ttk.tcl'))
+
+
+def tk_selftest():
+    """Tcl/Tk 自检报告（纯数据，不抛异常 —— 它是 CI 的冒烟闸门）。"""
+    info = {'frozen': bool(getattr(sys, 'frozen', False)),
+            'tk_data_ok': False, 'tk_ok': False, 'filedialog': False, 'messagebox': False}
+    for base in (getattr(sys, '_MEIPASS', None), EXE_DIR, os.path.join(EXE_DIR, '_internal')):
+        if not base:
+            continue
+        d = os.path.join(base, '_tk_data')
+        if not os.path.isdir(d):
+            continue
+        info['tk_data'] = d
+        info['tk_data_top'] = sorted(os.listdir(d))[:16]
+        info['tk_data_markers'] = [m for m in TK_DATA_MARKERS
+                                   if os.path.exists(os.path.join(d, m))]
+        info['tk_data_ok'] = bool(info['tk_data_markers'])
+        break
+    try:
+        import tkinter
+        info['tcl_version'] = tkinter.TclVersion
+        info['tk_version'] = tkinter.TkVersion
+        # 真起一个 Tk：tk.tcl 缺失（或 `_tk_data` 装成 Tcl 库）时这里就抛。
+        # ⚠️ 起两次：同一个进程里"建 root → destroy → 再建"偶发过一次 TclError
+        # （tkinter 的 `_default_root` 被上一次的 filedialog 临时 root 占着时最明显），
+        # 而 CI 闸门**不能偶发**。数据不对是确定性失败，重试一次照样报错。
+        for attempt in (1, 2):
+            try:
+                root = tkinter.Tk()
+                root.withdraw()
+                info['tk_patchlevel'] = root.tk.call('info', 'patchlevel')
+                root.destroy()
+                info['tk_ok'] = True
+                info['tk_attempts'] = attempt
+                info.pop('tk_error', None)   # 第一次失败第二次成功时，别留下过期的错
+                break
+            except Exception as exc:                              # noqa: BLE001
+                info['tk_error'] = '%s: %s' % (type(exc).__name__, exc)
+                if attempt == 2:
+                    raise
+    except Exception:                                             # noqa: BLE001
+        pass
+    try:
+        import tkinter.filedialog                                 # noqa: F401
+        import tkinter.messagebox                                 # noqa: F401
+        info['filedialog'] = hasattr(tkinter, 'filedialog')
+        info['messagebox'] = hasattr(tkinter, 'messagebox')
+    except Exception as exc:                                      # noqa: BLE001
+        info['dialog_error'] = '%s: %s' % (type(exc).__name__, exc)
+    return info
+
+
+def tk_selftest_from_argv(argv):
+    """解析 `--tk-selftest [--out 结果.json]`，返回进程退出码（0 = 数据与 Tk 都真的可用）。"""
+    args = list(argv)
+    out_path = None
+    if '--out' in args:
+        i = args.index('--out')
+        out_path = args[i + 1] if i + 1 < len(args) else None
+    payload = tk_selftest()
+    text = json.dumps(payload, ensure_ascii=False, indent=1)
+    if out_path:
+        try:
+            with open(out_path, 'w', encoding='utf-8') as fh:
+                fh.write(text)
+        except OSError:
+            pass
+    try:                       # 窗口模式的打包版没有控制台，print 可能没有去处
+        print(text)
+    except Exception:                                         # noqa: BLE001
+        pass
+    return 0 if (payload['tk_data_ok'] and payload['tk_ok']) else 1
+
+
+if '--tk-selftest' in sys.argv:
+    raise SystemExit(tk_selftest_from_argv(sys.argv))
+
 # ====== 文件对话框辅助函数 ======
 def pick_image_file():
     """打开图片选择对话框"""

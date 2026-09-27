@@ -76,6 +76,27 @@ jobs:
       # 与 release.yml 同一套闸门：Tcl/Tk 数据缺一个，打包版就起不来（2026-09-27 的教训）
       - name: Verify Tcl/Tk data landed in the bundle
         run: python build_resources/tcl_tk_data.py dist/MyNotepad
+      # 静态闸门只证明"目录里有标记文件"，这一步证明**冻结产物里 Tk 真的能起来**：
+      # v1.0.0 那个坏包的 `_tk_data` 里装的是 Tcl 库，静态检查（当年用宽松标记）放行了，
+      # 而真起 Tk 会当场抛错 —— 选图片/选附件/换背景/确认框全走 tkinter。
+      - name: Verify Tk works in the frozen app
+        shell: pwsh
+        run: |
+          $tk = "$env:RUNNER_TEMP\tk-selftest.json"
+          $p = Start-Process -FilePath "dist\MyNotepad\MyNotepad.exe" -ArgumentList '--tk-selftest','--out',$tk -PassThru -Wait
+          if (-not (Test-Path $tk)) { Write-Error "Tk 自检没有产出文件，冻结运行时没起来（exit code: $($p.ExitCode)）"; exit 1 }
+          $info = Get-Content $tk -Raw | ConvertFrom-Json
+          Write-Host "Tk 自检：$($info | ConvertTo-Json -Compress)"
+          if (-not $info.tk_data_ok) {
+            Write-Host "::error title=Tk 数据不对::_tk_data 里没有 Tk 脚本库（tk.tcl / ttk）；markers=[$($info.tk_data_markers -join ',')] top=[$($info.tk_data_top -join ',')]"
+            exit 1
+          }
+          if (-not $info.tk_ok) { Write-Host "::error title=Tk 起不来::$($info.tk_error)"; exit 1 }
+          if (-not ($info.filedialog -and $info.messagebox)) {
+            Write-Host "::error title=tkinter 对话框不可用::filedialog=$($info.filedialog) messagebox=$($info.messagebox)"
+            exit 1
+          }
+          Write-Host "Tk 冒烟通过：Tk $($info.tk_patchlevel)，filedialog/messagebox 都在"
       - name: Smoke test
         shell: pwsh
         run: |

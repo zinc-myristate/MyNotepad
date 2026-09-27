@@ -30,10 +30,18 @@ TCL_ROOTNAME = '_tcl_data'
 TK_ROOTNAME = '_tk_data'
 
 # 判定"这是 Tcl/Tk 的库目录"的标记：**任一**命中即可。
-# 不能只认 init.tcl / tk.tcl —— Tcl 9 的库目录布局与 8.6 有出入（实测 runner 上就是 Tcl 9），
-# 所以再认两个稳定存在的旁证（编码表目录、ttk 主题目录）。
-_TCL_MARKERS = ('init.tcl', 'tclIndex', os.path.join('encoding', 'ascii.enc'))
-_TK_MARKERS = ('tk.tcl', 'tclIndex', os.path.join('ttk', 'ttk.tcl'))
+#
+# ⚠️ 2026-09-27 实测踩到的坑（v1.0.0 第一次发布就是坏包，原因在这里）：
+# 这两套标记**绝不能含 `tclIndex`**。它看着像 Tcl 库的旁证，但 Tcl 8.6 与 9.0 的库目录里
+# **都有**它、而 Tk 的库目录里没有 —— 于是"这是 Tk 库"的判定被 **Tcl 库**满足了：
+# `collect_from_zips` 在 `libtcl9.0.4.zip`（按名字排序在 `libtk9.0.4.zip` 之前）里命中，
+# 把整个 Tcl 库解成了 `_tk_data`，真正的 tk zip 反而因为"已经收到 _tk_data"被跳过。
+# 结果：包里 `_tk_data` 与 `_tcl_data` 逐文件相同、**没有 tk.tcl**，而 `verify_bundle`
+# 用的是同一套弱标记 ⇒ 闸门放行。冻结点上 `tkinter.filedialog` / `messagebox` / `Tk()`
+# （app.pyw 的选图片/选附件/换背景/确认框全走它们）一调用就报 Tk 错。
+# ⇒ 两套标记必须**互斥**：Tcl 只认 init.tcl / clock.tcl，Tk 只认 tk.tcl / ttk/ttk.tcl。
+_TCL_MARKERS = ('init.tcl', 'clock.tcl')
+_TK_MARKERS = ('tk.tcl', os.path.join('ttk', 'ttk.tcl'))
 
 
 def candidate_roots(base_prefix, prefix=None, env=None):
@@ -117,30 +125,30 @@ def _zip_candidates(base_prefix, prefix=None, env=None):
     return out
 
 
-def _library_root_in_zip(zf, markers, name_hint=None):
+def _library_root_in_zip(zf, markers):
     """在 zip 里找"库根目录"：含标记文件（init.tcl / tk.tcl …）的那个**最短**目录。
 
-    `name_hint` 是第二条线索：Tcl 9 的库目录叫 `tcl_library` / `tk_library`
-    （实测 runner 的 `info library` 就是 `//zipfs:/lib/tcl/tcl_library`）。
-    标记文件找不到时按目录名兜底。
+    `markers` 可以是文件名（`init.tcl`）也可以是相对路径（`ttk/ttk.tcl`）——
+    两者都按"路径尾段"匹配，库根就是去掉这段尾段后的前缀。
+
+    ⚠️ **不再按目录名（`tcl_library` / `tk_library`）兜底**：那条线索在标记认不出来时给出的是
+    **未经证实**的根，v1.0.0 正是"猜了一个根就直接解包"才出现 `_tk_data` 里装 Tcl 库。
+    现在的规矩是：认不出标记就不解包 ⇒ 构建期由 spec 大声失败（并打出诊断），
+    而不是悄悄发一个"能启动、点文件对话框才炸"的包。
     """
-    import posixpath
+    want = [m.replace('\\', '/').strip('/') for m in markers]
     best = None
     for name in zf.namelist():
-        base = posixpath.basename(name)
-        if base not in markers:
-            continue
-        d = posixpath.dirname(name)
-        if best is None or len(d) < len(best):
-            best = d
-    if best is None and name_hint:
-        for name in zf.namelist():
-            parts = [p for p in name.split('/') if p]
-            for i, part in enumerate(parts):
-                if name_hint in part.lower() and i < len(parts) - 1:
-                    d = '/'.join(parts[:i + 1])
-                    if best is None or len(d) < len(best):
-                        best = d
+        norm = name.replace('\\', '/')
+        parts = [p for p in norm.split('/') if p]
+        for m in want:
+            tail = m.split('/')
+            if not parts or parts[-len(tail):] != tail:
+                continue
+            root = '/'.join(parts[:-len(tail)])
+            if best is None or len(root) < len(best):
+                best = root
+            break
     return best
 
 
@@ -174,20 +182,23 @@ def collect_from_zips(base_prefix, prefix=None, workdir=None):
 
     做法：把 zip 里含 `init.tcl`（Tcl）/ `tk.tcl`（Tk）的那棵子树解到临时目录，
     再按 `_tcl_data` / `_tk_data` 放进包里。运行时钩子只认"目录里有库脚本"，不关心它从哪来。
+
+    ⚠️ 解出来之后**必须复验标记**（`_has_marker`）：这是"数据装错"的最后一道拦截 ——
+    2026-09-27 那个坏包正是"解出来就没再看一眼"的后果（`_tk_data` 里装的是 Tcl 库，
+    而 Tcl 库里有 `tclIndex`，当年那套宽松标记把它当成了 Tk 库）。
     """
     import tempfile
     workdir = workdir or tempfile.mkdtemp(prefix='mynotepad_tcl_tk_')
     out = []
     for zip_path in _zip_candidates(base_prefix, prefix):
         # 同一个 zip 里 Tcl 与 Tk 可能各有一棵子树；也可能分两个 zip
-        for dest, markers, hint in ((TCL_ROOTNAME, _TCL_MARKERS, 'tcl_library'),
-                                    (TK_ROOTNAME, _TK_MARKERS, 'tk_library')):
+        for dest, markers in ((TCL_ROOTNAME, _TCL_MARKERS), (TK_ROOTNAME, _TK_MARKERS)):
             if any(d == dest for _src, d in out):
                 continue
             try:
                 import zipfile
                 with zipfile.ZipFile(zip_path) as zf:
-                    inner = _library_root_in_zip(zf, markers, hint)
+                    inner = _library_root_in_zip(zf, markers)
             except Exception:                                     # noqa: BLE001
                 continue
             if not inner:
@@ -197,7 +208,8 @@ def collect_from_zips(base_prefix, prefix=None, workdir=None):
                 _extract_subtree(zip_path, inner, target)
             except Exception:                                     # noqa: BLE001
                 continue
-            if os.path.isdir(target) and os.listdir(target):
+            if (os.path.isdir(target) and os.listdir(target)
+                    and _has_marker(target, markers)):
                 out.append((target, dest))
     return out
 
@@ -216,8 +228,12 @@ def hook_dest_names(data_files):
 def verify_bundle(bundle_root):
     """校验打包产物里 Tcl/Tk 数据都在；返回缺失的目标目录名列表（空 = 通过）。
 
-    CI 用它当**发版闸门**（`python -c` 调用）：缺一个就不许打 zip、更不许发 Release。
+    CI 用它当**发版闸门**（`python build_resources/tcl_tk_data.py dist/MyNotepad`）：
+    缺一个就不许打 zip、更不许发 Release。
     `bundle_root` 传 `dist/MyNotepad`，数据在它下面的 `_internal/`（PyInstaller 6 的布局）。
+
+    ⚠️ 这里的判定强度**就是标记的强度**：标记写成宽松的（比如含 `tclIndex`）闸门就会放行
+    "`_tk_data` 里装的是 Tcl 库"这种坏包（2026-09-27 真实发生过，见 `_TCL_MARKERS` 上的注释）。
     """
     missing = []
     for name, markers in ((TCL_ROOTNAME, _TCL_MARKERS), (TK_ROOTNAME, _TK_MARKERS)):
@@ -228,6 +244,33 @@ def verify_bundle(bundle_root):
         else:
             missing.append(name)
     return missing
+
+
+def describe_bundle(bundle_root):
+    """闸门失败时打给 CI 注解看的现场：每个数据目录在不在、标记命中没命中、里面装着什么。
+
+    为什么要有它：Actions 的 job 日志要登录才能读，而 `::error::` 注解是公开可读的 ——
+    上一次坏包排查就是靠注解才看到 runner 的 Tcl 9 zipfs 布局。失败信息必须自带证据。
+    （`ensure_ascii=True`：注解与 runner 的 cp1252 stdout 都只吃 ASCII。）
+    """
+    report = {}
+    for name, markers in ((TCL_ROOTNAME, _TCL_MARKERS), (TK_ROOTNAME, _TK_MARKERS)):
+        entry = {'want_markers': [m.replace('\\', '/') for m in markers],
+                 'exists': False, 'ok': False}
+        for base in (os.path.join(bundle_root, '_internal'), bundle_root):
+            d = os.path.join(base, name)
+            if not os.path.isdir(d):
+                continue
+            entry['exists'] = True
+            entry['path'] = d
+            entry['files'] = sum(len(files) for _r, _dirs, files in os.walk(d))
+            entry['top'] = sorted(os.listdir(d))[:16]
+            entry['markers_hit'] = [m.replace('\\', '/') for m in markers
+                                    if os.path.exists(os.path.join(d, m))]
+            entry['ok'] = bool(entry['markers_hit'])
+            break
+        report[name] = entry
+    return report
 
 
 def diagnostics(base_prefix=None, prefix=None, env=None):
@@ -290,8 +333,12 @@ def main(argv=None):
         return 2
     missing = verify_bundle(target)
     if missing:
+        import json
         print('missing Tcl/Tk data dirs in %s: %s '
               '(the frozen app would die in pyi_rth__tkinter)' % (target, ', '.join(missing)))
+        # 现场（存在性与标记命中情况）：让失败原因不必登录就能从 Actions 注解里读出来
+        print('bundle report: %s'
+              % json.dumps(describe_bundle(target), ensure_ascii=True, sort_keys=True))
         return 1
     print('Tcl/Tk data dirs OK in: %s' % target)
     return 0
