@@ -1,7 +1,7 @@
 // ====== 笔记本管理 ======
 // ====== ESM 依赖（原先靠全局作用域与加载顺序隐式依赖，现显式声明）======
 import { $, closePanel, dom, hideEditorUI, openPanel, showConfirmAsync, showInputDialog, showToast, state } from './01-core.js';
-import { notesStore } from './01b-store.js';
+import { flushSave, loadNotes, previewHtmlFor } from './03-notes.js';
 import { initQuill, syncFontSizeDisplay } from './02-editor.js';
 import { initMarkdownEditor } from './13-markdown-editor.js';
 import { initNoteFormatBadge } from './15-note-format.js';
@@ -17,15 +17,15 @@ import { initTableView } from './26-table-view.js';
 import { initTemplates } from './27-templates.js';
 import { initCapture } from './28-capture.js';
 import { initOcr } from './29-ocr.js';
-import { loadNotes, previewHtmlFor, renderNoteList } from './03-notes.js';
 import { loadSettings } from './04-appearance.js';
-import { loadTagFilter } from './05-shell.js';
+import { getCurrentTagFilter, loadTagFilter, reapplyTagFilter } from './05-shell.js';
 import { initAllDrag, initAutoLock, verifyAndSelectNote } from './07-formula-security-dnd.js';
 import { debounce, escapeHtml } from '../shared/utils.js';
 import { ICONS } from '../shared/icons.js';
 
 let currentNotebookId = null; // null = 全部笔记
 let _notebooks = [];          // 最近一次加载的笔记本列表（供名称查询，避免各处重复请求）
+let _counts = { by_id: {}, uncategorized: 0, total: 0 };  // notebook_counts() 缓存，见 refreshNotebookCounts
 
 /** 当前笔记本筛选（null = 全部）。供导出等"按当前范围"的功能读取 */
 export function getCurrentNotebookId() { return currentNotebookId; }
@@ -37,21 +37,79 @@ export function getCurrentNotebookName() {
   return nb ? nb.name : '';
 }
 
-/** 同步更新笔记本计数徽章（轻量，无需 API 调用） */
+/** 同步更新笔记本计数徽章。
+ *
+ *  列表现在**就是**"当前笔记本那几篇"（后端 notes_list(notebook_id) 过滤），
+ *  所以直接数 state.notes 就是对的。旧实现在「全部笔记」时数 state.notes、在笔记本时
+ *  再 filter 一遍 —— 两者在"列表被某条路径整体覆盖"时会互相打架，
+ *  正是截图里「原神 (0)」却列出 6 篇全量笔记的来源。 */
 export function updateNotebookCount() {
   const countEl = document.getElementById('notebook-count');
   if (!countEl) return;
-  if (currentNotebookId === null) {
-    countEl.textContent = '(' + state.notes.length + ')';
-  } else {
-    const nbNotes = state.notes.filter(function(n) { return n.notebook_id === currentNotebookId; });
-    countEl.textContent = '(' + nbNotes.length + ')';
+  countEl.textContent = '(' + state.notes.length + ')';
+}
+
+/** 计数缓存：下拉里每本的 `N 篇` 和「全部笔记 N 篇」**只能由后端算** ——
+ *  范围过滤后前端手里只有当前那一本，靠 state.notes 数别的笔记本必然是 0。
+ *  刷新时机：任何一次列表刷新（loadNotes 会调）+ 笔记本栏刷新。 */
+export async function refreshNotebookCounts() {
+  try {
+    const c = await window.pywebview.api.notebook_counts();
+    if (c) _counts = { by_id: c.by_id || {}, uncategorized: c.uncategorized || 0, total: c.total || 0 };
+  } catch (e) { /* 计数拿不到不影响列表 */ }
+  updateNotebookCount();
+  return _counts;
+}
+
+/** 切换笔记本视角（null = 全部笔记）—— 切换笔记本的**唯一入口**。
+ *
+ *  范围由后端过滤，于是"在「原神」里新建/复制/恢复/勾待办/OCR 落库"之后，
+ *  列表刷新仍然只有原神 —— 不会再像以前那样被任何一次 loadNotes 冲成全量。
+ *  当前打开的那篇不在新范围里时跳这一本的第一篇；一本都没有就清空编辑区。 */
+export async function setNotebookScope(nbId) {
+  await flushSave();                 // 编辑区可能被收起来，先把手里的字落盘
+  currentNotebookId = nbId || null;
+  await loadNotes();                 // 笔记本范围（后端过滤）
+  const scopeNotes = state.notes.slice();
+  // 标签与笔记本是叠加关系：换了笔记本必须重套一次标签，否则标签会被静默丢掉
+  if (getCurrentTagFilter()) await reapplyTagFilter();
+  await loadNotebookBar();
+  // 当前这篇还在范围里就留着，不在就跳这一本的第一篇（被标签筛空时退回笔记本范围里挑）
+  const pool = state.notes.length ? state.notes : scopeNotes;
+  if (pool.length === 0) {
+    state.activeNoteId = null;       // 编辑区收起来了，activeNoteId 也必须清（否则下次"同一篇"会被误判）
+    hideEditorUI();
+    return;
   }
+  if (!pool.some(n => n.id === state.activeNoteId)) {
+    await verifyAndSelectNote(pool[0].id);
+  }
+}
+
+/** 打开一篇"可能不在当前视角里"的笔记（Ctrl+P 跳转 / 待办 / 双链 / 提醒 / 捕获 / 回收站恢复…）。
+ *
+ *  编辑区与列表范围必须一致：这篇不在当前笔记本里就把视角切到它所在的笔记本
+ *  （未分类 → 全部笔记）再选中它，否则会出现"列表里看不见，编辑区却在编辑它"。
+ *  Ctrl+P 的跨笔记本跳转正是靠它落地的。 */
+export async function revealAndSelectNote(noteId) {
+  if (!noteId) return;
+  let note = state.notes.find(n => n.id === noteId);
+  if (!note) {
+    try { note = await window.pywebview.api.notes_get(noteId); } catch (e) { note = null; }
+  }
+  const target = (note && note.notebook_id) || null;
+  if (target !== currentNotebookId) {
+    currentNotebookId = target;
+    await loadNotes();
+    await loadNotebookBar();
+  }
+  await verifyAndSelectNote(noteId);
 }
 
 export async function loadNotebookBar() {
   const notebooks = await window.pywebview.api.notebooks_list();
   _notebooks = notebooks;
+  await refreshNotebookCounts();
   const dot = $('#notebook-dot');
   const name = $('#notebook-name');
 
@@ -74,13 +132,14 @@ export async function loadNotebookBar() {
   // 同步更新计数
   updateNotebookCount();
 
-  // 构建下拉列表
+  // 构建下拉列表（每本的篇数来自后端计数：范围过滤后前端手里只有当前那一本）
   const dropdown = $('#notebook-dropdown');
   dropdown.innerHTML = '';
   notebooks.forEach(nb => {
     const item = document.createElement('div');
     item.className = 'notebook-drop-item' + (nb.id === currentNotebookId ? ' active' : '');
-    item.innerHTML = `<span class="notebook-dot" style="background:${nb.color||'#7D8A6E'}"></span>${escapeHtml(nb.name)}<span style="margin-left:auto;font-size:10px;color:var(--text-muted);">${state.notes.filter(n=>n.notebook_id===nb.id).length}篇</span><button class="notebook-delete-btn" title="删除笔记本" style="margin-left:4px;color:var(--text-muted);background:none;border:none;cursor:pointer;font-size:14px;padding:0 4px;">×</button>`;
+    const nbCount = (_counts.by_id && _counts.by_id[nb.id]) || 0;
+    item.innerHTML = `<span class="notebook-dot" style="background:${nb.color||'#7D8A6E'}"></span>${escapeHtml(nb.name)}<span style="margin-left:auto;font-size:10px;color:var(--text-muted);">${nbCount}篇</span><button class="notebook-delete-btn" title="删除笔记本" style="margin-left:4px;color:var(--text-muted);background:none;border:none;cursor:pointer;font-size:14px;padding:0 4px;">×</button>`;
     // 删除按钮事件（阻止冒泡）
     setTimeout(() => {
       const delBtn = item.querySelector('.notebook-delete-btn');
@@ -88,49 +147,24 @@ export async function loadNotebookBar() {
         e.stopPropagation();
         if (!(await showConfirmAsync({ title: '删除笔记本', message: `确定删除笔记本「${nb.name}」？其中的笔记将移回未分类。`, okText: '删除', danger: true }))) return;
         await window.pywebview.api.notebooks_delete(nb.id);
-        currentNotebookId = null;
-        await loadAllNotes();
-        loadNotebookBar();
+        await setNotebookScope(null);
       });
     }, 0);
     item.addEventListener('click', async () => {
-      currentNotebookId = nb.id;
       dropdown.style.display = 'none';
-      await filterByNotebook(nb.id);
+      await setNotebookScope(nb.id);
     });
     dropdown.appendChild(item);
   });
   // 全部笔记选项
   const allItem = document.createElement('div');
   allItem.className = 'notebook-drop-item' + (currentNotebookId === null ? ' active' : '');
-  allItem.innerHTML = `<span class="notebook-dot" style="background:var(--accent)"></span>全部笔记<span style="margin-left:auto;font-size:10px;color:var(--text-muted);">${state.notes.length}篇</span>`;
+  allItem.innerHTML = `<span class="notebook-dot" style="background:var(--accent)"></span>全部笔记<span style="margin-left:auto;font-size:10px;color:var(--text-muted);">${_counts.total}篇</span>`;
   allItem.addEventListener('click', async () => {
-    currentNotebookId = null;
     dropdown.style.display = 'none';
-    await loadAllNotes();
+    await setNotebookScope(null);
   });
   dropdown.appendChild(allItem);
-}
-
-async function filterByNotebook(nbId) {
-  const all = await window.pywebview.api.notes_list();
-  notesStore.setNotes(all.filter(n => n.notebook_id === nbId));
-  renderNoteList();
-  loadNotebookBar();
-  if (state.notes.length > 0) {
-    await verifyAndSelectNote(state.notes[0].id);
-  } else {
-    hideEditorUI();
-  }
-}
-
-async function loadAllNotes() {
-  notesStore.setNotes(await window.pywebview.api.notes_list());
-  renderNoteList();
-  loadNotebookBar();
-  if (state.notes.length > 0 && !state.activeNoteId) {
-    await verifyAndSelectNote(state.notes[0].id);
-  }
 }
 
 $('#btn-notebook-select').addEventListener('click', () => {
@@ -172,8 +206,9 @@ $('#btn-move-notebook')?.addEventListener('click', async () => {
     btn.addEventListener('click', async () => {
       closePanel($('#move-notebook-panel'));
       await window.pywebview.api.notes_update(state.activeNoteId, { notebook_id: targetId || '' });
-      loadNotes().then(renderNoteList);
-      loadNotebookBar();
+      // 视角跟着这篇笔记走：移到哪本就切到哪本（移进"无"就回全部笔记）。
+      // 否则刚移走的笔记在列表里消失、编辑区却还开着它 —— 正是"列表与编辑区不一致"。
+      await setNotebookScope(targetId || null);
     });
     list.appendChild(btn);
   };
@@ -197,6 +232,7 @@ async function filterNotesBySearch(query) {
       refreshItemPreview(el);
     });
     dom.btnSearchClear.style.display = 'none';
+    updateScopeSearchHint(0);
     return;
   }
   dom.btnSearchClear.style.display = 'flex';
@@ -217,10 +253,45 @@ async function filterNotesBySearch(query) {
   }
   state.searchQuery = q;
   state.searchSnippets = snippets;
+  let visible = 0;
   dom.noteList.querySelectorAll('.note-item').forEach(item => {
-    item.classList.toggle('hidden-by-search', !matched.has(item.dataset.noteId));
+    const hit = matched.has(item.dataset.noteId);
+    if (hit) visible++;
+    item.classList.toggle('hidden-by-search', !hit);
     refreshItemPreview(item);
   });
+  // 命中的笔记与"列表里真的有的"求交 → 笔记本视角下搜索天然是"在当前笔记本里搜"；
+  // 一篇都没命中而全库有命中时，把原因说出来，别让用户以为"搜不到"
+  updateScopeSearchHint(visible === 0 ? matched.size : 0);
+}
+
+/** 「当前笔记本里没有匹配」提示条（范围筛选 + 搜索叠加时的解释）。
+ *  只在笔记本视角下出现：全部笔记视角下列表就是全库，没命中就是真没有。 */
+function updateScopeSearchHint(otherCount) {
+  let hint = document.getElementById('search-scope-hint');
+  if (!otherCount || currentNotebookId === null) {
+    if (hint) hint.remove();
+    return;
+  }
+  if (!hint) {
+    hint = document.createElement('div');
+    hint.id = 'search-scope-hint';
+    hint.className = 'search-scope-hint';
+    dom.noteList.appendChild(hint);
+  }
+  hint.textContent = '';
+  const txt = document.createElement('span');
+  txt.textContent = '当前笔记本里没有匹配，其它笔记本里有 ' + otherCount + ' 篇';
+  const btn = document.createElement('button');
+  btn.type = 'button';
+  btn.className = 'search-scope-hint-btn';
+  btn.textContent = '在全部笔记里找';
+  btn.addEventListener('click', async () => {
+    await setNotebookScope(null);
+    await filterNotesBySearch(dom.searchInput.value);
+  });
+  hint.appendChild(txt);
+  hint.appendChild(btn);
 }
 
 /** 就地刷新某一行的摘要文字：不整表重渲染，避免搜索时列表滚动位置被重置 */
@@ -325,6 +396,21 @@ async function showStartupNotice() {
 }
 
 // 启动！
-initApp().then(showStartupNotice).catch(err => {
-  console.error('启动失败:', err);
-});
+//
+// 注意：刻意延到下一个宏任务再 init，不要在这里直接 `initApp()`：
+// 09-boot 是被很多模块 import 的"枢纽"（笔记本视角、计数、revealAndSelectNote 都在这儿），
+// 循环边会让它的**函数体在别的模块函数体之前**被求值。实测踩到：13-markdown-editor 的
+// `let cm` 还处于 TDZ，initApp 走到 initMarkdownEditor() 就抛
+// `ReferenceError: Cannot access 'cm' before initialization` ——
+// 界面停在"只有骨架、没有列表、笔记本栏是空的"半死状态，而且只在某个 import 边存在时才复现。
+// 模块求值是同步的，排到下一个宏任务时整张图必然已求值完毕，这类顺序坑从此不可能再发生。
+function bootApplication() {
+  initApp().then(showStartupNotice).catch(err => {
+    // 启动失败会让界面停在"半死"状态（没有列表、没有笔记本栏，只有骨架占位），
+    // 所以把原因留在 window.__bootError 上：诊断/e2e 能直接读到，不必靠猜。
+    try { window.__bootError = (err && (err.stack || err.message)) || String(err); } catch (e) { /* 忽略 */ }
+    console.error('启动失败:', err);
+  });
+}
+
+setTimeout(bootApplication, 0);

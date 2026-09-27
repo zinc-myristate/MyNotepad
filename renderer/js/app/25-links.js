@@ -11,6 +11,7 @@
 import { $, state, showToast } from './01-core.js';
 import { slugify } from '../shared/utils.js';
 import { loadNotes, selectNote } from './03-notes.js';
+import { getCurrentNotebookId, revealAndSelectNote } from './09-boot.js';
 import { jumpToHeadingByName } from './22-outline.js';
 
 let _visible = false;
@@ -124,7 +125,8 @@ export async function openWikilink(title, heading) {
   }
   if (!hit) {
     try {
-      const note = await window.pywebview.api.notes_create_from_link(name);
+      // 双链是从"这一本里的某篇"长出来的：新笔记跟着当前笔记本走
+      const note = await window.pywebview.api.notes_create_from_link(name, getCurrentNotebookId());
       if (!note || !note.id) throw new Error('创建失败');
       await loadNotes();
       await selectNote(note.id);
@@ -137,7 +139,8 @@ export async function openWikilink(title, heading) {
     if (hit.matches > 1) {
       showToast('有 ' + hit.matches + ' 篇同名笔记，已打开最近更新的那篇', { type: 'info' });
     }
-    if (hit.id !== state.activeNoteId) await selectNote(hit.id);
+    // 目标可能在别的笔记本里：视角跟着切过去，保证"列表里看得见正在编辑的这篇"
+    if (hit.id !== state.activeNoteId) await revealAndSelectNote(hit.id);
   }
   if (head) jumpToHeading(head);
 }

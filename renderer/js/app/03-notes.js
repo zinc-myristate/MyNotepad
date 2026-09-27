@@ -18,7 +18,7 @@ import { loadTagBar } from './05-shell.js';
 import { setCurrentPreviewVersionId } from './06-versions-reminders.js';
 import { openPasswordPanel, setEditingMathNode, setPasswordVerifyCallback, setPendingSelectNoteId, unlockedNotes, updateLockButton, verifyAndSelectNote } from './07-formula-security-dnd.js';
 import { generateNoteCover, loadPaperForNote } from './08-appearance2.js';
-import { updateNotebookCount } from './09-boot.js';
+import { getCurrentNotebookId, refreshNotebookCounts, updateNotebookCount } from './09-boot.js';
 import { syncStickersToOverlay, syncStickersToQuill } from '../quill/quill-deco.js';
 import { ICONS } from '../shared/icons.js';
 import { clearSelection, extendSelectionTo, isMultiSelecting, toggleSelection } from './12-bulk-actions.js';
@@ -33,9 +33,13 @@ export async function loadNotes(retryCount = 0) {
       }
       return [];
     }
-    // 归一化 is_pinned/is_favorite + 客户端排序双保险，统一走 store
-    notesStore.setNotes(await window.pywebview.api.notes_list(), { normalize: true, sort: true });
+    // 归一化 is_pinned/is_favorite + 客户端排序双保险，统一走 store。
+    // 视角范围（笔记本）**由后端过滤**：列表永远只回当前那一本 ——
+    // 复制 / 回收站恢复 / 待办勾选 / OCR 落库 / 模板新建… 20+ 条刷新路径都不会再把范围冲成全量。
+    notesStore.setNotes(await window.pywebview.api.notes_list(getCurrentNotebookId()),
+                        { normalize: true, sort: true });
     renderNoteList();
+    await refreshNotebookCounts();   // 下拉里的「N 篇」只能由后端数（前端手里只有当前这一本）
     return state.notes;
   } catch (err) {
     if (retryCount < 10) {
@@ -355,12 +359,13 @@ export async function createNewNote() {
     // 先保存当前笔记
     await saveCurrentNote();
 
-    const note = await window.pywebview.api.notes_create();
+    // 新建的笔记落进**当前笔记本**（在「原神」里点新建就进原神，而不是混到未分类里）；
+    // 「全部笔记」视角下没有"当前笔记本"可言 → 传 null，落未分类（与旧行为一致）
+    const note = await window.pywebview.api.notes_create(getCurrentNotebookId());
     if (!note) return;
 
-    // 用 loadNotes 全量刷新以确保置顶排序正确
+    // 用 loadNotes 全量刷新以确保置顶排序正确（它自带当前笔记本范围，不会把筛选冲掉）
     await loadNotes();
-    updateNotebookCount();
     await selectNote(note.id);
 
     // 聚焦标题输入框

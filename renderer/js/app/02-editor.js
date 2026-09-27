@@ -4,9 +4,9 @@
 // ====== ESM 依赖（原先靠全局作用域与加载顺序隐式依赖，现显式声明）======
 import { $, $$, closePanel, dom, openPanel, showInfoDialog, showToast, state } from './01-core.js';
 import { debouncedSave, flushSave, loadNotes, renderNoteList, setSaveDot } from './03-notes.js';
-import { getCurrentNotebookId, getCurrentNotebookName } from './09-boot.js';
+import { getCurrentNotebookId, getCurrentNotebookName, revealAndSelectNote } from './09-boot.js';
 import { _stickerSyncTimer, getCurrentTagFilter, getCurrentTagName, set_stickerSyncTimer } from './05-shell.js';
-import { unlockedNotes, verifyAndSelectNote } from './07-formula-security-dnd.js';
+import { unlockedNotes } from './07-formula-security-dnd.js';
 import { syncStickersToOverlay } from '../quill/quill-deco.js';
 import { markdownExportHtml } from './14-markdown-render.js';
 import { getMarkdownContent } from './13-markdown-editor.js';
@@ -1040,10 +1040,12 @@ $$('.export-option').forEach(btn => {
     }
     if (format === 'md-import') {
       try {
-        const note = await window.pywebview.api.import_markdown_dialog();
+        // 导入的新笔记跟着**当前笔记本**走（与「＋ 新建笔记」同一条规矩），
+        // 万一它落在别处（旧接口/未分类），视角也会跟过去，保证列表里看得见
+        const note = await window.pywebview.api.import_markdown_dialog(getCurrentNotebookId());
         if (note) {
           await loadNotes();
-          await verifyAndSelectNote(note.id);
+          await revealAndSelectNote(note.id);
           showToast('已导入「' + (note.title || '导入的笔记') + '」', { type: 'success' });
         }
       } catch (err) {

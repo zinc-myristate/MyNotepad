@@ -1,7 +1,7 @@
 // ====== 历史版本 ======
 // ====== ESM 依赖（原先靠全局作用域与加载顺序隐式依赖，现显式声明）======
 import { $, $$, closePanel, dom, openPanel, showConfirmAsync, showToast, state } from './01-core.js';
-import { selectNote } from './03-notes.js';
+import { revealAndSelectNote } from './09-boot.js';
 import { _intervals } from './05-shell.js';
 import { unlockedNotes } from './07-formula-security-dnd.js';
 import { ICONS } from '../shared/icons.js';
@@ -555,7 +555,8 @@ async function loadReminderList() {
         const noteId = el.dataset.noteid;
         if (noteId) {
           closePanel($('#reminder-list-panel'));
-          await selectNote(noteId);
+          // 提醒可能指向别的笔记本里的笔记 → 视角跟着切过去
+          await revealAndSelectNote(noteId);
         }
       });
     });
@@ -570,9 +571,9 @@ async function editReminderFromList(rid) {
   const r = await window.pywebview.api.reminder_get(rid);
   if (!r) return;
   _editingReminderId = r.id;
-  // 切换到对应笔记
+  // 切换到对应笔记（可能在别的笔记本里 → 视角跟着切）
   if (r.note_id && r.note_id !== state.activeNoteId) {
-    await selectNote(r.note_id);
+    await revealAndSelectNote(r.note_id);
   }
   $('#reminder-panel-title').textContent = '编辑提醒';
   $('#reminder-content').value = r.content || '';

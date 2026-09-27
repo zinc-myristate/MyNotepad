@@ -279,11 +279,17 @@ class AppApi:
         self.backend = backend
 
     # 笔记操作（代理到 backend）
-    def notes_list(self):
-        return self.backend.notes_list()
+    # 第 12 轮：笔记本范围。列表与创建都带 notebook_id（None/'省略' = 全量/未分类），
+    # 少了这个参数，前端传了也是 TypeError —— 笔记照样混在一起。
+    def notes_list(self, notebook_id=None):
+        return self.backend.notes_list(notebook_id)
+    def notebook_counts(self):
+        return self.backend.notebook_counts()
+    def notes_created_on(self, date_str):
+        return self.backend.notes_created_on(date_str)
     def notes_get(self, note_id, unlocked=False): return self.backend.notes_get(note_id, unlocked)
-    def notes_create(self):
-        return self.backend.notes_create()
+    def notes_create(self, notebook_id=None):
+        return self.backend.notes_create(notebook_id)
     def notes_duplicate(self, note_id): return self.backend.notes_duplicate(note_id)
     # 第 7 轮：派生指标 / 跨笔记待办 / 标签管理 / 保存的搜索
     def note_metrics(self, note_id): return self.backend.note_metrics(note_id)
@@ -302,8 +308,8 @@ class AppApi:
     # 第 9 轮：双链 / 属性 / 表格视图
     def note_links(self, note_id): return self.backend.note_links(note_id)
     def notes_resolve_link(self, title): return self.backend.notes_resolve_link(title)
-    def notes_create_from_link(self, title):
-        return self.backend.notes_create_from_link(title)
+    def notes_create_from_link(self, title, notebook_id=None):
+        return self.backend.notes_create_from_link(title, notebook_id)
     def notes_table(self, note_ids=None): return self.backend.notes_table(note_ids)
 
     # 第 10 轮：模板 / 每日笔记 / 快速捕获
@@ -336,8 +342,8 @@ class AppApi:
             text = ''
         return self.backend.capture_text(text) if (text or '').strip() else None
 
-    def notes_create_from_template(self, template_id, title=None, notebook_name=None):
-        return self.backend.notes_create_from_template(template_id, title, notebook_name)
+    def notes_create_from_template(self, template_id, title=None, notebook_name=None, notebook_id=None):
+        return self.backend.notes_create_from_template(template_id, title, notebook_name, notebook_id)
 
     # 第 10 轮：截图选区覆盖窗 / 迷你捕获窗（实现在本文件下方，见「捕获窗口」一节）
     def capture_begin(self, note_id=None): return _capture_begin(note_id)
@@ -471,7 +477,8 @@ class AppApi:
     def tags_delete(self, tid): return self.backend.tags_delete(tid)
     def note_tags_get(self, note_id): return self.backend.note_tags_get(note_id)
     def note_tags_set(self, note_id, tag_ids): return self.backend.note_tags_set(note_id, tag_ids)
-    def notes_by_tag(self, tag_id): return self.backend.notes_by_tag(tag_id)
+    def notes_by_tag(self, tag_id, notebook_id=None):
+        return self.backend.notes_by_tag(tag_id, notebook_id)
 
     # 笔记本
     def notebooks_list(self): return self.backend.notebooks_list()
@@ -618,8 +625,12 @@ class AppApi:
             return save_path
         return None
 
-    def import_markdown_dialog(self):
-        """选择 .md 文件导入为新笔记，返回新笔记或 None"""
+    def import_markdown_dialog(self, notebook_id=None):
+        """选择 .md 文件导入为新笔记，返回新笔记或 None
+
+        notebook_id：当前笔记本（第 12 轮）—— 在「原神」里导入一篇 .md，
+        它就该落在原神里，而不是混进未分类。
+        """
         import tkinter.filedialog
         path = tkinter.filedialog.askopenfilename(
             title="导入 Markdown", filetypes=[('Markdown', '*.md'), ('所有文件', '*.*')])
@@ -634,7 +645,7 @@ class AppApi:
                     text = f.read()
             except Exception:
                 return None
-        return self.backend.import_markdown(text)
+        return self.backend.import_markdown(text, None, notebook_id)
 
     def export_scope(self, notebook_id=None, tag_id=None, label=''):
         """按笔记本/标签导出为可当库打开的 zip。返回 (保存路径, 笔记数) 或 None"""

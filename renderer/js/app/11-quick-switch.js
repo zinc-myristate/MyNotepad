@@ -7,7 +7,7 @@
 // 放在 05-shell（快捷键）里会让那个文件同时管标签栏和一堆面板逻辑。
 
 import { $, state, showToast } from './01-core.js';
-import { verifyAndSelectNote } from './07-formula-security-dnd.js';
+import { revealAndSelectNote } from './09-boot.js';
 import { escapeHtml } from '../shared/utils.js';
 import { listCommands, runCommand } from './19-command-panel.js';
 
@@ -54,9 +54,25 @@ function highlight(title, query) {
   return out + escapeHtml(title.slice(ti));
 }
 
+/**
+ * Ctrl+P 的候选池来自**全库**：跨笔记本跳转正是它存在的价值，而列表本身只有当前笔记本
+ * 那几篇（第 12 轮起由后端 notes_list(notebook_id) 过滤）。所以面板每次打开时单独拉一次
+ * 全量并缓存在这里 —— 敲字时的排序全在内存里，不会再发请求，也不会出现"索引过期"。
+ */
+let _index = [];
+
+async function refreshQuickSwitchIndex() {
+  try {
+    _index = await window.pywebview.api.notes_list();
+  } catch (e) {
+    _index = state.notes;                     // 桥不可用时退回当前列表（至少能在本笔记本里跳）
+  }
+  return _index;
+}
+
 function rank(query) {
   const out = [];
-  for (const n of state.notes) {
+  for (const n of (_index.length ? _index : state.notes)) {
     const title = n.title || '未命名笔记';
     const s = fuzzyScore(title, query);
     if (s > 0) out.push({ id: n.id, title, score: s });
@@ -113,7 +129,7 @@ function refresh() {
   renderList(q.trim());
 }
 
-export function openQuickSwitch() {
+export async function openQuickSwitch() {
   const panel = $('#quick-switch-panel');
   const input = $('#quick-switch-input');
   if (!panel || !input) return;
@@ -121,6 +137,7 @@ export function openQuickSwitch() {
   input.placeholder = '搜索笔记…（输入 > 执行命令）';
   mode = 'notes';
   commands = [];
+  await refreshQuickSwitchIndex();     // 候选 = 全库（跨笔记本跳转）
   matches = rank('');
   cursor = 0;
   panel.style.display = 'flex';
@@ -149,11 +166,11 @@ async function runSelected() {
 }
 
 async function choose(id) {
-  const note = state.notes.find(n => n.id === id);
   closeQuickSwitch();
-  if (!note) return;
   try {
-    await verifyAndSelectNote(id);       // 加密笔记会走既有的密码验证流程
+    // 跨笔记本跳转：这篇不在当前笔记本里时，视角会跟着切到它所在的那一本
+    // （否则会出现"列表里看不见，编辑区却在编辑它"）
+    await revealAndSelectNote(id);       // 加密笔记会走既有的密码验证流程
   } catch (err) {
     showToast('打开失败：' + (err.message || err), { type: 'error' });
   }

@@ -599,6 +599,34 @@ html, body {
   padding: 0 1px;
 }
 
+/* 「当前笔记本里没有匹配」提示条（笔记本范围 + 搜索叠加时插进列表里）。
+   搜索是全库 FTS，命中再与列表里的 DOM 求交 → 笔记本视角下就成了"在本笔记本里搜"，
+   这一条负责把"为什么一篇都没有"讲清楚，并给一键切到全部笔记的出口。 */
+.search-scope-hint {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 6px;
+  padding: 10px 12px;
+  margin: 4px 0;
+  font-size: var(--font-size-xs);
+  color: var(--text-muted);
+  background: var(--accent-light);
+  border-radius: 8px;
+  line-height: 1.6;
+}
+.search-scope-hint-btn {
+  background: none;
+  border: 1px solid var(--border-color);
+  border-radius: 6px;
+  color: var(--accent-dark);
+  font-size: var(--font-size-xs);
+  padding: 1px 8px;
+  cursor: pointer;
+  font-family: inherit;
+}
+.search-scope-hint-btn:hover { background: var(--border-color); }
+
 /* 列表加载骨架：首屏 JS 模块图与首次取列表期间占位，renderNoteList() 整体替换掉 */
 .note-skeleton { padding: 4px 0; }
 .note-skeleton-item {

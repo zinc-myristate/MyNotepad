@@ -256,8 +256,16 @@ def test_bridge_signatures_accept_the_arguments_js_passes(app_ns):
         'template_render': 2,
         'template_update': 2,
         'template_create': 2,
-        'notes_create_from_template': 3,
+        'notes_create_from_template': 4,   # (template_id, title, notebook_name, notebook_id) —— 第 12 轮加 id
         'file_copy_to_note': 3,
+        # 第 12 轮：笔记本范围（少一个参数 = 前端传了也落未分类，笔记照样混在一起）
+        'notes_create': 1,           # notes_create(notebook_id)
+        'notes_list': 1,             # notes_list(notebook_id)
+        'notes_by_tag': 2,           # notes_by_tag(tag_id, notebook_id)
+        'notes_create_from_link': 2,
+        'notes_created_on': 1,
+        'notebook_counts': 0,
+        'import_markdown_dialog': 1,  # import_markdown_dialog(notebook_id)
         # 第 11 轮：OCR
         'ocr_languages': 0,
         'ocr_recognize': 2,

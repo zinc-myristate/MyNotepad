@@ -1925,7 +1925,15 @@ def _parse_remind_at(s):
 # ====== 导出给前端的 API 类 ======
 class Api:
     # ----- 笔记 -----
-    def notes_list(self):
+    def notes_list(self, notebook_id=None):
+        """笔记列表。`notebook_id=None` = 全量；给了 id 就**只回该笔记本的笔记**（'' = 未分类）。
+
+        为什么过滤要放在后端（第 12 轮）：笔记本筛选以前是前端「拉全量 → 覆盖 state.notes」，
+        于是**任何一次刷新都会把筛选冲掉**（复制笔记 / 回收站恢复 / 待办勾选 / OCR 落库 /
+        模板新建 … 20+ 处调用 loadNotes 的路径），现象就是"在原神里新建一篇，
+        列表却变回全部笔记混在一起"。范围交给后端后，只要调用方带上同一个 notebook_id，
+        列表就永远只有那一本，"混在一起"这类回归不可能再靠某处忘记重筛而复现。
+        """
         # 排序：置顶 → 手动排序（sort_order，拖拽写入）→ 最近更新。新建笔记 sort_order=max+1，
         # 在 DESC 下自然排最前，与旧的「仅 updated_at」行为一致；未拖拽过的存量笔记 sort_order
         # 全为 0，退化为 updated_at DESC（兼容旧行为）。
@@ -1933,12 +1941,18 @@ class Api:
         # preview：列表里显示的一行正文摘要。content 是 Quill Delta JSON，只在后端提取纯文本，
         # **不把 content 发给前端**（既避免大 payload，也避免把加密笔记的密文送出去）。
         # 加密笔记（无论是否已解锁）一律给空串——列表渲染不参与解锁流程，摘要留给解锁后的编辑区。
-        rows = conn.execute(
-            "SELECT id, title, bg_type, bg_value, bg_opacity, is_pinned, is_favorite, "
-            "notebook_id, sort_order, created_at, updated_at, content, password_hash, format "
-            "FROM notes WHERE deleted_at IS NULL "
-            "ORDER BY is_pinned DESC, sort_order DESC, updated_at DESC"
-        ).fetchall()
+        sql = ("SELECT id, title, bg_type, bg_value, bg_opacity, is_pinned, is_favorite, "
+               "notebook_id, sort_order, created_at, updated_at, content, password_hash, format "
+               "FROM notes WHERE deleted_at IS NULL")
+        params = []
+        if notebook_id is not None:
+            if notebook_id == '':
+                sql += " AND notebook_id IS NULL"
+            else:
+                sql += " AND notebook_id = ?"
+                params.append(notebook_id)
+        sql += " ORDER BY is_pinned DESC, sort_order DESC, updated_at DESC"
+        rows = conn.execute(sql, params).fetchall()
         out = []
         for r in rows:
             d = dict(r)
@@ -1949,6 +1963,20 @@ class Api:
             d['preview'] = '' if has_pwd else _preview_text(raw, fmt=fmt)
             out.append(d)
         return out
+
+    def notes_created_on(self, date_str):
+        """某一天**创建**的笔记（跨笔记本，不受当前笔记本筛选影响），日历面板用它。
+
+        为什么要单独一个查询：列表按笔记本过滤后，前端手里的 state.notes 只有当前那一本，
+        靠它 filter(created_at.startsWith(日期)) 必然漏掉「日记」「收件箱」里的笔记 ——
+        点日历会以为那天没写过，于是一遍遍重复建当天笔记。
+        """
+        rows = conn.execute(
+            "SELECT id, title, notebook_id, created_at FROM notes "
+            "WHERE deleted_at IS NULL AND substr(created_at, 1, 10) = ? "
+            "ORDER BY created_at",
+            (date_str,)).fetchall()
+        return [dict(r) for r in rows]
 
     # ----- 正文格式转换（Delta ↔ Markdown，双轨的"搬家"通道）-----
     def _fmt_plain(self, content, fmt):
@@ -2178,13 +2206,19 @@ class Api:
         conn.commit()
         return self.notes_get(nid)
 
-    def notes_create(self):
+    def notes_create(self, notebook_id=None):
         # 新笔记默认 Markdown（第 6 轮起的双轨策略）；历史笔记保持 delta，按需转换
+        # notebook_id：当前笔记本（前端把关）——「在『原神』里新建」就该落在原神里，
+        # 落「未分类」再让用户手动移一次，正是"新建的混在一起"的一半原因。
+        # 传进来的 id 若指向已删除的笔记本，退回未分类（否则这篇笔记会谁也看不见）
+        if notebook_id and not conn.execute(
+                "SELECT 1 FROM notebooks WHERE id = ?", (notebook_id,)).fetchone():
+            notebook_id = None
         nid = str(uuid.uuid4())
         conn.execute(
-            "INSERT INTO notes (id, title, content, sort_order, format) "
-            "VALUES (?, '未命名笔记', '', ?, 'md')",
-            (nid, _next_sort_order('notes'))
+            "INSERT INTO notes (id, title, content, sort_order, format, notebook_id) "
+            "VALUES (?, '未命名笔记', '', ?, 'md', ?)",
+            (nid, _next_sort_order('notes'), notebook_id or None)
         )
         _fts_sync(nid, '未命名笔记', '', 'md')
         _refresh_derived(nid, '', 'md')
@@ -2199,6 +2233,11 @@ class Api:
         updates = {k: v for k, v in fields.items() if k in allowed}
         if not updates:
             return None
+        # 空串 = 未分类（前端「无（全部笔记）」传的就是 ''）：统一存 NULL。
+        # 存成空串的话，这篇笔记既不在任何笔记本里、也不在"未分类"（IS NULL）里 ——
+        # 按笔记本筛选时它永远不会出现，等于凭空消失。
+        if 'notebook_id' in updates and not updates['notebook_id']:
+            updates['notebook_id'] = None
         fts_needs = 'title' in updates or 'content' in updates  # 在加密剥除前判定
         # 加密笔记：内容写入必须已在后端解锁（不信任前端状态），解锁则加密后入库
         if 'content' in updates:
@@ -2472,11 +2511,13 @@ class Api:
         row = conn.execute("SELECT content FROM templates WHERE id = ?", (template_id,)).fetchone()
         return render_template(row['content'], title) if row else ''
 
-    def notes_create_from_template(self, template_id, title=None, notebook_name=None):
+    def notes_create_from_template(self, template_id, title=None, notebook_name=None, notebook_id=None):
         """用模板新建一篇笔记：变量在**这一刻**替换一次，之后它就是一普通篇笔记。
 
         前端两处入口（捕获菜单里点模板名 / 模板抽屉里的「用模板新建」）共用这一条路径——
         差别只是标题从哪来：菜单里直接用模板名，抽屉里听输入框的。
+
+        归属优先级：notebook_id（当前笔记本，第 12 轮起前端会传）> notebook_name（按名字找或建）。
         """
         row = conn.execute("SELECT name, content FROM templates WHERE id = ?",
                            (template_id,)).fetchone()
@@ -2484,15 +2525,14 @@ class Api:
         if not name and row:
             name = (row['name'] or '').strip()
         content = render_template(row['content'], name) if row else ''
-        notebook_id = _find_or_create_notebook(notebook_name) if notebook_name else None
-        note = self.notes_create()
+        if not notebook_id:
+            notebook_id = _find_or_create_notebook(notebook_name) if notebook_name else None
+        note = self.notes_create(notebook_id=notebook_id)
         fields = {}
         if content:
             fields['content'] = content
         if name:
             fields['title'] = name
-        if notebook_id:
-            fields['notebook_id'] = notebook_id
         return self.notes_update(note['id'], fields) if fields else note
 
     def notebook_id_by_name(self, name):
@@ -2617,14 +2657,15 @@ class Api:
             return None
         return {'id': rows[0]['id'], 'title': rows[0]['title'], 'matches': len(rows)}
 
-    def notes_create_from_link(self, title):
+    def notes_create_from_link(self, title, notebook_id=None):
         """点「未创建的链接」→ 建一篇同名 Markdown 笔记。
 
         刻意走 notes_create + notes_update 两条既有路径而不是自己拼 INSERT：
         排序值 / FTS / 派生索引都在里面，少走一步就多一处会漏的地方。
+        notebook_id = 当前笔记本（双链是从"这一本里的某篇"长出来的，跟着它走最自然）。
         """
         name = (title or '').strip() or '未命名笔记'
-        note = self.notes_create()
+        note = self.notes_create(notebook_id=notebook_id)
         return self.notes_update(note['id'], {'title': name}) or note
 
     def notes_table(self, note_ids=None):
@@ -3051,22 +3092,49 @@ class Api:
         conn.commit()
         return self.note_tags_get(note_id)
 
-    def notes_by_tag(self, tag_id):
-        rows = conn.execute(
+    def notes_by_tag(self, tag_id, notebook_id=None):
+        """某标签下的笔记；给了 notebook_id 就再叠加笔记本范围（`''` = 未分类）。
+
+        标签与笔记本是两个独立筛选，**必须能叠加**：否则在「原神」里点一个标签，
+        列表会把别的笔记本的同标签笔记也倒进来 —— 又变回"混在一起"。
+        """
+        sql = (
             "SELECT n.id, n.title, n.bg_type, n.bg_value, n.bg_opacity, n.is_pinned, n.is_favorite, "
-            "n.sort_order, n.created_at, n.updated_at, "
+            "n.notebook_id, n.sort_order, n.created_at, n.updated_at, "
             "CASE WHEN n.password_hash IS NOT NULL AND n.password_hash != '' THEN 1 ELSE 0 END AS has_password "
             "FROM notes n JOIN note_tags nt ON n.id = nt.note_id "
-            "WHERE nt.tag_id = ? AND n.deleted_at IS NULL "
-            "ORDER BY n.is_pinned DESC, n.sort_order DESC, n.updated_at DESC",
-            (tag_id,)
-        ).fetchall()
+            "WHERE nt.tag_id = ? AND n.deleted_at IS NULL"
+        )
+        params = [tag_id]
+        if notebook_id is not None:
+            if notebook_id == '':
+                sql += " AND n.notebook_id IS NULL"
+            else:
+                sql += " AND n.notebook_id = ?"
+                params.append(notebook_id)
+        sql += " ORDER BY n.is_pinned DESC, n.sort_order DESC, n.updated_at DESC"
+        rows = conn.execute(sql, params).fetchall()
         return [dict(r) for r in rows]
 
     # ----- 笔记本 -----
     def notebooks_list(self):
         rows = conn.execute("SELECT * FROM notebooks ORDER BY sort_order, created_at").fetchall()
         return [dict(r) for r in rows]
+
+    def notebook_counts(self):
+        """笔记数的唯一来源：每本多少篇 + 未分类 + 总数（不含回收站）。
+
+        列表按笔记本过滤后，前端手里只有当前那一本的笔记，**再也不能**靠 state.notes 数出
+        "全部笔记有几篇、别的笔记本有几篇"（下拉里那些 `N 篇` 会全变成假的）。所以计数一律
+        由这里给：一次 GROUP BY，前端只在刷新笔记本栏时拉一次。
+        """
+        rows = conn.execute(
+            "SELECT notebook_id, COUNT(*) AS n FROM notes "
+            "WHERE deleted_at IS NULL GROUP BY notebook_id").fetchall()
+        by_id = {r['notebook_id']: r['n'] for r in rows if r['notebook_id']}
+        uncategorized = sum(r['n'] for r in rows if not r['notebook_id'])
+        return {'by_id': by_id, 'uncategorized': uncategorized,
+                'total': uncategorized + sum(by_id.values())}
 
     def notebooks_create(self, name='新建笔记本'):
         nid = str(uuid.uuid4())

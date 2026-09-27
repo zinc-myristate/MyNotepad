@@ -8,8 +8,8 @@
 
 import { $, closePanel, openPanel, showToast, state } from './01-core.js';
 import { ICONS } from '../shared/icons.js';
-import { loadNotes, selectNote } from './03-notes.js';
-import { verifyAndSelectNote } from './07-formula-security-dnd.js';
+import { loadNotes } from './03-notes.js';
+import { revealAndSelectNote } from './09-boot.js';
 
 // 「全部」放第一个且做默认：大多数待办不带日期，默认落在"今天"会看到空面板
 const SCOPES = [
@@ -84,7 +84,8 @@ export async function openTodoPanel() {
 /** 打开笔记；Markdown 笔记尽力滚到那条待办所在行 */
 async function jumpToNote(item) {
   closePanel($('#todo-panel'));
-  await verifyAndSelectNote(item.note_id);
+  // 待办面板是**跨笔记**的（全库在办事项），目标可能在别的笔记本里 → 视角跟着切过去
+  await revealAndSelectNote(item.note_id);
   if (state.noteFormat !== 'md') {
     showToast('已打开「' + (item.note_title || '') + '」', { type: 'info' });
     return;

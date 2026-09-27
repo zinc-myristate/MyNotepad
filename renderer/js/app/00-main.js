@@ -55,6 +55,11 @@ import '../quill/quill-deco.js';
 // 只暴露无副作用的引用（state / dom 是 const 对象，函数是稳定绑定），供 e2e 探针与调试使用。
 // 生产逻辑一律走显式 import，不再依赖全局作用域。
 import { state, dom, showConfirmAsync } from './01-core.js';
-import { debouncedSave, flushSave } from './03-notes.js';
+import { debouncedSave, flushSave, loadNotes } from './03-notes.js';
+import { getCurrentNotebookId, revealAndSelectNote, setNotebookScope } from './09-boot.js';
 
-window.__app = { state, dom, debouncedSave, flushSave, showConfirmAsync };
+window.__app = {
+  state, dom, debouncedSave, flushSave, showConfirmAsync,
+  // 笔记本视角（第 12 轮）：e2e 探针用，生产逻辑一律走显式 import
+  loadNotes, setNotebookScope, getCurrentNotebookId, revealAndSelectNote,
+};

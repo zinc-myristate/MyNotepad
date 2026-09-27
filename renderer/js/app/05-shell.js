@@ -3,6 +3,7 @@ import { $, closePanel, dom, openPanel, showConfirmAsync, showInputDialog, showT
 import { notesStore } from './01b-store.js';
 import { clearVoiceTemp, isVoiceRecording, stopVoiceRecording } from './02-editor.js';
 import { confirmDeleteNote, createNewNote, flushSave, renderNoteList, saveCurrentNote } from './03-notes.js';
+import { getCurrentNotebookId, updateNotebookCount } from './09-boot.js';
 import { escapeHtml } from '../shared/utils.js';
 import { openFindBar } from './23-find-bar.js';
 
@@ -109,6 +110,20 @@ export async function loadTagBar() {
   $('#tag-bar').classList.remove('hidden');
 }
 
+/** 把「当前标签筛选 + 当前笔记本范围」重新套到列表上（切标签 / 换笔记本 / 清筛选共用）。
+ *
+ *  两者叠加的算法只有这一处，避免"某条路径只带了一半条件"——那正是筛选被冲掉的经典写法。
+ */
+export async function reapplyTagFilter() {
+  const nbId = getCurrentNotebookId();
+  notesStore.setNotes(currentTagFilter
+    ? await window.pywebview.api.notes_by_tag(currentTagFilter, nbId)
+    : await window.pywebview.api.notes_list(nbId));
+  renderNoteList();
+  updateNotebookCount();
+  loadTagFilter();
+}
+
 export async function loadTagFilter() {
   const tags = await window.pywebview.api.tags_list();
   _tags = tags;
@@ -122,15 +137,8 @@ export async function loadTagFilter() {
     if (currentTagFilter === tag.id) chip.classList.add('active');
     chip.textContent = tag.name;
     chip.addEventListener('click', async () => {
-      if (currentTagFilter === tag.id) {
-        currentTagFilter = null;
-        notesStore.setNotes(await window.pywebview.api.notes_list());
-      } else {
-        currentTagFilter = tag.id;
-        notesStore.setNotes(await window.pywebview.api.notes_by_tag(tag.id));
-      }
-      renderNoteList();
-      loadTagFilter();
+      currentTagFilter = (currentTagFilter === tag.id) ? null : tag.id;
+      await reapplyTagFilter();
     });
     container.appendChild(chip);
   });
@@ -138,9 +146,7 @@ export async function loadTagFilter() {
 
 $('#btn-clear-tag-filter').addEventListener('click', async () => {
   currentTagFilter = null;
-  notesStore.setNotes(await window.pywebview.api.notes_list());
-  renderNoteList();
-  loadTagFilter();
+  await reapplyTagFilter();
 });
 
 $('#btn-add-tag').addEventListener('click', () => openTagPicker());

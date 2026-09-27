@@ -1,10 +1,8 @@
 // ====== 自适应背景分析 ======
 // ====== ESM 依赖（原先靠全局作用域与加载顺序隐式依赖，现显式声明）======
 import { $, $$, NotepadConfig, closePanel, dom, openPanel, showToast, state } from './01-core.js';
-import { notesStore } from './01b-store.js';
 import { loadNotes, renderNoteList, saveCurrentNote, selectNote } from './03-notes.js';
-import { verifyAndSelectNote } from './07-formula-security-dnd.js';
-import { updateNotebookCount } from './09-boot.js';
+import { getCurrentNotebookId, revealAndSelectNote } from './09-boot.js';
 import { buildDividerPanel, buildStickerGrid, setStickerCat } from '../quill/quill-deco.js';
 import { escapeHtml } from '../shared/utils.js';
 
@@ -382,8 +380,8 @@ async function onCalendarDateClick(dateStr) {
     try {
       const note = await window.pywebview.api.daily_note_open();
       if (note && note.id) {
-        await loadNotes();
-        await selectNote(note.id);
+        // 日记固定落「日记」笔记本：不在当前笔记本里就跟过去（视角切到日记那一本）
+        await revealAndSelectNote(note.id);
         return;
       }
     } catch (e) {
@@ -391,19 +389,17 @@ async function onCalendarDateClick(dateStr) {
       return;
     }
   }
-  // 查找当天创建的笔记
-  const dayNotes = state.notes.filter(n => (n.created_at||'').startsWith(dateStr));
-  if (dayNotes.length > 0) {
+  // 查找当天创建的笔记：**跨笔记本**查（列表只有当前那一本，靠 state.notes 找必然漏）
+  const dayNotes = await window.pywebview.api.notes_created_on(dateStr);
+  if (dayNotes && dayNotes.length > 0) {
     // 跳转到第一篇
-    await verifyAndSelectNote(dayNotes[0].id);
+    await revealAndSelectNote(dayNotes[0].id);
   } else {
-    // 自动创建笔记（使用默认标题）
+    // 自动创建笔记（使用默认标题）：落在**当前笔记本**里，与「＋ 新建笔记」同一条规矩
     await saveCurrentNote();
-    const note = await window.pywebview.api.notes_create();
+    const note = await window.pywebview.api.notes_create(getCurrentNotebookId());
     if (note) {
-      notesStore.unshift(note);
-      renderNoteList();
-      updateNotebookCount();
+      await loadNotes();
       await selectNote(note.id);
       dom.titleInput.focus();
     }

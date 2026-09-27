@@ -13,7 +13,8 @@
 
 import { $, state, showToast, openPanel, closePanel } from './01-core.js';
 import { ICONS } from '../shared/icons.js';
-import { loadNotes, selectNote, debouncedSave } from './03-notes.js';
+import { loadNotes, debouncedSave } from './03-notes.js';
+import { revealAndSelectNote } from './09-boot.js';
 import { insertImageResult } from './02-editor.js';
 import { applyMarkdownAction } from './17-markdown-actions.js';
 
@@ -266,7 +267,8 @@ async function doSaveAsNote() {
   setBusy(false);
   if (!note || !note.id) { showToast('存成新笔记失败', { type: 'error' }); return; }
   await loadNotes();
-  await selectNote(note.id);
+  // 新笔记固定落「收件箱」：不在当前笔记本里就跟过去，保证列表里看得见它
+  await revealAndSelectNote(note.id);
   showToast('已存为「收件箱」里的新笔记', { type: 'success' });
   closeOcr(true);
 }

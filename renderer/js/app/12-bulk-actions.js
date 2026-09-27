@@ -8,9 +8,10 @@
 // notes_add_tag_many），而不是前端 for 循环逐个调——N 次跨语言往返在大批量下明显卡顿，
 // 且失败一半时很难给出准确反馈。
 
-import { $, $$, dom, showConfirmAsync, showToast, state } from './01-core.js';
+import { $, $$, dom, hideEditorUI, showConfirmAsync, showToast, state } from './01-core.js';
 import { loadNotes, renderNoteList } from './03-notes.js';
 import { loadTagFilter } from './05-shell.js';
+import { verifyAndSelectNote } from './07-formula-security-dnd.js';
 import { loadNotebookBar } from './09-boot.js';
 
 let _anchor = null;      // Shift 连选的起点
@@ -104,6 +105,16 @@ async function afterBulk(message) {
   await loadNotebookBar();
   loadTagFilter();
   renderNoteList();
+  // 批量操作可能把**当前打开的那篇**移出当前笔记本（或删除）：编辑区不能还停在它上面，
+  // 否则又成了"列表里看不见、编辑区却在编辑它"。按切范围的规矩收尾：跳第一篇，没有就清空。
+  if (state.activeNoteId && !state.notes.some(n => n.id === state.activeNoteId)) {
+    if (state.notes.length > 0) {
+      await verifyAndSelectNote(state.notes[0].id);
+    } else {
+      state.activeNoteId = null;
+      hideEditorUI();
+    }
+  }
   if (message) showToast(message, { type: 'success' });
 }
 

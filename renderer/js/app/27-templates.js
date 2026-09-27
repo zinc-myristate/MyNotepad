@@ -12,6 +12,7 @@
 
 import { $, state, showToast, showInputDialog, showConfirmAsync } from './01-core.js';
 import { loadNotes, selectNote } from './03-notes.js';
+import { getCurrentNotebookId } from './09-boot.js';
 import { applyMarkdownAction } from './17-markdown-actions.js';
 
 let _templates = [];
@@ -180,11 +181,12 @@ async function deleteTemplate() {
   }
 }
 
-/** 用模板建一篇新笔记（捕获菜单与抽屉共用的唯一路径） */
+/** 用模板建一篇新笔记（捕获菜单与抽屉共用的唯一路径）
+ *  归属跟着**当前笔记本**走（第 12 轮）：在「原神」里用模板新建，就该落在原神里。 */
 export async function createNoteFromTemplate(templateId, title) {
   if (!templateId) { showToast('请先选一个模板', { type: 'warn' }); return null; }
   try {
-    const note = await api().notes_create_from_template(templateId, title || null);
+    const note = await api().notes_create_from_template(templateId, title || null, null, getCurrentNotebookId());
     if (!note || !note.id) throw new Error('创建失败');
     await loadNotes();
     await selectNote(note.id);

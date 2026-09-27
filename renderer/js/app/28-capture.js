@@ -12,7 +12,8 @@
 
 import { $, state, showToast } from './01-core.js';
 import { ICONS } from '../shared/icons.js';
-import { loadNotes, selectNote } from './03-notes.js';
+import { loadNotes } from './03-notes.js';
+import { revealAndSelectNote } from './09-boot.js';
 import { insertImageResult } from './02-editor.js';
 import { applyMarkdownAction } from './17-markdown-actions.js';
 import { listTemplates, createNoteFromTemplate, openTemplates } from './27-templates.js';
@@ -45,11 +46,13 @@ async function toggleMenu(force) {
   if (_open) await renderMenuTemplates();
 }
 
-/** 捕获成功后的统一收尾：刷新列表 → 选中新笔记（可选）→ 提示 */
+/** 捕获成功后的统一收尾：刷新列表 → 选中新笔记（可选）→ 提示。
+ *  捕获固定落「收件箱」/「日记」，若当前正在别的笔记本里，就**把视角跟过去**再选中——
+ *  否则列表里没有这篇、编辑区却在编辑它（列表与编辑区不一致）。 */
 async function afterCapture(note, message, select) {
   if (!note || !note.id) return false;
   await loadNotes();
-  if (select) await selectNote(note.id);
+  if (select) await revealAndSelectNote(note.id);
   showToast(message, { type: 'success' });
   return true;
 }
@@ -141,7 +144,8 @@ function exposeCaptureBridge() {
         await loadNotes();
       } catch (e) { /* 列表刷不动不影响笔记已经落库 */ }
       if (id && select) {
-        try { await selectNote(id); } catch (e) { /* 同上 */ }
+        // 刚存成的新笔记在「收件箱」：跟过去（视角 + 选中），列表与编辑区保持一致
+        try { await revealAndSelectNote(id); } catch (e) { /* 同上 */ }
       }
       showToast(select ? '截图已存为新笔记' : '已收进「收件箱」', { type: 'success' });
     },
