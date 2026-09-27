@@ -46,6 +46,55 @@ class TestStaticUI:
         m = re.findall(r'\.ql-toolbar\.ql-snow \.ql-formats\s*\{[^}]*\}', css, re.S)
         assert m and any('flex-wrap: wrap' in b for b in m), '工具栏格式组必须允许换行'
 
+    def test_sidebar_search_and_notebook_bar_share_one_style(self):
+        """侧栏「搜索框」与「笔记本按钮」要像同一套控件（用户红圈反馈）。
+
+        实测过：边框与圆角本来就一致（1px #E0DBD4 / 6px），不一致的是
+        ①底色（搜索框近白 --input-bg，笔记本按钮浅灰 --bg-secondary —— 同一条边框压在
+        浅灰底上显得更重，看着像两种控件）②高度 35 vs 34 ③左边距 14 vs 10。
+        这条测试把三者钉在 CSS 里（像素级一致性由实机那条 test_sidebar_pair_* 保证）。
+        """
+        css = _style()
+
+        def block(sel, must_have):
+            """取该选择器的**第一条**含指定声明的规则块（注释先剥掉）。
+
+            两个坑：①同一个选择器在自适应背景下还有 `!important` 覆盖块（只改 border-color），
+            直接 re.search 会抓到那条；②注释里会写"原来是 --bg-secondary"这种话，
+            按子串判断会被注释里的旧值骗到。
+            """
+            for b in re.findall(re.escape(sel) + r'\s*\{[^}]*\}', css, re.S):
+                if must_have in b:
+                    return re.sub(r'/\*.*?\*/', '', b, flags=re.S)
+            raise AssertionError('找不到含 %r 的 %s 规则' % (must_have, sel))
+
+        header = block('.sidebar-header', 'padding')
+        bar = block('.notebook-bar', 'padding')
+        btn = block('.notebook-select-btn', 'min-height')
+        plus = block('.btn-new-notebook', 'min-height')
+        assert 'padding: 18px 14px 8px' in header, '侧栏头部左右内边距是 14px（搜索框据此对齐）'
+        assert 'padding: 2px 14px 4px' in bar, '笔记本栏左右内边距必须与侧栏头部一致（都用 14px）'
+        assert 'var(--input-bg)' in btn, '笔记本按钮底色要跟搜索框同一档'
+        assert '--bg-secondary' not in btn, '浅灰底会让同一条边框看着更重'
+        assert 'min-height: 35px' in btn, '高度要跟搜索框的 35px 对齐'
+        assert 'min-height: 35px' in plus, '「+」也要 35px（同一行三个控件等高）'
+        assert 'margin: 0' in plus, '「+」的 8px 右边距会把它的右边界推进来，与搜索框对不齐'
+
+    def test_note_time_never_wraps_and_yields_on_hover(self):
+        """笔记行的时间戳：正常态不折行；悬停态让位给那 5 个操作按钮。
+
+        实测（侧栏 270px）：悬停时 5 个按钮吃掉 ~142px，信息列从 181px 被压到 39px，
+        自然宽 105px 的 "2026-09-27 16:58" 于是折成三行（用户截图）。只加 nowrap 会变成
+        压到按钮上，所以悬停时让它先退场。
+        """
+        css = _style()
+        t = next((b for b in re.findall(r'\.note-item-time\s*\{[^}]*\}', css, re.S)
+                  if 'white-space' in b), None)
+        assert t, '找不到 .note-item-time 的 white-space 规则'
+        assert 'white-space: nowrap' in t, '时间戳不许折行'
+        assert re.search(r'\.note-item:hover \.note-item-time\s*\{\s*display:\s*none', css), \
+            '悬停时要隐藏时间戳（按钮占位后放不下它）'
+
     def test_dark_theme_defined(self):
         css = _style()
         assert '[data-theme="dark"]' in css, '深色主题块不能丢'
@@ -314,3 +363,68 @@ def test_system_theme_resolves_to_concrete(tmp_path, monkeypatch):
     val = conn.execute("SELECT value FROM settings WHERE key='theme'").fetchone()
     conn.close()
     assert val and val[0] == 'system', '应保存用户的「跟随系统」选择而不是解析结果'
+
+
+SIDEBAR_PAIR = r"""JSON.stringify((() => {
+  const rect = (el) => el.getBoundingClientRect();
+  const pick = (el) => { const c = getComputedStyle(el); return {
+    left: Math.round(rect(el).left * 10) / 10, right: Math.round(rect(el).right * 10) / 10,
+    height: Math.round(rect(el).height * 10) / 10,
+    border: c.borderTopWidth + ' ' + c.borderTopColor,
+    radius: c.borderTopLeftRadius, bg: c.backgroundColor,
+    radiusPx: c.borderTopLeftRadius }; };
+  const time = document.querySelector('#note-list .note-item-time');
+  const tc = getComputedStyle(time);
+  const lh = parseFloat(tc.lineHeight) || 15;
+  const pinSvg = document.querySelector('#note-list .note-item-pin svg');
+  return {
+    search: pick(document.getElementById('search-input')),
+    notebook: pick(document.getElementById('btn-notebook-select')),
+    plus: pick(document.getElementById('btn-new-notebook-sidebar')),
+    pinBtnRadius: getComputedStyle(document.querySelector('.note-item-pin')).borderTopLeftRadius,
+    time: { nowrap: tc.whiteSpace,
+            lines: Math.round(rect(time).height / lh * 10) / 10 },
+    pin: pinSvg ? { circles: pinSvg.querySelectorAll('circle').length,
+                    paths: pinSvg.querySelectorAll('path').length,
+                    stroke: pinSvg.getAttribute('stroke-width') } : null,
+  };
+})())"""
+
+
+@pytest.mark.e2e
+def test_sidebar_pair_and_note_row_pixels(tmp_path, monkeypatch):
+    """侧栏那两块 + 列表行的时间戳：按**算出来的像素**验收。
+
+    改之前实测：搜索框 35px 高 / 左边 14 / 底色 #FCFAF7，笔记本按钮 34px 高 / 左边 10 /
+    底色 #F6F3EF —— 边框与圆角其实一样（1px #E0DBD4 / 6px），差的是底色、高度与 4px 错位。
+    时间戳那三行也是量出来的：悬停时 5 个按钮把信息列从 181px 压到 39px。
+    """
+    ns = load_app_partial(monkeypatch, tmp_path)
+    import backend
+    nid = backend.api.notes_create()['id']
+    backend.api.notes_update(nid, {'title': '未命名笔记', 'content': '一段正文摘要文字\n'})
+
+    def actions(window, result):
+        time.sleep(1.0)
+        result.update(json.loads(window.evaluate_js(SIDEBAR_PAIR)))
+
+    res = _run(ns, actions)
+    assert 'error' not in res, res
+    s, n, plus = res['search'], res['notebook'], res['plus']
+
+    # ① 同一套控件：边框 / 圆角 / 底色 / 高度 / 左边界
+    assert s['border'] == n['border'], '边框必须一致：%s vs %s' % (s['border'], n['border'])
+    assert s['radius'] == n['radius'], '圆角必须一致：%s vs %s' % (s['radius'], n['radius'])
+    assert s['bg'] == n['bg'], '底色必须一致（浅灰底会让同一条边框看着更重）：%s vs %s' % (s['bg'], n['bg'])
+    assert abs(s['height'] - n['height']) <= 0.5, '高度差 %.1fpx' % abs(s['height'] - n['height'])
+    assert abs(s['left'] - n['left']) <= 0.5, '左边界差 %.1fpx' % abs(s['left'] - n['left'])
+    assert abs(s['right'] - plus['right']) <= 0.5, \
+        '右边界（笔记本栏的「+」按钮）应与搜索框对齐：%.1f vs %.1f' % (s['right'], plus['right'])
+
+    # ② 时间戳一行；悬停让位（:hover 无法在无头环境触发，规则由静态测试钉住）
+    assert res['time']['nowrap'] == 'nowrap'
+    assert res['time']['lines'] == 1, '时间戳折成了 %.1f 行' % res['time']['lines']
+
+    # ③ 置顶图标：细描边图钉（无圆点），悬停底色是圆
+    assert res['pin'] == {'circles': 0, 'paths': 2, 'stroke': '2'}, res['pin']
+    assert res['pinBtnRadius'] == '50%', '悬停底框应是圆：%s' % res['pinBtnRadius']

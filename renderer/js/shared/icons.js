@@ -5,8 +5,12 @@ export const ICONS = {
   // 锁图标（密码保护笔记）
   lock: '<svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round"><rect x="3" y="11" width="18" height="11" rx="2"/><path d="M7 11V7a5 5 0 0110 0v4"/></svg>',
 
-  // 置顶图标
-  pin: '<svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round"><path d="M12 2v20M5 9h14l-3-7H8L5 9z"/><circle cx="12" cy="2" r="2"/></svg>',
+  // 置顶图标：竖立细描边图钉（上宽 → 细颈 → 外扩底座 → 细针）
+  // 旧版是「贯穿竖线 + 宽底梯形 + 顶部 r=2 的小圆」：12px 显示时只剩 1.25px 线宽与
+  // 1px 半径的圆点，糊成一个蘑菇头（用户反馈"有点丑"）。细颈留 4.4 单位 ≈ 12px 下
+  // 约 1.2px 缝隙，不会被 1px 描边糊死；描边取 2 而不是 1.8，因为图标库的档位被
+  // tests/test_ui_icons.py 锁在 1/2/2.5/3（12px 下 2→1.0px、1.8→0.9px，肉眼无差）。
+  pin: '<svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M7 3h10l-2.8 6.5 2.6 4.5H7.2l2.6-4.5L7 3z"/><path d="M12 14v7"/></svg>',
 
   // 实心星（已收藏）
   star: '<svg width="12" height="12" viewBox="0 0 24 24" fill="currentColor" stroke="currentColor" stroke-width="1"><polygon points="12 2 15.09 8.26 22 9.27 17 14.14 18.18 21.02 12 17.77 5.82 21.02 7 14.14 2 9.27 8.91 8.26 12 2"/></svg>',

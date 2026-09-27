@@ -665,7 +665,11 @@ html, body {
   font-size: var(--font-size-xs);
   color: var(--text-very-muted);
   letter-spacing: 0.02em;
+  white-space: nowrap;   /* 时间戳宁可挤摘要，也不许折成 "2026- / 09-27 / 16:58" 三行 */
 }
+/* 悬停时那一行的 5 个操作按钮会占掉 ~142px（实测：信息列 181px → 39px），
+   时间戳（自然宽 105px）留着必然折三行、加 nowrap 又会压到按钮上 —— 让它先退场。 */
+.note-item:hover .note-item-time { display: none; }
 
 /* 笔记状态图标 */
 .note-status-icon {
@@ -688,7 +692,7 @@ html, body {
 /* 密码按钮 */
 .note-item-password {
   width: 20px; height: 20px; border: none; background: transparent;
-  cursor: pointer; border-radius: 4px;
+  cursor: pointer; border-radius: 50%;
   display: none; align-items: center; justify-content: center;
   flex-shrink: 0; opacity: 0.3; transition: all var(--transition-fast);
   padding: 0;
@@ -699,7 +703,7 @@ html, body {
 /* 复制按钮（与密码按钮同一套 hover 显隐） */
 .note-item-copy {
   width: 20px; height: 20px; border: none; background: transparent;
-  cursor: pointer; border-radius: 4px;
+  cursor: pointer; border-radius: 50%;
   display: none; align-items: center; justify-content: center;
   flex-shrink: 0; opacity: 0.3; transition: all var(--transition-fast);
   padding: 0;
@@ -707,14 +711,14 @@ html, body {
 .note-item:hover .note-item-copy { display: flex; }
 .note-item-copy:hover { opacity: 1; background: var(--btn-hover-bg); }
 
-/* 置顶/收藏/删除按钮 */
+/* 置顶/收藏/删除按钮：悬停底色是**圆**（原来是 4px 小圆角方块，五个行内按钮统一） */
 .note-item-pin, .note-item-fav {
   width: 20px; height: 20px;
   border: none;
   background: transparent;
   font-size: 13px;
   cursor: pointer;
-  border-radius: 4px;
+  border-radius: 50%;
   display: none;
   align-items: center;
   justify-content: center;
@@ -731,7 +735,7 @@ html, body {
   width: 22px; height: 22px;
   border: none; background: transparent;
   color: var(--text-very-muted);
-  cursor: pointer; border-radius: 4px;
+  cursor: pointer; border-radius: 50%;
   display: none; align-items: center; justify-content: center;
   transition: all var(--transition-fast);
   flex-shrink: 0; opacity: 0.5; padding: 0;
@@ -2693,12 +2697,14 @@ body.adaptive-bg {
   margin-left: auto;
 }
 .btn-new-notebook {
-  /* 与 notebook-select-btn 同高（34px）：原先 4px padding → 24px，比其他按钮矮一截 */
-  min-height: 34px; padding: 8px 10px; border: 1px dashed var(--border-color);
+  /* 与 notebook-select-btn 同高（35px）同边（margin 归零，水平间距交给 .notebook-bar 的 gap）：
+     原来是 34px + margin 2px 8px，右边被推进来 8px，红圈里"搜索框 / 笔记本按钮 / +"
+     三个右边对不齐（实测 255 vs 247）。 */
+  min-height: 35px; padding: 8px 10px; border: 1px dashed var(--border-color);
   border-radius: var(--radius-sm); background: transparent;
   font-size: var(--font-size-xs); font-family: var(--font-sans);
   color: var(--text-muted); cursor: pointer;
-  transition: all var(--transition-fast); margin: 2px 8px;
+  transition: all var(--transition-fast); margin: 0;
 }
 .btn-new-notebook:hover { border-color: var(--accent); color: var(--accent-text); }
 
@@ -3110,17 +3116,21 @@ body.adaptive-bg {
 .cover-option.active { border-color: var(--accent); box-shadow: 0 0 0 3px var(--accent-light); }
 
 /* ====== 笔记本选择栏 ====== */
+/* 左右 14px 与 .sidebar-header 一致：红圈里"搜索框"和"笔记本按钮"要能对上左右边
+   （原来左边距 10px，两块各差 4px，看着像没对齐） */
 .notebook-bar {
   display: flex; align-items: center; gap: 4px;
-  padding: 2px 10px 4px;
+  padding: 2px 14px 4px;
   border-bottom: 1px solid var(--border-light);
 }
 .notebook-select-btn {
   display: flex; align-items: center; gap: 4px;
-  /* 与其他侧边栏按钮统一为 34px 高：原先 padding 4px+11px 字号只有 24px，
-     比同级按钮矮 10px，既不好点也不整齐 */
-  min-height: 34px; padding: 8px 10px; border: 1px solid var(--border-color);
-  border-radius: var(--radius-sm); background: var(--bg-secondary);
+  /* 35px + --input-bg = 与搜索框同一套：搜索框实测 35px 高、底色 #FCFAF7（近白），
+     而这里是 34px + --bg-secondary（浅灰）—— 同一条 1px 边框压在浅灰底上显得更重，
+     于是两个控件看着不像一家人，虽然边框/圆角本来就完全一致。
+     （34px 是当年为对齐其它侧栏按钮定的，1px 差异肉眼不可见，优先保证红圈内这一对一致。） */
+  min-height: 35px; padding: 8px 10px; border: 1px solid var(--border-color);
+  border-radius: var(--radius-sm); background: var(--input-bg);
   font-size: var(--font-size-xs); font-family: var(--font-sans);
   font-weight: 600; color: var(--text-primary); cursor: pointer;
   transition: all var(--transition-fast); overflow:hidden; text-overflow:ellipsis; white-space:nowrap;

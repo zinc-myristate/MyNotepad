@@ -205,3 +205,28 @@ def test_icons_registry_entries_follow_the_style_rules():
         sw = re.search(r'stroke-width="([\d.]+)"', tag)
         if sw:
             assert sw.group(1) in ('1', '2', '2.5', '3'), '描边档位异常：%s' % tag
+
+
+def test_pin_icon_is_a_clean_outline_pushpin():
+    """置顶图标必须是**竖立细描边图钉**（上宽 → 细颈 → 外扩底座 → 细针）。
+
+    旧版是「贯穿整高的竖线 + 宽底梯形 + 顶部 r=2 的小圆」：12px 显示时圆只有 1px 半径、
+    线宽只有 1.25px，糊成一个"蘑菇头"（用户反馈"有点丑"，并指定换成细描边图钉）。
+    这条测试把那次决定钉住 —— 别再退回蘑菇头。
+    """
+    src = open(os.path.join(RENDERER, 'js', 'shared', 'icons.js'), encoding='utf-8').read()
+    m = re.search(r"pin:\s*'([^']*)'", src)
+    assert m, '图标库里找不到 pin'
+    svg = m.group(1)
+    assert 'width="12"' in svg and 'height="12"' in svg, '列表里的置顶图标是 12px'
+    assert 'stroke-width="2"' in svg, '描边取 2（图标库档位只允许 1/2/2.5/3）'
+    assert '<circle' not in svg, '顶部那个小圆点就是"糊成一团"的来源，别再画'
+    paths = re.findall(r'<path d="([^"]*)"', svg)
+    assert len(paths) == 2, '应当是「图钉轮廓 + 针」两条 path，实际 %d 条' % len(paths)
+    body, needle = paths
+    assert body.rstrip().endswith('z'), '轮廓要闭合：%s' % body
+    assert needle.startswith('M12 14'), '针从底座（y=14）往下画：%s' % needle
+    # 细颈要留得住：腰部缝隙 = 顶边宽 − 2×斜边内收量（12px 下太小就会被 1px 描边糊死）
+    top_w = float(re.search(r'h([\d.]+)', body).group(1))
+    inset = abs(float(re.search(r'l(-?[\d.]+)', body).group(1)))
+    assert top_w - 2 * inset >= 4, '细颈只剩 %.1f 单位，12px 下会糊成一团' % (top_w - 2 * inset)
