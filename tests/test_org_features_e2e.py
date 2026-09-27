@@ -4,12 +4,13 @@
 这一层必须真跑浏览器：面板的事件委托、Ctrl+P 面板的模式切换、写回后的刷新，
 单测覆盖不到；而写回本身（后端）已有单测，这里验的是"点了真的会变"。
 """
+import datetime
 import json
 import threading
 import time
 
 import pytest
-from conftest import PROJECT_ROOT, load_app_partial
+from conftest import PROJECT_ROOT, load_app_partial, wait_for_js
 
 RENDERER = PROJECT_ROOT + '/renderer'
 
@@ -77,6 +78,54 @@ def test_todo_panel_lists_and_toggles(tmp_path, monkeypatch):
     assert r['items_after'] == 1, r
     stored = backend.api.notes_get(nid)['content']
     assert '- [x] 先做' in stored and '- [ ] 后做' in stored, stored
+
+
+@pytest.mark.e2e
+def test_todo_tabs_fit_in_one_row(tmp_path, monkeypatch):
+    """待办面板顶部六个筛选必须**一行**放得下（用户反馈：第六个「已完成」掉到第二行）。
+
+    为什么用测量而不是静态检查：换不换行取决于字体与徽章宽度，只有真浏览器量得准。
+    实测（12px 字体 + 一位/两位计数）：六个胶囊要 ~373px，`.panel-dialog-wide` 的内容宽 412px。
+    只把胶囊改窄是放不下的（360px 面板只有 312px 内容宽）—— 所以面板宽度也算进这条断言里。
+    """
+    ns = load_app_partial(monkeypatch, tmp_path)
+    import backend
+    api = backend.api
+    today = datetime.date.today().isoformat()
+    lines = ['- [ ] 今天的事 @%s' % today, '- [ ] 逾期的事 @2020-01-01', '- [x] 已完成 @2020-01-01']
+    lines += ['- [ ] 无期限 %d' % i for i in range(12)]      # 让「全部」「无日期」变成两位数计数
+    nid = api.notes_create()['id']
+    api.notes_update(nid, {'title': '清单', 'content': '\n'.join(lines) + '\n'})
+
+    def actions(window, result):
+        window.evaluate_js("document.getElementById('btn-todos').click();")
+        wait_for_js(window, "document.querySelectorAll('#todo-tabs .todo-tab').length", 6)
+        time.sleep(0.6)
+        result['m'] = json.loads(window.evaluate_js("""JSON.stringify((() => {
+            const box = document.getElementById('todo-tabs');
+            const chips = [...box.querySelectorAll('.todo-tab')];
+            const widths = chips.map(c => c.getBoundingClientRect().width);
+            const gap = parseFloat(getComputedStyle(box).gap) || 0;
+            return {
+                rows: new Set(chips.map(c => Math.round(c.getBoundingClientRect().top))).size,
+                need: widths.reduce((a, b) => a + b, 0) + gap * (chips.length - 1),
+                avail: box.getBoundingClientRect().width,
+                labels: chips.map(c => c.textContent.trim()),
+                dialogW: document.querySelector('#todo-panel .panel-dialog')
+                                 .getBoundingClientRect().width,
+            };
+        })())"""))
+
+    r = _run(ns, actions)
+    assert 'error' not in r, r.get('error')
+    m = r['m']
+    assert len(m['labels']) == 6, m
+    assert all(any(ch.isdigit() for ch in s) for s in m['labels']), \
+        '这一条要验的是"带计数时也一行"，六个页签都该有计数：%s' % m['labels']
+    assert m['dialogW'] == 460, '待办面板应当用 .panel-dialog-wide（460px）：%s' % m['dialogW']
+    assert m['need'] <= m['avail'], \
+        '六个胶囊要 %.1fpx，可用只有 %.1fpx → 会换行' % (m['need'], m['avail'])
+    assert m['rows'] == 1, '页签换成了 %d 行：%s' % (m['rows'], m['labels'])
 
 
 @pytest.mark.e2e

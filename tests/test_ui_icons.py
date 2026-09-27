@@ -34,8 +34,9 @@ EMOJI_CONTENT_ALLOWED = {
     'renderer/js/app/02-editor.js': ['emojis:', "cat: '"],          # 表情选择器的数据
     'renderer/js/quill/quill-deco.js': ["html:'", 'cat:'],          # 贴纸/印章数据
     'renderer/js/app/17-markdown-actions.js': ['[📎'],               # 写进正文的附件链接标签（后端靠 📎 识别）
-    'renderer/index.html': ['todo-hint', '- [ ] 事项'],             # 待办语法提示（要用户照抄的字符）
     'renderer/js/app/09-boot.js': ['console.log'],                  # 控制台提示
+    # 注：待办语法提示（index.html 的 todo-hint）第 12 轮起教的是 ASCII 别名 `@2026-09-25`，
+    # 所以不再需要放行 —— 那一行现在也被这条测试管着（提示里不许有 emoji）。
 }
 
 # 明确禁止出现在 UI 里的"图标类 emoji"

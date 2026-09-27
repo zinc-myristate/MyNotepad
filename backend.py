@@ -1409,7 +1409,11 @@ if FTS_AVAILABLE:
 # 格式判据只有 notes.format；md 走行扫描，delta 走 ops 遍历，两者产出口径必须一致
 # （测试里用"同一篇内容两种格式算出的指标应相同"来锁死这一点）。
 _TODO_RE = re.compile(r'^\s*[-*+]\s+\[([ xX])\]\s+(.*)$')
-_DUE_RE = re.compile(r'📅\s*(\d{4}-\d{2}-\d{2})')
+# 待办日期标记：Obsidian Tasks 的 `📅 2026-09-25`，以及第 12 轮加的 ASCII 别名 `@2026-09-25`。
+# 为什么要别名：界面提示里教用户"照抄 📅"等于在 UI 里塞一个 emoji（本项目 UI 图标一律 SVG），
+# 可它又确实是语法本体、换成图标就没法照抄了 —— 别名让提示可以完全不带 emoji。
+# 两种写法共用这一条正则（解析、剥离、勾选写回的文本校验全都走它），口径不会分叉。
+_DUE_RE = re.compile(r'(?:📅|@)\s*(\d{4}-\d{2}-\d{2})')
 _LINK_RE = re.compile(r'\[\[([^\]|]+)(?:\|[^\]]*)?\]\]')
 _FM_RE = re.compile(r'^---[ \t]*\r?\n(.*?)\r?\n---[ \t]*(?:\r?\n|$)', re.S)
 # '2'：第 9 轮加入 note_links（双链索引）→ 版本号一变，启动时会为存量笔记重建索引
@@ -1681,7 +1685,7 @@ def _todo_lines_delta(content):
 def derive_metrics(content, fmt, note_id=None):
     """正文 → 派生指标（不含附件/提醒这两个要查表的字段，由 _refresh_derived 补）"""
     plain = note_plain_text(content, fmt)
-    # 统计前去掉 📅 日期标记：否则 md（剥标记）与 delta（保留标记）算出的字数会不一致
+    # 统计前去掉日期标记（📅 或 @）：否则 md（剥标记）与 delta（保留标记）算出的字数会不一致
     plain_for_count = _DUE_RE.sub('', plain)
     todos = _todo_lines_md(content) if fmt == 'md' else _todo_lines_delta(content)
     open_todos = [t for t in todos if not t[3]]

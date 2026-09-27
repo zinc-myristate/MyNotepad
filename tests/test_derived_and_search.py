@@ -9,8 +9,11 @@
   · 搜索每个前缀 token 都要真的生效，且能取反
 """
 import json
+import os
+import re
 
 import pytest
+from conftest import PROJECT_ROOT
 
 
 def md_note(api, text, title='笔记'):
@@ -106,6 +109,34 @@ class TestDerivedMetrics:
         nid = md_note(api, '- [ ] 交报告 📅 2026-09-25\n')
         assert todos(backend_mod, nid)[0][1] == '交报告'
         assert todos(backend_mod, nid)[0][2] == '2026-09-25'
+
+    def test_ascii_due_alias_parses_like_emoji(self, api, backend_mod):
+        """第 12 轮加的 ASCII 别名 `@2026-09-25`：界面提示里就不必再出现 emoji。
+
+        它和 Obsidian 的 `📅 2026-09-25` 是同一条正则，所以"文字里不带标记、due 取到日期"
+        的行为必须逐字一致 —— 勾选写回的文本校验也靠这个口径。
+        """
+        emoji_id = md_note(api, '- [ ] 交报告 📅 2026-09-25\n')
+        alias_id = md_note(api, '- [ ] 交报告 @2026-09-25\n')
+        assert todos(backend_mod, alias_id) == todos(backend_mod, emoji_id)
+        assert todos(backend_mod, alias_id)[0][1] == '交报告'
+        assert todos(backend_mod, alias_id)[0][2] == '2026-09-25'
+
+    def test_ascii_due_alias_keeps_metric_parity(self, api, backend_mod):
+        """别名同样要被剥掉再算字数：否则同一篇内容 md/delta 两种格式算出的数字会不一致"""
+        alias_id = md_note(api, '- [ ] 未做 @2026-09-25\n- [x] 已做\n- [ ] 无期限\n\n正文内容\n')
+        emoji_id = md_note(api, '- [ ] 未做 📅 2026-09-25\n- [x] 已做\n- [ ] 无期限\n\n正文内容\n')
+        a, e = derived(backend_mod, alias_id), derived(backend_mod, emoji_id)
+        for key in ('word_count', 'char_count', 'todo_total', 'todo_open', 'todo_next_due'):
+            assert a[key] == e[key], '%s 在两种写法下不一致：%r vs %r' % (key, a[key], e[key])
+
+    def test_incomplete_or_email_like_at_is_not_a_due(self, api, backend_mod):
+        """`@` 别名必须只认**完整 ISO 日期**：邮箱、@某人、只写了年月都不能被误判成截止日"""
+        nid = md_note(api, '- [ ] 发给 a@b.com\n- [ ] 提醒 @张三\n- [ ] 只写年月 @2026-09\n')
+        got = todos(backend_mod, nid)
+        assert [t[2] for t in got] == [None, None, None], got
+        assert got[0][1] == '发给 a@b.com', '不是日期就不能从文字里抠掉'
+        assert got[2][1] == '只写年月 @2026-09'
 
     def test_delta_without_date_still_parsed(self, api, backend_mod):
         nid = delta_note(backend_mod, [('- [ ] 待办', None)])
@@ -292,6 +323,15 @@ class TestTodoToggle:
         assert r['ok'] is False and '变化' in r['error']
         assert '- [ ] 甲' in api.notes_get(nid)['content']
 
+    def test_toggle_works_with_ascii_due_alias(self, api, backend_mod):
+        """别名写的截止日同样能勾：写回的文本校验剥标记要走同一条正则，否则一勾就报"正文变化" """
+        nid = md_note(api, '- [ ] 交报告 @2026-09-25\n')
+        r = api.todo_toggle(nid, 0, '交报告')
+        assert r['ok'] and r['done'] == 1, r
+        content = api.notes_get(nid)['content']
+        assert '- [x] 交报告 @2026-09-25' in content, content
+        assert derived(backend_mod, nid)['todo_open'] == 0
+
     def test_missing_todo_refused(self, api):
         nid = md_note(api, '没有待办\n')
         assert api.todo_toggle(nid, 0, 'x')['ok'] is False
@@ -401,3 +441,42 @@ class TestSavedSearches:
         api.saved_search_create('一', 'a')
         api.saved_search_create('二', 'b')
         assert [r['name'] for r in api.saved_searches_list()] == ['一', '二']
+
+
+# ---------------- 界面提示 ⟷ 解析器（文档不能和实现分叉） ----------------
+
+class TestTodoHintMatchesParser:
+    """待办面板底部那句提示，教的就是用户要照抄的语法 —— 它必须真的能被解析。
+
+    为什么值得一条测试：提示文案是手写的，解析器是代码；两边一分叉（比如提示教了
+    `@2026-09-25` 而正则只认 `📅`），用户照着写却发现"面板里什么都没有"，
+    而且这种错**不会**在任何别的测试里露头。顺带把"提示里不许出现 emoji"也钉在这里
+    （面板要一行放得下，且 UI 图标一律 SVG）。
+    """
+
+    def _hint(self):
+        html = open(os.path.join(PROJECT_ROOT, 'renderer', 'index.html'), encoding='utf-8').read()
+        m = re.search(r'<p class="todo-hint">(.*?)</p>', html, re.S)
+        assert m, 'index.html 里找不到 .todo-hint'
+        return m.group(1)
+
+    def test_hint_example_is_parseable(self, backend_mod):
+        code = re.search(r'<code>(.*?)</code>', self._hint(), re.S)
+        assert code, '提示里应当有一个可照抄的 <code> 示例'
+        example = code.group(1)
+        assert backend_mod._TODO_RE.match(example), \
+            '提示里的示例不是合法待办：%r' % example
+        due = backend_mod._DUE_RE.search(example)
+        assert due and due.group(1) == '2026-09-25', \
+            '提示里的日期写法解析不出来（用户照抄就没日期）：%r' % example
+
+    def test_hint_has_no_emoji(self, backend_mod):
+        from test_ui_icons import ICON_EMOJI
+        bad = [c for c in self._hint() if c in ICON_EMOJI]
+        assert not bad, '提示里又出现 emoji 了：%s' % ''.join(bad)
+
+    def test_hint_matches_renderer_text(self, api, backend_mod):
+        """照提示写一行，面板看到的文字/日期要和提示的意思一致（去掉标记、留下事项）"""
+        nid = md_note(api, '- [ ] 事项 @2026-09-25\n')
+        idx, text, due, _done = todos(backend_mod, nid)[0]
+        assert text == '事项' and due == '2026-09-25', (idx, text, due)

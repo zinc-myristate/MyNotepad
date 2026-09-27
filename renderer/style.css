@@ -1384,15 +1384,18 @@ body[data-theme="dark"] {
 .ss-item:hover .ss-more { opacity: 1; }
 
 /* ====== 待办面板 ====== */
-.todo-tabs { display: flex; gap: 4px; flex-wrap: wrap; margin-bottom: 10px; }
+/* 六个筛选胶囊必须**一行**放得下：实测带计数时需 380px，所以面板用 .panel-dialog-wide(460px)
+   （内容宽 412px），胶囊内边距/间距再各收一点。只收胶囊是放不下的 —— 360px 面板内容宽只有
+   312px，"没待办时看着刚好、有待办时第六个「已完成」掉到第二行"就是这么来的。 */
+.todo-tabs { display: flex; gap: 3px; flex-wrap: wrap; margin-bottom: 10px; }
 .todo-tab {
-  padding: 4px 10px; border: 1px solid var(--border-light, rgba(0,0,0,0.1));
+  padding: 4px 8px; border: 1px solid var(--border-light, rgba(0,0,0,0.1));
   border-radius: 14px; background: transparent; color: var(--text-primary);
-  font-size: var(--font-size-xs, 12px); cursor: pointer;
+  font-size: var(--font-size-xs, 12px); cursor: pointer; white-space: nowrap;
 }
 .todo-tab:hover { border-color: var(--accent-text); color: var(--accent-text); }
 .todo-tab.active { background: var(--accent-solid, var(--accent-text)); color: var(--on-accent, #fff); border-color: transparent; }
-.todo-tab-count { opacity: 0.75; }
+.todo-tab-count { opacity: 0.75; font-size: 10px; margin-left: 3px; }
 .todo-list { max-height: 52vh; overflow: auto; display: flex; flex-direction: column; gap: 2px; }
 .todo-item { display: flex; align-items: flex-start; gap: 10px; padding: 7px 8px; border-radius: 8px; }
 .todo-item:hover { background: var(--glass-bg-strong, rgba(0,0,0,0.05)); }
