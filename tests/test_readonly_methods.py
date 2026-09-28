@@ -31,7 +31,7 @@ import time
 import pytest
 from conftest import PROJECT_ROOT
 
-BACKEND = os.path.join(PROJECT_ROOT, 'backend.py')
+BACKEND = os.path.join(PROJECT_ROOT, 'backend', '__init__.py')
 
 # 写 SQL 的判据：**必须在 `.execute(...)` / `.executescript(...)` 的实参里**，
 # 而不是"字符串里出现 INSERT 这几个字"。
@@ -169,7 +169,7 @@ class TestReadonlyMethodClassification:
 
 
 def backend_readonly_names():
-    """从 backend.py 源码里取出 `_READONLY_METHODS` 的成员（不 import，避免副作用）。"""
+    """从 `backend/__init__.py` 源码里取出 `_READONLY_METHODS` 的成员（不 import，避免副作用）。"""
     src = open(BACKEND, encoding='utf-8').read()
     m = re.search(r'_READONLY_METHODS\s*=\s*frozenset\(\((.*?)\)\)', src, re.S)
     assert m, '没找到 _READONLY_METHODS 的定义'
