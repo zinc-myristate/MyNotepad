@@ -64,6 +64,12 @@ CI（`.github/workflows/ci.yml`）会跑同样的三步，**e2e 失败会直接�
 `ProductVersion`），tag 名必须与它一致（例如文件里是 `1.2.0.0` → 打 `v1.2.0`）。
 仓库里刻意不放自动 bump 脚本——两处版本号手工改一下，比多一个要维护的工具更省事。
 
+> 一致性现在有**机器检查**（`tests/test_release_bundle_gates.py::TestVersionConsistency`）：
+> 文件内四处版本号互相对齐、CHANGELOG 顶部「未发布」下面是当前版本那一节、
+> 以及 HEAD 被 tag 指着时 tag 名等于 `v` + 前三位。以前这条只写在这里，
+> 于是"忘了改版本号"或"tag 与文件不一致"会被 CI 全绿放行，现象只是
+> "exe 属性里的版本号和 Release 名对不上"。
+
 1. 改 `build_resources/version_info.txt` 里的 **`filevers` / `prodvers`**（元组，如 `(1, 2, 0, 0)`）
    与 **`FileVersion` / `ProductVersion`** 两个字符串（`'1.2.0.0'`）——**四处都要改**，少一处就会出现
    "属性里显示旧版本号"。

@@ -36,6 +36,8 @@ import tcl_tk_data as tkdata  # noqa: E402
 
 SPEC = os.path.join(PROJECT_ROOT, 'MyNotepad.spec')
 WORKFLOWS = os.path.join(PROJECT_ROOT, '.github', 'workflows')
+VERSION_INFO = os.path.join(PROJECT_ROOT, 'build_resources', 'version_info.txt')
+CHANGELOG = os.path.join(PROJECT_ROOT, 'CHANGELOG.md')
 
 
 def _read(path):
@@ -591,3 +593,85 @@ class TestBuildBackupPruning:
         assert keep.is_dir()
         assert (tmp_path / '_predist-backup-20260105-000000.zip').exists(), '文件不该被当成备份目录'
         assert other.is_dir(), '非 _predist* 的目录不能被碰'
+
+
+class TestVersionConsistency:
+    """版本号只有一个真相源（`build_resources/version_info.txt`），三处必须互相一致。
+
+    为什么单开一组：CONTRIBUTING.md 的发版清单写着"tag 名必须与它一致"，但**一段时间里
+    这条只在文档里**——`tests/` 里零命中、`release.yml` 也不读 `ProductVersion`，
+    于是"改了代码忘了改版本号""tag 打成 v1.1.0 而文件还是 1.0.1.0"这类偏差
+    **CI 会全绿放行**，现象仅仅是"exe 属性里显示的版本号和 Release 名对不上"。
+    正是这个项目最怕的那类静默偏差，所以补成机器检查。
+
+    三条各自挡一种错法：
+    1. **文件内部四处不一致** ⇒ 属性里显示的版本号与实际不符（清单里"四处都要改"的由来）；
+    2. **CHANGELOG 的「未发布」没坐实** ⇒ 发了版而变更记录还挂在"未发布"下；
+    3. **HEAD 被 tag 时 tag 与版本号不一致** ⇒ Release 名与 exe 属性对不上（只在打 tag 的
+       检出上生效，日常跑 pytest 会自动跳过）。
+    """
+
+    @staticmethod
+    def _version_info():
+        """从 version_info.txt 里取出四处版本号。
+
+        刻意用正则读文本而不是 import 它：那个文件是 PyInstaller 的 `VSVersionInfo(...)`
+        字面量，不是可 import 的模块（里面 `0x3f` 这类写法在 Python 里能跑，但语义是
+        PyInstaller 自己解析的）。读文本才能钉住"文件里真的这么写"。
+        """
+        text = _read(VERSION_INFO)
+        filevers = re.search(r'filevers=\(([^)]*)\)', text)
+        prodvers = re.search(r'prodvers=\(([^)]*)\)', text)
+        fv = re.search(r"StringStruct\('FileVersion',\s*'([^']*)'\)", text)
+        pv = re.search(r"StringStruct\('ProductVersion',\s*'([^']*)'\)", text)
+        assert filevers and prodvers and fv and pv, \
+            'version_info.txt 四处版本号都要在（少一处 = 属性里显示旧版本号）'
+        return filevers.group(1), prodvers.group(1), fv.group(1), pv.group(1)
+
+    def test_four_declarations_agree_and_are_well_formed(self):
+        filevers, prodvers, fv, pv = self._version_info()
+        nums = [int(x.strip()) for x in filevers.split(',')]
+        assert len(nums) == 4, 'filevers 必须是四元组：%r' % filevers
+        dotted = '.'.join(str(n) for n in nums)
+        assert fv == dotted, 'FileVersion(%r) 与 filevers(%r) 不一致' % (fv, dotted)
+        assert pv == fv, 'ProductVersion(%r) 与 FileVersion(%r) 不一致' % (pv, fv)
+        assert prodvers.replace(' ', '') == filevers.replace(' ', ''), \
+            'prodvers(%r) 与 filevers(%r) 不一致' % (prodvers, filevers)
+
+    def test_changelog_has_a_section_for_this_version(self):
+        """CHANGELOG 顶部必须是「未发布」，紧跟着就是当前版本号那一节。
+
+        顺序反了就说明：改了版本号但没把「未发布」坐实成正式版本（发出去的 Release
+        说明里会缺这一版的变更），或者坐实了却忘了在顶上开新的「未发布」空段。
+        """
+        text = _read(CHANGELOG)
+        heads = [h.strip() for h in re.findall(r'^## .*$', text, re.M)]
+        assert heads[0] == '## 未发布', \
+            'CHANGELOG 顶部应当是「## 未发布」空段，实际是 %r' % heads[0]
+        _, _, _, pv = self._version_info()
+        want = 'v' + pv.rsplit('.', 1)[0]          # '1.0.1.0' -> 'v1.0.1'
+        assert heads[1].startswith('## %s' % want), \
+            '「未发布」下面应当是 %r 那一节（版本号 %s），实际是 %r' % (want, pv, heads[1])
+
+    def test_head_tag_matches_version_when_tagged(self):
+        """打了 tag 的检出上：tag 名必须等于 `v` + 前三位版本号。
+
+        只在 HEAD 恰好被 tag 指着时生效（`release.yml` 就是这种检出），
+        日常开发检出上没有 tag，直接跳过 —— 所以它不会让普通 pytest 变脆。
+        """
+        import subprocess
+        try:
+            out = subprocess.run(['git', 'tag', '--points-at', 'HEAD'],
+                                 cwd=PROJECT_ROOT, capture_output=True, text=True, timeout=15)
+        except (OSError, subprocess.SubprocessError):
+            pytest.skip('取不到 git 信息（打包分发或没有 git）')
+        if out.returncode != 0:
+            pytest.skip('不是 git 检出，跳过 tag 校验')
+        tags = [t for t in out.stdout.split() if t.startswith('v')]
+        if not tags:
+            pytest.skip('HEAD 上没有 tag（日常开发检出），跳过')
+        _, _, _, pv = self._version_info()
+        want = 'v' + pv.rsplit('.', 1)[0]
+        assert want in tags, \
+            'HEAD 上的 tag 是 %r，但 version_info.txt 是 %s ⇒ Release 名与 exe 属性会对不上' \
+            % (tags, pv)
