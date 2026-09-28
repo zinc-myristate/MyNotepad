@@ -130,7 +130,12 @@ class MathFormula extends MathBlot {
         displayMode: data.display === 'block',
         throwOnError: false,
         strict: false,
-        trust: true
+        // trust 必须为 false（与 Markdown 路径 14-markdown-render.js 保持一致）。
+        // trust:true 会放行任意 \href/\url：KaTeX 只校验 URL 的 scheme 语法、**不拦 javascript:**，
+        // 于是公式里写 \href{javascript:...}{x} 就渲染出一个可点的 JS 链接；而下面的 click
+        // 处理器没有 preventDefault，锚点的默认行为照样执行。
+        // 入口很普通：从网页/对话里连 LaTeX 一起复制过来，或粘贴一个 class="math-inline" 的节点。
+        trust: false
       });
     } catch(e) {
       node.textContent = '[公式错误: ' + (data.latex || '') + ']';

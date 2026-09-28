@@ -3,6 +3,34 @@
 <head>
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <!-- 内容安全策略（纵深防御，不是主要防线）。
+       这个应用承诺"不联网"，而页面里所有资源都是本地文件，所以这里把**网络外发**整条路堵死：
+         · connect-src 'none' —— fetch/XHR/WebSocket/EventSource 全禁。哪怕将来出现一条没被发现的
+           注入路径，也没法把笔记内容发出去；顺带把"不联网"从承诺变成浏览器强制的约束。
+         · img-src / font-src / media-src 只允许 self 与 data: —— 挡住"正文里的图片指向外站"
+           （那种写法既能当信标回传，也能触发对外的 SMB/HTTP 请求）。
+         · object-src / frame-src / child-src 'none' —— 禁掉 <object>/<embed>/<iframe> 这类
+           可执行或可嵌入的容器。
+         · base-uri 'none' —— 防 <base> 劫持相对路径。
+
+       为什么 script-src 保留 'unsafe-inline'：启动加载器（index.html 末尾那段）是**刻意**内联的，
+       它要在第三方库逐个注入失败时整页 reload 重试；抽成外部文件会把这段关键路径重新变成
+       "文件本身也可能取不到"。收益（挡注入的内联事件属性）不值这个险。
+       同理 style-src 需要 'unsafe-inline'：本项目大量的界面着色/薄纱/封面都是内联样式。
+       真正的注入面（贴纸 HTML 回灌、KaTeX \href）已在 14/quill-deco/quill-blots 三处从源头堵住。 -->
+  <meta http-equiv="Content-Security-Policy"
+        content="default-src 'self';
+                 script-src 'self' 'unsafe-inline';
+                 style-src 'self' 'unsafe-inline';
+                 img-src 'self' data: blob:;
+                 font-src 'self' data:;
+                 media-src 'self' data:;
+                 connect-src 'none';
+                 object-src 'none';
+                 frame-src 'none';
+                 child-src 'none';
+                 base-uri 'none';
+                 form-action 'none'">
   <title>我的记事本</title>
   <link rel="stylesheet" href="quill.snow.css">
   <link rel="stylesheet" href="katex/katex.min.css">

@@ -523,6 +523,11 @@ html, body {
 .empty-hint svg { opacity: 0.3; margin-bottom: 4px; }
 .empty-hint.hidden { display: none; }
 
+/* 窗口化渲染的撑高块：高度由 JS 按"窗口外的行数 × 行高"设定。
+   必须**没有** margin/padding —— 它的高度就是滚动高度的组成部分，
+   多一个像素都会让滚动条位置与"第几行"错位（`.note-item` 自己有 margin: 3px 4px）。 */
+.note-list-spacer { margin: 0; padding: 0; border: 0; }
+
 /* 笔记列表项 — 卡片风格 */
 .note-item {
   display: flex; flex-direction: column;

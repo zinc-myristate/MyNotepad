@@ -66,8 +66,16 @@ def test_props_json_comes_from_body(api, backend_mod):
 
 
 def test_derived_version_bumped_for_links(api, backend_mod):
-    """版本号是存量库重建 note_links 的唯一开关，改了它就要意识到会触发一次全库回填。"""
-    assert backend_mod.DERIVED_VERSION == '2'
+    """版本号是存量库重建 note_links 的唯一开关，改了它就要意识到会触发一次全库回填。
+
+    锁的是"它是个能被回填逻辑比较的版本串"，不是某个具体数字 —— 第一版把 '2' 写死，
+    于是第 13 轮为了 note_derived.preview 把版本提到 '3' 时，这条测试红了却什么也没说明。
+    真正要防的回归是"有人把版本号删了/改成 None"，那会让回填每次都跑或永远不跑。
+    """
+    ver = backend_mod.DERIVED_VERSION
+    assert isinstance(ver, str) and ver.strip(), '派生版本号必须是非空字符串'
+    assert ver.isdigit() and int(ver) >= 2, \
+        '第 9 轮引入 note_links 时版本是 2，之后只增不减（降版本号不会触发回填）'
 
 
 # ---------------- 双链：抽取与解析 ----------------

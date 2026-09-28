@@ -15,6 +15,7 @@ import sqlite3
 import sys
 import tempfile
 import threading
+import time
 import uuid
 from datetime import datetime, timedelta
 
@@ -221,6 +222,7 @@ conn.executescript("""
         has_code INTEGER NOT NULL DEFAULT 0,
         link_count INTEGER NOT NULL DEFAULT 0,
         props_json TEXT NOT NULL DEFAULT '{}',
+        preview TEXT NOT NULL DEFAULT '',
         updated_at TEXT NOT NULL DEFAULT (datetime('now','localtime')),
         FOREIGN KEY (note_id) REFERENCES notes(id) ON DELETE CASCADE
     );
@@ -267,6 +269,10 @@ conn.executescript("""
         created_at TEXT NOT NULL DEFAULT (datetime('now','localtime'))
     );
 """)
+# 兼容旧数据库：派生表补 preview 列（列表摘要改为保存时预计算，见 _refresh_derived）。
+# 列默认空串 + DERIVED_VERSION 变更 ⇒ 启动回填会把存量笔记的摘要补齐。
+try: conn.execute("ALTER TABLE note_derived ADD COLUMN preview TEXT NOT NULL DEFAULT ''")
+except Exception: pass
 conn.commit()
 
 # 默认设置
@@ -354,7 +360,86 @@ if not _ENV_DATA_DIR:  # 测试环境不碰系统计划任务
 # 解锁状态在后端进程内存（_unlocked_deks），前端传来的 unlocked 标志不再作为安全依据。
 
 _db_lock = threading.RLock()   # 保护全局 conn 与解锁缓存（pywebview 每个 JS 调用运行在独立线程）
-_unlocked_deks = {}            # note_id -> DEK bytes（会话级，随进程消亡）
+
+
+class _UnlockedDeks(dict):
+    """note_id -> DEK bytes 的解锁缓存（会话级，随进程消亡）。
+
+    **带后端 TTL**：为什么必须有 —— 以前"闲置自动锁定"完全由前端驱动
+    （`07-formula-security-dnd.js` 的 setInterval + 自己的 `unlockedNotes`），
+    后端这个字典**永不过期**。于是"解锁状态是后端安全边界"这句话在**过期**这件事上不成立：
+    前端一旦漏了（脚本出错、窗口被挂起、用户直接改内存标志），密钥就在进程里一直留着。
+
+    实现方式：读的时候顺手把过期的删掉（惰性过期），所以 25 处 `get()` / `in` 调用点
+    一行都不用改。**刻意不碰 `__setitem__`**：写入是"刚解锁/刚设完密码"，它当然要刷新时间戳。
+    ⚠️ 惰性过期只在"有人读"时生效：只挂机不操作时字典里会留着过期项 —— 那由
+    `_sweep_unlocked_deks()` 在既有的 30 秒提醒轮询里顺带清（不新开线程）。
+    """
+
+    def __init__(self, *a, **kw):
+        super().__init__(*a, **kw)
+        self.ttl_minutes = 0          # 0 = 不启用（与前端默认「关闭」一致）
+        self._stamps = {}             # note_id -> 最近一次解锁/访问的 monotonic 时间
+
+    # ----- 时间戳维护 -----
+    def __setitem__(self, key, value):
+        self._stamps[key] = time.monotonic()
+        super().__setitem__(key, value)
+
+    def __delitem__(self, key):
+        self._stamps.pop(key, None)
+        super().__delitem__(key)
+
+    def pop(self, key, *args):
+        self._stamps.pop(key, None)
+        return super().pop(key, *args)
+
+    def clear(self):
+        self._stamps.clear()
+        return super().clear()
+
+    # ----- 惰性过期 -----
+    def _expired(self, key):
+        if not self.ttl_minutes:
+            return False
+        ts = self._stamps.get(key)
+        if ts is None:
+            return False
+        return (time.monotonic() - ts) > self.ttl_minutes * 60
+
+    def _prune(self, key):
+        if key in dict.keys(self) and self._expired(key):
+            dict.__delitem__(self, key)
+            self._stamps.pop(key, None)
+            applog.get_logger().info('解锁已过期（闲置 %d 分钟）：%s', self.ttl_minutes, key)
+
+    def get(self, key, default=None):
+        self._prune(key)
+        return super().get(key, default)
+
+    def __contains__(self, key):
+        self._prune(key)
+        return super().__contains__(key)
+
+    def __getitem__(self, key):
+        self._prune(key)
+        return super().__getitem__(key)
+
+    # ----- 主动清理（提醒轮询里调用）-----
+    def sweep(self):
+        """清掉全部已过期的项，返回被清掉的 note_id 列表。"""
+        gone = []
+        for key in list(dict.keys(self)):
+            if self._expired(key):
+                gone.append(key)
+                dict.__delitem__(self, key)
+                self._stamps.pop(key, None)
+        if gone:
+            applog.get_logger().info('解锁过期清理：%d 篇', len(gone))
+        return gone
+
+
+_unlocked_deks = _UnlockedDeks()   # note_id -> DEK bytes
 
 PBKDF2_ITERATIONS = 600000     # OWASP 2023
 MAX_PBKDF2_ITERATIONS = 6_000_000  # 解包 DEK 时接受的最大迭代数（当前值的 10 倍）。
@@ -414,6 +499,11 @@ def _next_sort_order(table='notes'):
     于是多行 sort_order 撞在一起，`ORDER BY sort_order DESC` 退化成同秒内随机——
     「新建的排最前」「副本排最前」都会时灵时不灵。None（空表）才当 -1。
     """
+    # 表名是**插值**进 SQL 的（占位符不能用于标识符）。当前 6 个调用点传的都是字面量、
+    # 函数名带 `_` 不上桥，所以安全性靠"没人乱传"维持 —— 加一条断言把这条约定钉住，
+    # 免得将来有人把它接到带参数的地方去。
+    assert table in ('notes', 'notebooks', 'tags', 'templates', 'saved_searches'), \
+        '表名只接受白名单字面量：%r' % (table,)
     row = conn.execute("SELECT MAX(sort_order) AS m FROM %s" % table).fetchone()
     m = row['m'] if row and row['m'] is not None else -1
     return int(m) + 1
@@ -421,6 +511,20 @@ def _next_sort_order(table='notes'):
 
 _DURATION_RE = re.compile(r'^(\d+)([dwm])$')
 _DATE_OPS = {'>': '>', '<': '<', '>=': '>=', '<=': '<=', '=': '='}
+
+# SQLite 的绑定变量数有上限（默认 32766）。批量接口把 id 数量原样展开成 `?,?,?…`，
+# 而"全选 → 批量操作"在大库上突破这个数完全可能（超了会抛 too many SQL variables，
+# 界面只看到"操作失败"）。分块取值留足余量：每块 500 个，顺便让单条 SQL 的解析也更快。
+SQL_CHUNK = 500
+
+
+def _chunked(items, size=SQL_CHUNK):
+    """把列表切成若干块（用于 IN (...) 批量查询/更新）。"""
+    items = list(items or [])
+    for i in range(0, len(items), size):
+        yield items[i:i + size]
+
+
 _SCOPE_FLAGS = {'pinned': 'n.is_pinned = 1', 'favorite': 'n.is_favorite = 1',
                 'encrypted': "COALESCE(n.password_hash, '') != ''"}
 _SCOPE_HAS = {
@@ -542,7 +646,10 @@ def _scope_where(scope):
             sub = ("n.id IN (SELECT nt.note_id FROM note_tags nt JOIN tags t ON t.id = nt.tag_id "
                    "WHERE t.id = ? OR t.name = ? OR t.name LIKE ? ESCAPE '\\')")
             where.append(('NOT ' if negate else '') + sub)
-            params += [name, name, name + '/%']
+            # 子标签那条是 LIKE，用户输入里的 % _ \ 必须转义（与下面 title: 同一条口径）：
+            # 不转义时 `tag:%` 会命中**所有**层级标签，标签名带反斜杠则子标签静默失配。
+            esc = name.replace('\\', '\\\\').replace('%', '\\%').replace('_', '\\_')
+            params += [name, name, esc + '/%']
     if scope.get('notebook'):
         name, negate = scope['notebook']
         sub = ("(n.notebook_id = ? OR n.notebook_id IN (SELECT id FROM notebooks WHERE name = ?))")
@@ -833,7 +940,17 @@ def _delta_to_markdown(content, resolve_image=None, note_id=None, resolve_attach
         header = attrs.get('header')
         lst = attrs.get('list')
         if header:
-            prefix = '#' * int(header) + ' '
+            # header 来自 Delta 行属性，可能是**任意类型/任意内容**（手写 JSON、外部导入的
+            # 库、被改坏的正文都会出现奇怪的值）。直接 int() 有两个后果：
+            #   ① 非数字抛 ValueError，而异常消息里会带上**这串原始内容** ——
+            #      applog 会把 message 记进 error.log，等于把正文写进日志；
+            #   ② 数字很大时 `'#' * huge` 直接分配巨量字符串。
+            # 与同文件 `_md_embed` 里 `int(style)` 的口径对齐：try + 夹紧到 [1, 6]。
+            try:
+                level = max(1, min(6, int(header)))
+            except (TypeError, ValueError):
+                level = 1
+            prefix = '#' * level + ' '
         elif lst == 'ordered':
             prefix = '1. '
         elif lst == 'bullet':
@@ -1101,6 +1218,11 @@ def backup_database():
     用 sqlite3 backup API 而非文件复制：DELETE journal 模式写入瞬间有 -journal
     残留，直接 copy 可能撕裂；backup API 页级一致且遇写入自动重启。
     返回备份文件路径；未到期或失败返回 None。
+
+    写盘顺序：先写 `.part` → 校验 → os.replace 成正式名。为什么不直接写正式名：
+    `sqlite3.connect(dest)` **在 backup 之前就把文件建出来了**，backup 一旦抛错就留下一个
+    0 字节的 `notes-<现在>.db`。它的名字最新、mtime 是"现在"，于是接下来 24h 都不会再备份，
+    滚动裁剪时还会把最旧的一份**好**备份挤掉；恢复工具那边也会把它当候选（见 restore.py）。
     """
     try:
         if not os.path.exists(DB_PATH):
@@ -1115,18 +1237,35 @@ def backup_database():
             if (datetime.now().timestamp() - os.path.getmtime(latest)) < 24 * 3600:
                 return None  # 24h 内已有备份
         dest = os.path.join(BACKUP_DIR, datetime.now().strftime('notes-%Y%m%d-%H%M%S.db'))
-        src = sqlite3.connect(DB_PATH)
-        dst = sqlite3.connect(dest)
+        tmp = dest + '.part'
         try:
-            with dst:
-                src.backup(dst)
-        finally:
-            src.close()
-            dst.close()
+            if os.path.exists(tmp):
+                os.remove(tmp)
+            src = sqlite3.connect(DB_PATH)
+            dst = sqlite3.connect(tmp)
+            try:
+                with dst:
+                    src.backup(dst)
+            finally:
+                src.close()
+                dst.close()
+            # 校验过才改名：宁可这次没备份，也不要留个"看起来最新"的坏备份
+            if not check_integrity(tmp):
+                raise OSError('备份完整性校验失败')
+            if count_notes(tmp) is None:
+                raise OSError('备份里读不出笔记数')
+            os.replace(tmp, dest)
+        except Exception:
+            try:
+                if os.path.exists(tmp):
+                    os.remove(tmp)
+            except OSError:
+                pass
+            raise
         # 滚动保留最近 7 份（文件名含时间戳，字典序即时间序）
         all_backups = sorted(
             f for f in os.listdir(BACKUP_DIR)
-            if f.startswith('notes-') and f.endswith('.db')
+            if f.startswith('notes-') and f.endswith('.db') and not f.endswith('.part')
         )
         for old in all_backups[:-7]:
             try:
@@ -1417,7 +1556,8 @@ _DUE_RE = re.compile(r'(?:📅|@)\s*(\d{4}-\d{2}-\d{2})')
 _LINK_RE = re.compile(r'\[\[([^\]|]+)(?:\|[^\]]*)?\]\]')
 _FM_RE = re.compile(r'^---[ \t]*\r?\n(.*?)\r?\n---[ \t]*(?:\r?\n|$)', re.S)
 # '2'：第 9 轮加入 note_links（双链索引）→ 版本号一变，启动时会为存量笔记重建索引
-DERIVED_VERSION = '2'
+# '3'：列表摘要改为保存时预计算（note_derived.preview）→ 存量笔记需要回填一次
+DERIVED_VERSION = '3'
 WORD_RE = re.compile(r'[\u4e00-\u9fff]|[A-Za-z0-9_]+')
 
 
@@ -1564,11 +1704,13 @@ def _filter_props(ids, conds):
     """
     if not conds or not ids:
         return ids
-    marks = ','.join('?' * len(ids))
     props = {}
-    for r in conn.execute(
-            f"SELECT note_id, props_json FROM note_derived WHERE note_id IN ({marks})", list(ids)):
-        props[r['note_id']] = _load_props(r['props_json'])
+    for chunk in _chunked(ids):          # 分块：ids 可能上千，SQLite 变量数有上限
+        marks = ','.join('?' * len(chunk))
+        for r in conn.execute(
+                f"SELECT note_id, props_json FROM note_derived WHERE note_id IN ({marks})",
+                list(chunk)):
+            props[r['note_id']] = _load_props(r['props_json'])
     has_positive = any(not negate for _k, _o, _v, negate in conds)
     out = []
     for i in ids:
@@ -1705,6 +1847,10 @@ def derive_metrics(content, fmt, note_id=None):
         'link_count': len(_LINK_RE.findall(plain)),
         'props_json': json.dumps(parse_front_matter(content) if fmt == 'md' else {},
                                  ensure_ascii=False),
+        # 列表摘要也在这里算：列表每次刷新都要给**每一篇**算一行摘要，而 _markdown_to_text
+        # 是六趟正则扫全文 —— 800 篇 2.7KB 的库实测光算摘就要 223ms（占 notes_list 总耗时 74%）。
+        # 保存时算一次（内容已经在手上），列表就只是读一列。
+        'preview': _preview_text(content, fmt=fmt),
         'todos': todos,
     }
 
@@ -1712,20 +1858,28 @@ def derive_metrics(content, fmt, note_id=None):
 def _refresh_derived(note_id, content=None, fmt=None):
     """重算并落库一篇笔记的派生指标 + 待办明细（保存链路里调用）。
 
-    加密未解锁的笔记：正文是密文，扫出来的都是垃圾 → 只留空指标（正文索引本来也是空的）。
+    加密笔记**从不**参与派生：待办明细 / 字数 / 属性 / 摘要放进索引就等于把明文侧面落库，
+    与「FTS body 恒空」是同一条隐私约定（解锁与否都不例外）。
+
+    ⚠️ 密码判定必须在这里、在入口处做，**不能**只放在"自己去读 content"的分支里。
+    历史教训：原先只有 `content is None` 那条分支查 `password_hash`，而
+    `convert_note_format` / `todo_toggle` 会把**解密后的明文**显式传进来（它们本来
+    就在解锁态才跑得动），于是整段守卫被跳过 —— 加密笔记的明文待办与属性照样写进
+    note_todos / note_derived，之后锁定甚至重启都能从 todos_list / metrics_bulk 读出，
+    搜索还能拿 has:prop / todo:open 当"内容存在性"预言机（实测复现）。
+    所以：只要这行有 password_hash，无论调用方传了什么，一律按空内容处理。
     """
     try:
-        if content is None or fmt is None:
-            row = conn.execute("SELECT content, format, password_hash FROM notes WHERE id = ?",
-                               (note_id,)).fetchone()
-            if not row:
-                return
+        row = conn.execute("SELECT content, format, password_hash FROM notes WHERE id = ?",
+                           (note_id,)).fetchone()
+        if not row:
+            return
+        if row['password_hash']:
+            content, fmt = '', row['format'] or 'delta'
+        elif content is None or fmt is None:
             content, fmt = row['content'], row['format'] or 'delta'
-            if row['password_hash']:
-                # 加密笔记**从不**参与派生：待办明细/字数放进索引就等于把明文侧面落库，
-                # 与「FTS body 恒空」是同一条隐私约定（解锁与否都不例外）
-                content = ''
         metrics = derive_metrics(content, fmt, note_id)
+        preview = metrics.pop('preview')
         todos = metrics.pop('todos')
         has_att = 1 if conn.execute("SELECT 1 FROM attachments WHERE note_id = ? LIMIT 1",
                                     (note_id,)).fetchone() else 0
@@ -1734,12 +1888,12 @@ def _refresh_derived(note_id, content=None, fmt=None):
         conn.execute(
             "INSERT OR REPLACE INTO note_derived (note_id, word_count, char_count, todo_total, "
             "todo_open, todo_next_due, has_attachment, has_reminder, has_formula, has_code, "
-            "link_count, props_json, updated_at) "
-            "VALUES (?,?,?,?,?,?,?,?,?,?,?,?, datetime('now','localtime'))",
+            "link_count, props_json, preview, updated_at) "
+            "VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?, datetime('now','localtime'))",
             (note_id, metrics['word_count'], metrics['char_count'], metrics['todo_total'],
              metrics['todo_open'], metrics['todo_next_due'], has_att, has_rem,
              metrics['has_formula'], metrics['has_code'], metrics['link_count'],
-             metrics['props_json']))
+             metrics['props_json'], preview))
         conn.execute("DELETE FROM note_todos WHERE note_id = ?", (note_id,))
         for idx, text, due, done in todos:
             conn.execute("INSERT INTO note_todos (note_id, idx, text, due, done) VALUES (?,?,?,?,?)",
@@ -1760,8 +1914,10 @@ def _derived_backfill():
         ver = conn.execute("SELECT value FROM settings WHERE key='derived_version'").fetchone()
         if ver and ver['value'] == DERIVED_VERSION:
             return
-        for r in conn.execute("SELECT id, content, format FROM notes WHERE deleted_at IS NULL").fetchall():
-            _refresh_derived(r['id'], r['content'], r['format'] or 'delta')
+        # 不传 content/format，让 _refresh_derived 自己去读那一行 —— 它必须亲自查
+        # password_hash 才能保证加密笔记不落明文侧面（见该函数的说明）。
+        for r in conn.execute("SELECT id FROM notes WHERE deleted_at IS NULL").fetchall():
+            _refresh_derived(r['id'])
         conn.execute("INSERT OR REPLACE INTO settings (key, value) VALUES ('derived_version', ?)",
                      (DERIVED_VERSION,))
         conn.commit()
@@ -1769,7 +1925,34 @@ def _derived_backfill():
         applog.get_logger().exception("派生索引回填失败")
 
 
+def _purge_encrypted_derived_leaks():
+    """清掉加密笔记残留的派生明文（修复前的旁路留下的脏行）。
+
+    为什么不能只靠"保存时清空"：那只能保证**将来**不写进去，存量库里的明文待办/属性/
+    摘要会一直躺在 note_todos / note_derived 里，用户锁定或重启后照样能读出来。
+    每次启动跑一遍，代价是两条带索引的 UPDATE，不扫描正文。
+    """
+    try:
+        cur = conn.execute(
+            "DELETE FROM note_todos WHERE note_id IN "
+            "(SELECT id FROM notes WHERE COALESCE(password_hash, '') <> '')")
+        n_todos = cur.rowcount
+        cur = conn.execute(
+            "UPDATE note_derived SET word_count = 0, char_count = 0, todo_total = 0, "
+            "todo_open = 0, todo_next_due = NULL, has_formula = 0, has_code = 0, "
+            "link_count = 0, props_json = '{}', preview = '' "
+            "WHERE note_id IN (SELECT id FROM notes WHERE COALESCE(password_hash, '') <> '')")
+        n_derived = cur.rowcount
+        conn.commit()
+        if n_todos or n_derived:
+            applog.get_logger().warning(
+                "清理加密笔记的派生明文残留：%d 条待办、%d 行指标", n_todos, n_derived)
+    except Exception:
+        applog.get_logger().exception("清理加密笔记派生残留失败")
+
+
 _derived_backfill()
+_purge_encrypted_derived_leaks()
 
 # ====== 图片外置迁移（base64 内嵌 → attachments 引用） ======
 # 幂等三重保障：LIKE 预筛（已 dict 化行不命中）+ 确定性 sha 文件名 + 失败保原串下次重试；
@@ -1808,8 +1991,14 @@ def _externalize_image(note_id, data_uri):
         if not raw:
             return None
         fname = f"img_{hashlib.sha256(raw).hexdigest()[:12]}{ext}"
-        note_dir = os.path.join(ATTACH_DIR, note_id)
-        dest = os.path.join(note_dir, fname)
+        # note_id 也算信任边界之外的值（它来自笔记行；而"解压外部导出的 zip 即可当库打开"
+        # 是本项目的用法之一 —— 伪造的库里放一行 id 带 `..` 的笔记就能把文件写到别处）。
+        note_dir = safe_join(ATTACH_DIR, note_id)
+        if not note_dir:
+            return None
+        dest = safe_join(ATTACH_DIR, note_id, fname)
+        if not dest:
+            return None
         if not os.path.isfile(dest):
             os.makedirs(note_dir, exist_ok=True)
             with open(dest, 'wb') as f:
@@ -1890,8 +2079,10 @@ def _purge_note_files(note_id):
                 os.remove(real)
         except OSError:
             pass
-    note_attach = os.path.join(ATTACH_DIR, note_id)
-    if os.path.exists(note_attach):
+    # 删附件目录同样要校验：note_id 来自笔记行，而"解压外部导出的 zip 即可当库打开"是本项目
+    # 的用法之一 —— 伪造的库里放一行 id 带 `..` 的回收站笔记，清空回收站就会 rmtree 到别处。
+    note_attach = safe_join(ATTACH_DIR, note_id)
+    if note_attach and os.path.exists(note_attach):
         shutil.rmtree(note_attach, ignore_errors=True)
 
 
@@ -1942,30 +2133,60 @@ class Api:
         # 在 DESC 下自然排最前，与旧的「仅 updated_at」行为一致；未拖拽过的存量笔记 sort_order
         # 全为 0，退化为 updated_at DESC（兼容旧行为）。
         #
-        # preview：列表里显示的一行正文摘要。content 是 Quill Delta JSON，只在后端提取纯文本，
-        # **不把 content 发给前端**（既避免大 payload，也避免把加密笔记的密文送出去）。
+        # preview：列表里显示的一行正文摘要。摘要由保存链路预计算进 note_derived.preview，
+        # 这里只读一列 —— **不把 content 从库里取出来**（既避免大 payload，也避免把加密笔记
+        # 的密文送出去，更避免每次刷新都为每一篇重跑一遍 Markdown 剥标记：
+        # 800 篇 2.7KB 的库实测那样会花 223ms，占本函数总耗时的 74%）。
         # 加密笔记（无论是否已解锁）一律给空串——列表渲染不参与解锁流程，摘要留给解锁后的编辑区。
-        sql = ("SELECT id, title, bg_type, bg_value, bg_opacity, is_pinned, is_favorite, "
-               "notebook_id, sort_order, created_at, updated_at, content, password_hash, format "
-               "FROM notes WHERE deleted_at IS NULL")
+        # LEFT JOIN + 兜底：派生行缺失（FTS/派生回填曾整体失败、或笔记是在旧版本里建的而回填
+        # 还没轮到）时退回现算，绝不因为少一行就把摘要显示成空白。
+        sql = ("SELECT n.id, n.title, n.bg_type, n.bg_value, n.bg_opacity, n.is_pinned, "
+               "n.is_favorite, n.notebook_id, n.sort_order, n.created_at, n.updated_at, "
+               "n.password_hash, n.format, d.preview AS preview "
+               "FROM notes n LEFT JOIN note_derived d ON d.note_id = n.id "
+               "WHERE n.deleted_at IS NULL")
         params = []
         if notebook_id is not None:
             if notebook_id == '':
-                sql += " AND notebook_id IS NULL"
+                sql += " AND n.notebook_id IS NULL"
             else:
-                sql += " AND notebook_id = ?"
+                sql += " AND n.notebook_id = ?"
                 params.append(notebook_id)
-        sql += " ORDER BY is_pinned DESC, sort_order DESC, updated_at DESC"
+        sql += " ORDER BY n.is_pinned DESC, n.sort_order DESC, n.updated_at DESC"
         rows = conn.execute(sql, params).fetchall()
         out = []
+        missing = []          # 缺派生行、需要现算摘要的笔记（正常情况恒为空）
         for r in rows:
             d = dict(r)
-            raw = d.pop('content', '') or ''
-            fmt = d.get('format') or 'delta'
+            stored_preview = d.pop('preview', None)
             has_pwd = bool(d.pop('password_hash', None))
             d['has_password'] = 1 if has_pwd else 0
-            d['preview'] = '' if has_pwd else _preview_text(raw, fmt=fmt)
+            if has_pwd:
+                d['preview'] = ''      # 加密笔记一律空摘要（与 FTS body 同一条隐私约定）
+            elif stored_preview is not None:
+                # 注意判 `is not None` 而不是真值：派生行存在但摘要是空串，表示"这篇确实没有
+                # 正文可摘要"（空笔记/纯图片笔记）—— 那时不该进兜底分支白算一遍。
+                d['preview'] = stored_preview
+            else:
+                d['preview'] = ''
+                missing.append(d)
             out.append(d)
+        if missing:
+            # 兜底：派生行缺失（派生回填曾整体失败、或笔记是旧版本建的而回填还没轮到）时现算。
+            # **一次批量取回**而不是每篇一条 SQL —— 派生表整体为空时（800 篇实测）逐篇查会让
+            # 本函数从 310ms 涨到 575ms，比优化前还慢。
+            ids = [d['id'] for d in missing]
+            by_id = {}
+            for i in range(0, len(ids), 500):        # 分块：SQLite 变量数有上限
+                chunk = ids[i:i + 500]
+                marks = ','.join('?' * len(chunk))
+                for fr in conn.execute(
+                        "SELECT id, content, format FROM notes WHERE id IN (%s)" % marks, chunk):
+                    by_id[fr['id']] = fr
+            for d in missing:
+                fr = by_id.get(d['id'])
+                d['preview'] = _preview_text((fr['content'] if fr else '') or '',
+                                             fmt=(fr['format'] if fr else 'delta') or 'delta')
         return out
 
     def notes_created_on(self, date_str):
@@ -2119,9 +2340,22 @@ class Api:
         _refresh_derived(note_id)
         return {'ok': True, 'format': 'delta'}
 
-    def notes_get(self, note_id, unlocked=False):
+    # notes_get 的字段投影。列表/滑杆这类调用方只要元数据，不该把整篇正文再传一遍。
+    _NOTE_META_FIELDS = ('id', 'title', 'updated_at', 'created_at', 'format',
+                         'has_password', 'is_encrypted', 'is_pinned', 'is_favorite',
+                         'notebook_id', 'sort_order')
+
+    def notes_get(self, note_id, unlocked=False, fields=None):
         """获取笔记详情。加密笔记仅当后端已解锁（DEK 在缓存）时返回明文内容。
-        unlocked 参数保留兼容旧前端调用，但不再作为安全依据。回收站中的笔记返回 None。"""
+        unlocked 参数保留兼容旧前端调用，但不再作为安全依据。回收站中的笔记返回 None。
+
+        `fields`：只回这些列（外加 has_password / is_encrypted 两个状态位）。
+        给它是因为**保存链路每次自动保存都会调本函数**（notes_update 末尾 return self.notes_get），
+        默认返回里带着整篇 content —— 46KB 的笔记序列化出来 151KB，每 500ms 过一趟
+        跨语言桥；拖动外观滑杆（不透明度/模糊/缩放/位置）更是每次移动都来一次，而前端
+        **一处都没用到**这个返回值（18 个调用点全是 await 完就丢）。给投影就把这一趟省掉。
+        fields=None 保持旧行为（全字段），既有调用方与测试不受影响。
+        """
         r = conn.execute("SELECT * FROM notes WHERE id = ? AND deleted_at IS NULL", (note_id,)).fetchone()
         if not r:
             return None
@@ -2144,6 +2378,9 @@ class Api:
                 note['is_encrypted'] = False
         else:
             note['is_encrypted'] = False
+        if fields is not None:
+            keep = set(fields) | {'has_password', 'is_encrypted'}
+            note = {k: v for k, v in note.items() if k in keep}
         return note
 
     def notes_duplicate(self, note_id):
@@ -2326,13 +2563,47 @@ class Api:
         ids = [i for i in (note_ids or []) if i]
         if not ids:
             return 0
-        marks = ','.join('?' * len(ids))
-        cur = conn.execute(
-            "UPDATE notes SET notebook_id = ?, updated_at = datetime('now','localtime') "
-            "WHERE id IN (%s) AND deleted_at IS NULL" % marks,
-            [notebook_id or None] + ids)
+        n = 0
+        for chunk in _chunked(ids):      # 分块：全选上千篇时不能一次展开成上千个占位符
+            marks = ','.join('?' * len(chunk))
+            cur = conn.execute(
+                "UPDATE notes SET notebook_id = ?, updated_at = datetime('now','localtime') "
+                "WHERE id IN (%s) AND deleted_at IS NULL" % marks,
+                [notebook_id or None] + chunk)
+            n += cur.rowcount
         conn.commit()
-        return cur.rowcount
+        return n
+
+    def notes_reorder(self, note_ids):
+        """按给定顺序重写 sort_order（拖拽排序用）。**一个事务、一次桥调用**。
+
+        为什么必须有这个接口：前端以前是 `for (i...) await notes_update(id, {sort_order})`
+        —— 800 篇就是 800 次跨语言往返 + 800 个事务。这违背本项目自己的批量原则
+        （`12-bulk-actions.js` 开头就写着"N 次跨语言往返在大批量下明显卡顿"），拖拽这条路径当初漏了。
+
+        `note_ids` 是**按列表从上到下**的顺序（前端 state.notes 的顺序）。列表排序是
+        `is_pinned DESC, sort_order DESC, updated_at DESC`，所以顶部要拿**最大**的 sort_order，
+        于是写成 `n - 1 - i`；这与旧前端逐条写入时的算法**完全一致**，顺序不会变。
+
+        只更新真正在库里的行（不存在的 id 静默跳过），整体一个事务：要么全成、要么全不动，
+        不会出现"拖到一半断了，顺序半新半旧"。
+        """
+        ids = [i for i in (note_ids or []) if i]
+        if not ids:
+            return 0
+        live = {r['id'] for r in conn.execute(
+            "SELECT id FROM notes WHERE deleted_at IS NULL").fetchall()}
+        n = len(ids)
+        try:
+            for i, nid in enumerate(ids):
+                if nid not in live:
+                    continue
+                conn.execute("UPDATE notes SET sort_order = ? WHERE id = ?", (n - 1 - i, nid))
+        except Exception:
+            conn.rollback()
+            raise
+        conn.commit()
+        return n
 
     def notes_add_tag_many(self, note_ids, tag_id):
         """批量打同一个标签（已关联的自动跳过）。返回新增关联数。"""
@@ -2342,9 +2613,12 @@ class Api:
         # 标签必须真实存在：note_tags.tag_id 有外键，传个不存在的 id 会直接抛 IntegrityError
         if not conn.execute("SELECT 1 FROM tags WHERE id = ?", (tag_id,)).fetchone():
             return 0
-        marks = ','.join('?' * len(ids))
-        live = [r['id'] for r in conn.execute(
-            "SELECT id FROM notes WHERE id IN (%s) AND deleted_at IS NULL" % marks, ids).fetchall()]
+        live = []
+        for chunk in _chunked(ids):
+            marks = ','.join('?' * len(chunk))
+            live += [r['id'] for r in conn.execute(
+                "SELECT id FROM notes WHERE id IN (%s) AND deleted_at IS NULL" % marks,
+                chunk).fetchall()]
         added = 0
         for nid in live:
             cur = conn.execute(
@@ -2401,16 +2675,16 @@ class Api:
         if not exclude or not ids:
             return ids
         out = []
-        marks = ','.join('?' * len(ids))
-        rows = conn.execute(
-            f"SELECT id, content, format, password_hash FROM notes WHERE id IN ({marks})",
-            list(ids)).fetchall()
         texts = {}
-        for r in rows:
-            if r['password_hash']:
-                texts[r['id']] = None
-                continue
-            texts[r['id']] = note_plain_text(r['content'], r['format'] or 'delta').lower()
+        for chunk in _chunked(ids):      # 分块：全库搜索的候选集可能上千
+            marks = ','.join('?' * len(chunk))
+            for r in conn.execute(
+                    f"SELECT id, content, format, password_hash FROM notes WHERE id IN ({marks})",
+                    list(chunk)).fetchall():
+                if r['password_hash']:
+                    texts[r['id']] = None
+                    continue
+                texts[r['id']] = note_plain_text(r['content'], r['format'] or 'delta').lower()
         lowered = [w.lower() for w in exclude]
         for i in ids:
             t = texts.get(i)
@@ -2452,11 +2726,13 @@ class Api:
         if not note_ids:
             return {}
         out = {}
-        marks = ','.join('?' * len(note_ids))
-        rows = conn.execute(
-            f"SELECT id, content, password_hash, format FROM notes WHERE id IN ({marks})",
-            list(note_ids)).fetchall()
         ql = q.lower()
+        rows = []
+        for chunk in _chunked(note_ids):     # 分块：搜索命中的候选可能上千
+            marks = ','.join('?' * len(chunk))
+            rows += conn.execute(
+                f"SELECT id, content, password_hash, format FROM notes WHERE id IN ({marks})",
+                list(chunk)).fetchall()
         for r in rows:
             if r['password_hash']:
                 out[r['id']] = ''      # 加密笔记不外泄任何正文片段
@@ -2685,7 +2961,6 @@ class Api:
                 "ORDER BY is_pinned DESC, sort_order DESC").fetchall()]
         if not note_ids:
             return []
-        marks = ','.join('?' * len(note_ids))
         rows = {}
         sql = ("SELECT n.id, n.title, n.format, n.created_at, n.updated_at, n.is_pinned, "
                "n.is_favorite, n.password_hash, nb.name AS notebook, "
@@ -2695,8 +2970,12 @@ class Api:
                "COALESCE(NULLIF(d.props_json, ''), '{}') AS props_json "
                "FROM notes n LEFT JOIN note_derived d ON d.note_id = n.id "
                "LEFT JOIN notebooks nb ON nb.id = n.notebook_id "
-               f"WHERE n.deleted_at IS NULL AND n.id IN ({marks})")
-        for r in conn.execute(sql, list(note_ids)).fetchall():
+               "WHERE n.deleted_at IS NULL AND n.id IN (%s)")
+        res = []
+        for chunk in _chunked(note_ids):    # 分块：表格视图可以一次要看全库
+            marks = ','.join('?' * len(chunk))
+            res += conn.execute(sql % marks, list(chunk)).fetchall()
+        for r in res:
             rows[r['id']] = {
                 'id': r['id'], 'title': r['title'], 'notebook': r['notebook'] or '',
                 'format': r['format'] or 'delta', 'created_at': r['created_at'],
@@ -2708,11 +2987,13 @@ class Api:
                 'props': {} if r['password_hash'] else _load_props(r['props_json']),
                 'tags': [],
             }
-        for r in conn.execute(
-                f"SELECT nt.note_id, t.name FROM note_tags nt JOIN tags t ON t.id = nt.tag_id "
-                f"WHERE nt.note_id IN ({marks}) ORDER BY t.name", list(note_ids)).fetchall():
-            if r['note_id'] in rows:
-                rows[r['note_id']]['tags'].append(r['name'])
+        for chunk in _chunked(note_ids):        # 分块：标签查询同样要跟着分块
+            marks = ','.join('?' * len(chunk))
+            for r in conn.execute(
+                    f"SELECT nt.note_id, t.name FROM note_tags nt JOIN tags t ON t.id = nt.tag_id "
+                    f"WHERE nt.note_id IN ({marks}) ORDER BY t.name", list(chunk)).fetchall():
+                if r['note_id'] in rows:
+                    rows[r['note_id']]['tags'].append(r['name'])
         return [rows[i] for i in note_ids if i in rows]
 
     def export_table_csv(self, note_ids, save_path):
@@ -2743,27 +3024,36 @@ class Api:
             return None
 
     def metrics_bulk(self, note_ids=None):
-        """批量指标（表格视图用；不传就全部）"""
+        """批量指标（表格视图用；不传就全部）。
+
+        加密笔记一律排除：它们的派生行在 _refresh_derived 里会被清空，但**历史脏行**可能
+        还在（修复前的版本会把明文指标写进去），而且锁定态也不该给出"字数/属性/待办"这类
+        正文侧面。这一层过滤是第二道闸，不依赖派生表本身是否干净。
+        """
         if note_ids:
-            marks = ','.join('?' * len(note_ids))
-            rows = conn.execute(
-                f"SELECT d.* FROM note_derived d JOIN notes n ON n.id = d.note_id "
-                f"WHERE n.deleted_at IS NULL AND d.note_id IN ({marks})", list(note_ids)).fetchall()
+            rows = []
+            for chunk in _chunked(note_ids):   # 分块：表格视图可能一次要看全库
+                marks = ','.join('?' * len(chunk))
+                rows += conn.execute(
+                    f"SELECT d.* FROM note_derived d JOIN notes n ON n.id = d.note_id "
+                    f"WHERE n.deleted_at IS NULL AND COALESCE(n.password_hash, '') = '' "
+                    f"AND d.note_id IN ({marks})", list(chunk)).fetchall()
         else:
             rows = conn.execute(
                 "SELECT d.* FROM note_derived d JOIN notes n ON n.id = d.note_id "
-                "WHERE n.deleted_at IS NULL").fetchall()
+                "WHERE n.deleted_at IS NULL AND COALESCE(n.password_hash, '') = ''").fetchall()
         return [dict(r) for r in rows]
 
     def todos_list(self, scope='open'):
         """跨笔记待办：scope = open | today | overdue | week | nodue | done
 
-        只返回**未加密**笔记的待办：加密笔记不参与派生（见 _refresh_derived），
-        所以锁定与否都不会有明文待办流到界面。
+        只返回**未加密**笔记的待办。加密笔记不参与派生（见 _refresh_derived），但这条
+        SQL 过滤是必须的第二道闸：修复前的版本存在旁路，明文待办会留在 note_todos 里
+        （存量库的脏行不会自己消失），光靠"派生时清空"挡不住历史数据。
         """
         today = datetime.now().strftime('%Y-%m-%d')
         week = (datetime.now() + timedelta(days=7)).strftime('%Y-%m-%d')
-        where = ["n.deleted_at IS NULL"]
+        where = ["n.deleted_at IS NULL", "COALESCE(n.password_hash, '') = ''"]
         params = []
         if scope == 'done':
             where.append("t.done = 1")
@@ -2796,10 +3086,12 @@ class Api:
         }.items():
             counts[key] = conn.execute(
                 "SELECT COUNT(*) FROM note_todos t JOIN notes n ON n.id = t.note_id "
-                "WHERE n.deleted_at IS NULL AND t.done = 0 " + due_sql, due_params).fetchone()[0]
+                "WHERE n.deleted_at IS NULL AND COALESCE(n.password_hash, '') = '' "
+                "AND t.done = 0 " + due_sql, due_params).fetchone()[0]
         counts['done'] = conn.execute(
             "SELECT COUNT(*) FROM note_todos t JOIN notes n ON n.id = t.note_id "
-            "WHERE n.deleted_at IS NULL AND t.done = 1").fetchone()[0]
+            "WHERE n.deleted_at IS NULL AND COALESCE(n.password_hash, '') = '' "
+            "AND t.done = 1").fetchone()[0]
         return {'items': items, 'counts': counts}
 
     def todo_toggle(self, note_id, idx, expected_text=''):
@@ -2963,10 +3255,34 @@ class Api:
         return [dict(r) for r in rows]
 
     def attachments_get_path(self, note_id, filename):
-        return os.path.join(ATTACH_DIR, note_id, filename)
+        """附件在磁盘上的绝对路径。
+
+        这两个参数来自**笔记正文里的图片链接**（`![](attachments/<note_id>/<文件名>)`），
+        而正文可以来自导入的外部 .md —— 属于不可信输入，必须校验：
+        历史缺陷是直接 `os.path.join(ATTACH_DIR, note_id, filename)`，于是正文里写
+        `![x](attachments/\\\\attacker\\share/x.png)` 时 os.path.join 会**丢弃 ATTACH_DIR**，
+        交出一个纯 UNC 路径；下游 read_file_base64 的 realpath 一旦解析它就发起对外 SMB 连接
+        （NetNTLM 泄露），打开笔记即触发、不需要点击。
+        """
+        if not note_id or not conn.execute("SELECT 1 FROM notes WHERE id = ?", (note_id,)).fetchone():
+            return None
+        return safe_join(ATTACH_DIR, note_id, filename)
 
     # ----- 文件操作 -----
     def file_copy_to_note(self, source_path, note_id, file_type):
+        """把外部文件复制进某篇笔记的附件目录。
+
+        `note_id` 来自前端（必要时来自正文），不可信：历史缺陷是 `os.makedirs` + `copy2`
+        发生在任何校验之前，于是传一个绝对路径当 note_id（如 Startup 目录）就能把文件写到
+        ATTACH_DIR 之外任意位置、扩展名还跟着源文件走 —— 写进启动目录即可持久化。
+        现在：note_id 必须是库里真实存在的笔记，且落地路径必须真的在 ATTACH_DIR 内。
+        """
+        # note_id 必须是真实笔记（顺带挡掉 `..`、绝对路径、UNC 这几种形状）
+        if not note_id or not conn.execute("SELECT 1 FROM notes WHERE id = ?", (note_id,)).fetchone():
+            return {"error": "笔记不存在"}
+        note_dir = safe_join(ATTACH_DIR, note_id)
+        if not note_dir:
+            return {"error": "附件目录不合法"}
         # 文件大小检查
         try:
             fsize = os.path.getsize(source_path)
@@ -2976,12 +3292,16 @@ class Api:
                 return {"error": f"文件超过 {max_mb}MB 限制"}
         except OSError:
             return {"error": "无法读取文件"}
-        note_dir = os.path.join(ATTACH_DIR, note_id)
         os.makedirs(note_dir, exist_ok=True)
 
-        ext = os.path.splitext(source_path)[1]
+        # 扩展名只保留"安全形状"（白名单字符 + 长度），它会被拼进最终文件名
+        ext = os.path.splitext(source_path)[1].lower()
+        if not re.fullmatch(r'\.[a-z0-9]{1,10}', ext or ''):
+            ext = ''
         new_name = f"{'img' if file_type == 'image' else 'file'}_{uuid.uuid4().hex}{ext}"
-        dest = os.path.join(note_dir, new_name)
+        dest = safe_join(ATTACH_DIR, note_id, new_name)
+        if not dest:
+            return {"error": "附件文件名不合法"}
         shutil.copy2(source_path, dest)
 
         size = os.path.getsize(dest)
@@ -3271,7 +3591,13 @@ class Api:
         try:
             parts = stored.split(':')
             if parts[0] == 'pbkdf2v2' and len(parts) == 4:
-                salt, iters, key = bytes.fromhex(parts[1]), int(parts[2]), bytes.fromhex(parts[3])
+                salt, key = bytes.fromhex(parts[1]), bytes.fromhex(parts[3])
+                # 迭代数也要钳制 —— 与 _unwrap_dek 同一条理由：迭代数存在库里，损坏或被篡改
+                # 的库塞个天文数字进来，就能把"输一次密码"变成纯 CPU 卡死（PBKDF2 无法短路
+                # 失败，而且这些方法还持有全局 _db_lock，会把所有桥调用一起拖住）。
+                iters = min(int(parts[2]), MAX_PBKDF2_ITERATIONS)
+                if iters < 1:
+                    return False
                 return hmac.compare_digest(hashlib.pbkdf2_hmac('sha256', password.encode(), salt, iters), key)
             if len(parts) == 2:
                 # 旧 salt:key 格式（未存迭代数），依次尝试 600000 / 200000 保持兼容
@@ -3321,11 +3647,15 @@ class Api:
         """设置密码并加密笔记内容（正文 + 全部历史版本）"""
         if not password or len(password) < 6:
             return False
-        row = conn.execute("SELECT id, enc_dek FROM notes WHERE id = ?", (note_id,)).fetchone()
+        row = conn.execute("SELECT id, enc_dek, password_hash FROM notes WHERE id = ?", (note_id,)).fetchone()
         if not row:
             return False
-        # 防御：已有加密内容但未解锁时，禁止直接覆盖密码（否则新 DEK 与旧密文错配，内容永久丢失）
-        if row['enc_dek'] and note_id not in _unlocked_deks:
+        # 防御：**已有密码但未解锁**时禁止直接覆盖密码。
+        # 判据必须看 password_hash 而不只是 enc_dek：存量「明文密码」笔记（旧版本设过密码、
+        # 还没走过懒迁移）正好是 password_hash 非空而 enc_dek 为 NULL —— 只查 enc_dek 的话
+        # 守卫整个被跳过，任何调用方都能用**自选的新密码**调本函数，随后该笔记就被算作"已解锁"，
+        # 原本被隐藏的正文直接被读出来（实测复现）。改密码请走 note_change_password（要验旧密码）。
+        if row['password_hash'] and note_id not in _unlocked_deks:
             return False
         # 复用已解锁的 DEK（旧格式升级等路径），否则生成新 DEK
         dek = _unlocked_deks.get(note_id) or os.urandom(32)
@@ -3345,9 +3675,13 @@ class Api:
         if not row or not row['password_hash']:
             return True  # 没有密码的笔记直接通过
         stored_hash = row['password_hash']
-        # 验证（兼容旧裸 SHA-256 无冒号格式）
+        # 验证（兼容旧裸 SHA-256 无冒号格式）。
+        # 用 compare_digest 而不是 !=：这是哈希比较，逐字节提前返回会泄漏"前几位对上了"的
+        # 时间信号。本仓库其它两处哈希比较（_verify_hash）都用的是 compare_digest，这里漏了。
+        # （旧格式本身是无盐 SHA-256，未迁移前可被彩虹表爆破 —— 这是历史包袱，迁移后即消失；
+        #   能做的是不再额外泄漏时间信息。）
         if ':' not in stored_hash:
-            if hashlib.sha256(password.encode()).hexdigest() != stored_hash:
+            if not hmac.compare_digest(hashlib.sha256(password.encode()).hexdigest(), stored_hash):
                 return False
             needs_rehash = True
         else:
@@ -3401,6 +3735,33 @@ class Api:
     def note_lock(self, note_id):
         """锁定笔记：清除后端解锁缓存"""
         _unlocked_deks.pop(note_id, None)
+        return True
+
+    def note_unlock_status(self):
+        """当前**后端**还认为处于解锁状态的 note_id 列表（顺带做一次过期清理）。
+
+        用途：让界面与后端对齐。以前"自动锁定"的判据只有一个 —— 前端自己的
+        `unlockedNotes` 对象；后端过期了、前端没跟上，界面就会继续显示明文，
+        等于没锁。现在前端每轮提醒轮询（30s）顺带问一次这个接口：
+        返回的集合里没有的笔记，就按"已锁定"处理（清编辑器 + 隐藏编辑区）。
+        """
+        _unlocked_deks.sweep()
+        return list(dict.keys(_unlocked_deks))
+
+    def note_set_lock_ttl(self, minutes):
+        """设置后端解锁缓存的有效期（分钟；0 = 不过期）。
+
+        与前端那个「闲置自动锁定」下拉是**同一条设置的两种执行者**：
+        前端负责"用户一停手就锁"的即时体验，后端这层是兜底 ——
+        前端脚本出错/窗口被挂起/用户直接改内存标志时，密钥也不会在进程里长留。
+        """
+        try:
+            m = int(minutes)
+        except (TypeError, ValueError):
+            return False
+        _unlocked_deks.ttl_minutes = max(0, min(24 * 60, m))
+        if _unlocked_deks.ttl_minutes:
+            _unlocked_deks.sweep()      # 立刻按新 TTL 清一遍
         return True
 
     def note_has_password(self, note_id):
@@ -3502,6 +3863,10 @@ class Api:
     def reminder_check(self):
         """检查到期的提醒：只返回 24h 内的（防启动时补弹一堆过期提醒）。
         过期 >24h 的重复提醒自动推进到未来首次触发；一次性提醒标记完成（管理面板仍可见）。"""
+        # 搭车清理解锁缓存：提醒是 30 秒轮询的（前端与托盘守护各一条），够密。
+        # 这样"惰性过期"之外还有一层主动过期 —— 用户挂着不动时密钥也不会一直留在进程里。
+        # 刻意不新开线程：这个应用已经有主循环 + 提醒守护 + 热键三条线程了。
+        _unlocked_deks.sweep()
         # INNER JOIN notes + deleted 过滤：软删笔记的提醒不再触发（恢复笔记后提醒自动重现）
         due = conn.execute(
             "SELECT r.* FROM reminders r INNER JOIN notes n ON r.note_id = n.id "
@@ -3676,8 +4041,15 @@ class Api:
                 c = sqlite3.connect(snap)
                 try:
                     c.execute("PRAGMA foreign_keys=ON")
-                    marks = ','.join('?' * len(ids))
-                    c.execute("DELETE FROM notes WHERE id NOT IN (%s)" % marks, ids)
+                    # ⚠️ `NOT IN` **不能**像 IN 那样简单分块：每块只知道自己的集合，
+                    # 分块后第二块会把第一块要保留的笔记当成"不在我这一块里"删掉。
+                    # 正确做法是先算出"要删的那些 id"（全集 - 保留集），再对删除集分块。
+                    keep = {str(i) for i in ids}
+                    all_ids = [r[0] for r in c.execute("SELECT id FROM notes").fetchall()]
+                    doomed = [i for i in all_ids if i not in keep]
+                    for chunk in _chunked(doomed):
+                        marks = ','.join('?' * len(chunk))
+                        c.execute("DELETE FROM notes WHERE id IN (%s)" % marks, chunk)
                     c.commit()
                 finally:
                     c.close()
@@ -3688,11 +4060,14 @@ class Api:
                                       os.path.join('attachments', nid))
                     bg = os.path.join(DATA_DIR, 'backgrounds')
                     used_bg = set()
-                    for r in conn.execute(
-                            "SELECT bg_value FROM notes WHERE id IN (%s)" % marks, ids).fetchall():
-                        v = r['bg_value'] or ''
-                        if v and os.path.isfile(v):
-                            used_bg.add(os.path.basename(v))
+                    for chunk in _chunked(ids):     # 分块：范围导出可能含上千篇
+                        marks = ','.join('?' * len(chunk))
+                        for r in conn.execute(
+                                "SELECT bg_value FROM notes WHERE id IN (%s)" % marks,
+                                chunk).fetchall():
+                            v = r['bg_value'] or ''
+                            if v and os.path.isfile(v):
+                                used_bg.add(os.path.basename(v))
                     for name in used_bg:                 # 只带这些笔记用到的背景图
                         fp = os.path.join(bg, name)
                         if os.path.isfile(fp):
@@ -4143,6 +4518,58 @@ def _format_size(size):
     if size < 1024: return f"{size} B"
     elif size < 1024*1024: return f"{size/1024:.1f} KB"
     else: return f"{size/(1024*1024):.1f} MB"
+
+
+# ====== 路径包含性校验（唯一入口）======
+# 为什么需要统一助手：这些路径参数全部来自前端/正文，属于**信任边界之外**的值。
+# 项目以前散着 6 处各写各的内联校验，写法不一致，于是漏了几处（附件的 note_id/filename、
+# file_copy_to_note 的 note_id、OCR 的图片路径）。
+#
+# ⚠️ 顺序至关重要：**先做字符串级拒绝，再 realpath**。
+# 反过来的话，`realpath(r'\\attacker\share\x.png')` 会真的去解析这个 UNC 路径 ——
+# 那是一次对外的 SMB 连接，会泄露 NetNTLM 响应；`os.path.join` 遇到 UNC/绝对路径组件还会
+# **丢弃前面的基础目录**（`join('C:\\base', '\\\\a\\b')` == `'\\\\a\\b'`），白名单比较就成了摆设。
+_REJECT_PATH_CHARS = ('\\', '/', ':')      # 路径分隔符、盘符、NTFS 备用数据流（file.txt:ads）
+
+
+def _safe_path_part(part):
+    """单个路径组件是否安全（不含分隔符/盘符/冒号/.. 等）。"""
+    if not isinstance(part, str) or not part or part in ('.', '..'):
+        return False
+    if any(c in part for c in _REJECT_PATH_CHARS):
+        return False
+    return not any(ord(c) < 32 for c in part)     # 控制字符
+
+
+def safe_join(base, *parts):
+    """把 `parts` 安全地拼到 `base` 下；任何可疑输入返回 None。
+
+    返回前做两道：① 字符串级拒绝（UNC / 盘符 / 分隔符 / `..` / 冒号）；
+    ② realpath 之后用 commonpath 确认真的落在 base 里（挡符号链接与剩余的花样）。
+    """
+    if not base:
+        return None
+    for part in parts:
+        if not _safe_path_part(part):
+            return None
+    try:
+        base_real = os.path.realpath(base)
+        joined = os.path.realpath(os.path.join(base_real, *parts))
+        if os.path.commonpath([base_real, joined]) != base_real:
+            return None
+    except (ValueError, OSError, TypeError):
+        return None
+    return joined
+
+
+def _is_under(path, base):
+    """`path` 是否在 `base` 内（都用 realpath 比较）。用于"先 realpath 再判定"的场合。"""
+    try:
+        real = os.path.realpath(os.path.normpath(path))
+        base_real = os.path.realpath(base)
+        return real == base_real or real.startswith(base_real + os.sep)
+    except (ValueError, OSError, TypeError):
+        return False
 
 
 # ====== 线程安全 ======

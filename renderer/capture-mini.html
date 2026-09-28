@@ -3,6 +3,20 @@
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
+<!-- 与 index.html 同一套内容安全策略（理由见那边的注释） -->
+<meta http-equiv="Content-Security-Policy"
+      content="default-src 'self';
+               script-src 'self' 'unsafe-inline';
+               style-src 'self' 'unsafe-inline';
+               img-src 'self' data: blob:;
+               font-src 'self' data:;
+               media-src 'self' data:;
+               connect-src 'none';
+               object-src 'none';
+               frame-src 'none';
+               child-src 'none';
+               base-uri 'none';
+               form-action 'none'">
 <title>快速记录</title>
 <link rel="stylesheet" href="capture.css">
 </head>

@@ -459,89 +459,153 @@ $('#global-content-scrim').addEventListener('input', () => {
   applyCurrentTuning();
 });
 
+// ====== 笔记外观滑杆：本地立即出效果 + debounce 落库 ======
+//
+// 以前的写法是每个 `input` 事件都 `await notes_update(...)` → `notes_get(...)` →
+// `applyNoteBackground(note)`。拖一次滑杆会发出几十次跨语言写库 + 整篇笔记回读，
+// 而 `applyNoteBackground` 在里面还要 `read_file_base64` 把图片重新读一遍、
+// 再跑一次 `analyzeImageColor`（整图画布分析）—— 全都只为把 opacity/zoom/position
+// 三个 CSS 值改一下。同文件的图标圆角滑杆早就用 debounce(150) 了，这里漏了。
+//
+// 现在：拖动中只改**本层的 CSS**（这就是全部视觉效果），落库合并成一次。
+// 松手（change）再走一次完整的 applyNoteBackground —— 只有那一次才需要重新分析
+// 图片配色（滚动到新的可见区域时墨色判定要跟着变）。
+const _NOTE_TUNING_KEYS = ['bg_blur', 'ui_scrim', 'content_scrim', 'bg_opacity',
+                           'bg_zoom', 'bg_pos_x', 'bg_pos_y'];
+let _pendingNoteFields = null;
+// 当前期望的缩放/位置：拖动过程中只改这两个 + 本层 CSS，不发请求。
+// 必须在下面那些用到它们的函数**之前**声明（`let`/`const` 不提升初始化，
+// 放在后面会让函数拿到 TDZ 或上一个值）。
+let noteBgZoom = 100;
+let noteBgPos = { x: 50, y: 50 };
+
+/** 把滑杆的改动应用到笔记背景层（纯样式，不发请求） */
+function applyLocalNoteBgStyle() {
+  if (!state.noteBgImagePath) return;
+  const layer = dom.noteBgLayer;
+  if (!layer) return;
+  layer.style.backgroundSize = noteBgZoom + '% auto';
+  layer.style.backgroundPosition = noteBgPos.x + '% ' + noteBgPos.y + '%';
+  const opacity = state._noteBgOpacity;
+  if (opacity !== undefined && opacity !== null) layer.style.opacity = String(opacity);
+}
+
+const _flushNoteTuning = debounce(async () => {
+  const noteId = state.activeNoteId;
+  const fields = _pendingNoteFields;
+  _pendingNoteFields = null;
+  if (!noteId || !fields) return;
+  try {
+    await window.pywebview.api.notes_update(noteId, fields);
+    syncNoteFields(noteId, fields);        // 只补 state.notes，不用重读整篇笔记
+  } catch (e) {
+    console.error('保存笔记外观失败:', e);
+  }
+}, 150);
+
+/** 记录一项要落库的改动，并排一次防抖写库 */
+function queueNoteField(key, value) {
+  if (!_NOTE_TUNING_KEYS.includes(key)) return;
+  _pendingNoteFields = _pendingNoteFields || {};
+  _pendingNoteFields[key] = value;
+  _flushNoteTuning();
+}
+
+/** 松手时立刻落库（不等防抖），并做一次完整的背景刷新 */
+export function flushNoteTuning() {
+  _flushNoteTuning.cancel();
+  const fields = _pendingNoteFields;
+  _pendingNoteFields = null;
+  if (!state.activeNoteId) return;
+  const noteId = state.activeNoteId;
+  if (fields) {
+    window.pywebview.api.notes_update(noteId, fields)
+      .then(() => syncNoteFields(noteId, fields))
+      .catch((e) => console.error('保存笔记外观失败:', e));
+  }
+  // 拖动结束才重新分析图片配色（整图分析不便宜，拖拽过程中做几十次没有意义）
+  window.pywebview.api.notes_get(noteId)
+    .then((note) => { if (note && state.activeNoteId === noteId) applyNoteBackground(note); })
+    .catch(() => {});
+}
+
 // 笔记背景模糊 / 界面不透明度
-$('#note-bg-blur').addEventListener('input', async () => {
+$('#note-bg-blur').addEventListener('input', () => {
   const val = parseInt($('#note-bg-blur').value);
   $('#note-bg-blur-val').textContent = val + 'px';
-  if (state.activeNoteId) {
-    await window.pywebview.api.notes_update(state.activeNoteId, { bg_blur: val });
-    syncNoteFields(state.activeNoteId, { bg_blur: val });
-    applyBackgroundTuning({ blur: val, scrim: Number(state.bgScrim ?? 0.3),
-                            contentScrim: Number(state.bgContentScrim ?? 0.3) });
-  }
+  if (!state.activeNoteId) return;
+  applyBackgroundTuning({ blur: val, scrim: Number(state.bgScrim ?? 0.3),
+                          contentScrim: Number(state.bgContentScrim ?? 0.3) });
+  queueNoteField('bg_blur', val);
 });
-$('#note-ui-scrim').addEventListener('input', async () => {
+$('#note-ui-scrim').addEventListener('input', () => {
   const val = parseInt($('#note-ui-scrim').value);
   $('#note-ui-scrim-val').textContent = val + '%';
-  if (state.activeNoteId) {
-    await window.pywebview.api.notes_update(state.activeNoteId, { ui_scrim: val / 100 });
-    syncNoteFields(state.activeNoteId, { ui_scrim: val / 100 });
-    applyBackgroundTuning({ blur: Number(state.bgBlur) || 0, scrim: val / 100,
-                            contentScrim: Number(state.bgContentScrim ?? 0.3) });
-  }
+  if (!state.activeNoteId) return;
+  applyBackgroundTuning({ blur: Number(state.bgBlur) || 0, scrim: val / 100,
+                          contentScrim: Number(state.bgContentScrim ?? 0.3) });
+  queueNoteField('ui_scrim', val / 100);
 });
 // 笔记「正文不透明度」：一旦拖动就写进这篇笔记（NULL = 跟随全局的那份默认被"钉"住）
-$('#note-content-scrim').addEventListener('input', async () => {
+$('#note-content-scrim').addEventListener('input', () => {
   const val = parseInt($('#note-content-scrim').value);
   $('#note-content-scrim-val').textContent = val + '%';
-  if (state.activeNoteId) {
-    await window.pywebview.api.notes_update(state.activeNoteId, { content_scrim: val / 100 });
-    syncNoteFields(state.activeNoteId, { content_scrim: val / 100 });
-    applyBackgroundTuning({ blur: Number(state.bgBlur) || 0, scrim: Number(state.bgScrim ?? 0.3),
-                            contentScrim: val / 100 });
-  }
+  if (!state.activeNoteId) return;
+  applyBackgroundTuning({ blur: Number(state.bgBlur) || 0, scrim: Number(state.bgScrim ?? 0.3),
+                          contentScrim: val / 100 });
+  queueNoteField('content_scrim', val / 100);
 });
 
 // 笔记背景透明度滑块
-$('#note-bg-opacity').addEventListener('input', async () => {
+$('#note-bg-opacity').addEventListener('input', () => {
   const val = parseInt($('#note-bg-opacity').value);
   $('#note-bg-opacity-val').textContent = val + '%';
-  if (state.activeNoteId) {
-    await window.pywebview.api.notes_update(state.activeNoteId, { bg_opacity: val / 100 });
-    syncNoteFields(state.activeNoteId, { bg_opacity: val / 100 });
-    const note = await window.pywebview.api.notes_get(state.activeNoteId);
-    applyNoteBackground(note);
-  }
+  if (!state.activeNoteId) return;
+  state._noteBgOpacity = val / 100;
+  applyLocalNoteBgStyle();
+  queueNoteField('bg_opacity', val / 100);
 });
 
-// 笔记背景缩放
-let noteBgZoom = 100;
-$('#note-bg-zoom').addEventListener('input', async () => {
+// 笔记背景缩放（`noteBgZoom` 在文件上方声明）
+$('#note-bg-zoom').addEventListener('input', () => {
   noteBgZoom = parseInt($('#note-bg-zoom').value);
   $('#note-bg-zoom-val').textContent = noteBgZoom + '%';
-  if (state.activeNoteId) {
-    await window.pywebview.api.notes_update(state.activeNoteId, { bg_zoom: noteBgZoom });
-    syncNoteFields(state.activeNoteId, { bg_zoom: noteBgZoom });
-    const note = await window.pywebview.api.notes_get(state.activeNoteId);
-    applyNoteBackground(note);
-  }
+  if (!state.activeNoteId) return;
+  applyLocalNoteBgStyle();
+  queueNoteField('bg_zoom', noteBgZoom);
 });
 
-// 笔记背景位置
-let noteBgPos = { x: 50, y: 50 };
+// 松手：立刻落库并做一次完整刷新（含图片配色重新分析）
+['#note-bg-blur', '#note-ui-scrim', '#note-content-scrim', '#note-bg-opacity', '#note-bg-zoom']
+  .forEach((sel) => {
+    const el = $(sel);
+    if (el) el.addEventListener('change', () => flushNoteTuning());
+  });
+
+// 笔记背景位置（`noteBgPos` 在文件上方声明）
 $$('.note-pos-btn').forEach(btn => {
-  btn.addEventListener('click', async () => {
+  btn.addEventListener('click', () => {
     const dir = btn.dataset.dir;
     if (dir === 'up') noteBgPos.y = Math.max(0, noteBgPos.y - 5);
     if (dir === 'down') noteBgPos.y = Math.min(100, noteBgPos.y + 5);
     if (dir === 'left') noteBgPos.x = Math.max(0, noteBgPos.x - 5);
     if (dir === 'right') noteBgPos.x = Math.min(100, noteBgPos.x + 5);
-    if (state.activeNoteId) {
-      await window.pywebview.api.notes_update(state.activeNoteId, { bg_pos_x: noteBgPos.x, bg_pos_y: noteBgPos.y });
-      syncNoteFields(state.activeNoteId, { bg_pos_x: noteBgPos.x, bg_pos_y: noteBgPos.y });
-      const note = await window.pywebview.api.notes_get(state.activeNoteId);
-      applyNoteBackground(note);
-    }
+    if (!state.activeNoteId) return;
+    // 位置按钮是"点一下动 5%"：连点也走同一条路（本地立即挪 + 防抖落库），
+    // 连点 10 下不再等于 10 次写库 + 10 次整图分析
+    applyLocalNoteBgStyle();
+    queueNoteField('bg_pos_x', noteBgPos.x);
+    queueNoteField('bg_pos_y', noteBgPos.y);
+    flushNoteTuning();
   });
 });
-$('#note-pos-reset').addEventListener('click', async () => {
+$('#note-pos-reset').addEventListener('click', () => {
   noteBgPos = { x: 50, y: 50 };
-  if (state.activeNoteId) {
-    await window.pywebview.api.notes_update(state.activeNoteId, { bg_pos_x: 50, bg_pos_y: 50 });
-    syncNoteFields(state.activeNoteId, { bg_pos_x: 50, bg_pos_y: 50 });
-    const note = await window.pywebview.api.notes_get(state.activeNoteId);
-    applyNoteBackground(note);
-  }
+  if (!state.activeNoteId) return;
+  applyLocalNoteBgStyle();
+  queueNoteField('bg_pos_x', 50);
+  queueNoteField('bg_pos_y', 50);
+  flushNoteTuning();
 });
 
 // 清除背景按钮
@@ -724,6 +788,10 @@ function updateBackgroundPanelUI() {
         noteBgZoom = note.bg_zoom || 100;
         noteBgPos.x = note.bg_pos_x ?? 50;
         noteBgPos.y = note.bg_pos_y ?? 50;
+        // 拖动时要用的"当前不透明度"也存一份并同步滑杆值：
+        // 不然第一次拖动会用上一个值与旧滑杆位置算本地样式，松手后才跳回正确值。
+        state._noteBgOpacity = note.bg_opacity || 0.7;
+        $('#note-bg-opacity').value = Math.round((note.bg_opacity || 0.7) * 100);
       } else {
         noteImageSettings.style.display = 'none';
       }

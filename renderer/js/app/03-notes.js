@@ -18,7 +18,8 @@ import { loadTagBar } from './05-shell.js';
 import { setCurrentPreviewVersionId } from './06-versions-reminders.js';
 import { openPasswordPanel, setEditingMathNode, setPasswordVerifyCallback, setPendingSelectNoteId, unlockedNotes, updateLockButton, verifyAndSelectNote } from './07-formula-security-dnd.js';
 import { generateNoteCover, loadPaperForNote } from './08-appearance2.js';
-import { getCurrentNotebookId, refreshNotebookCounts, updateNotebookCount } from './09-boot.js';
+import { getCurrentNotebookId, applySearchToDom, refreshNotebookCounts, updateNotebookCount } from './09-boot.js';
+import { listItems, renderWindow, initVirtualList } from './30-virtual-list.js';
 import { syncStickersToOverlay, syncStickersToQuill } from '../quill/quill-deco.js';
 import { ICONS } from '../shared/icons.js';
 import { clearSelection, extendSelectionTo, isMultiSelecting, toggleSelection } from './12-bulk-actions.js';
@@ -83,59 +84,85 @@ function highlightHtml(text, q) {
   return out;
 }
 
-export function renderNoteList() {
-  dom.noteList.innerHTML = '';
+/** 建一行笔记 DOM（窗口化渲染会给每个可见行调一次）。 */
+function buildNoteItem(note) {
+  const item = document.createElement('div');
+  item.className = `note-item${note.id === state.activeNoteId ? ' active' : ''}` +
+    (state.selectedIds.has(note.id) ? ' selected' : '');
+  item.dataset.noteId = note.id;
+  item.draggable = true;
+  // SVG 图标定义（统一取 icons.js，避免循环内重复字符串）
+  const svgLock = ICONS.lock;
+  const svgPin = ICONS.pin;
+  const svgStar = ICONS.star;
+  const svgStarOutline = ICONS['star-outline'];
+  const svgTrash = ICONS.trash;
+  const svgKey = ICONS.key;
+  const svgCopy = ICONS.copy;
+  const pinIcon = note.is_pinned ? `<span class="note-status-icon pinned">${svgPin}</span>` : '';
+  const favIcon = note.is_favorite ? `<span class="note-status-icon fav">${svgStar}</span>` : '';
+  const lockIcon = note.has_password ? `<span class="note-status-icon locked">${svgLock}</span>` : '';
+  // 生成封面
+  const coverHtml = generateNoteCover(note);
+  // 事件统一走 #note-list 容器委托（见下方），元素只保留 data-* 路由属性
+  item.innerHTML = `
+    <div class="note-item-row-cover">
+      ${coverHtml}
+      <div class="note-item-info">
+        <div class="note-item-row">
+          <span class="note-item-title">${escapeHtml(note.title || '未命名笔记')}</span>${pinIcon}${favIcon}${lockIcon}
+        </div>
+        <div class="note-item-meta">
+          <span class="note-item-preview">${previewHtmlFor(note)}</span>
+          <span class="note-item-time">${(note.updated_at || '').substring(0, 16)}</span>
+        </div>
+      </div>
+      <button class="note-item-password" title="设置密码" data-pwd-id="${note.id}">${svgKey}</button>
+      <button class="note-item-copy" title="复制这篇笔记" data-copy-id="${note.id}">${svgCopy}</button>
+      <button class="note-item-pin" title="${note.is_pinned ? '取消置顶' : '置顶'}" data-pin-id="${note.id}">${svgPin}</button>
+      <button class="note-item-fav" title="${note.is_favorite ? '取消收藏' : '收藏'}" data-fav-id="${note.id}">${note.is_favorite ? svgStar : svgStarOutline}</button>
+      <button class="note-item-delete" title="删除笔记" data-delete-id="${note.id}">${svgTrash}</button>
+    </div>
+  `;
+  return item;
+}
 
+/** 渲染列表（窗口化：只建看得见的那十几行 + 缓冲）。
+ *
+ *  以前这里是"清空 + 遍历 state.notes 全量建行"，2000 篇实测 496ms / 54,000 个节点。
+ *  现在交给 `30-virtual-list.js` 算窗口、只建窗口内的行，上下用撑高块保持滚动条长度。
+ *  【注意】搜索过滤**不在这里**做：窗口必须基于"过滤后的集合"来算，否则被隐藏的行会留下
+ *  大片空白（撑高块把它们也算进去了）。过滤结果由 `applySearchToDom()` 写进
+ *  `state.searchMatched`，`listItems()` 据此取集合。
+ */
+export function renderNoteList() {
+  const items = listItems();
+  if (items.length === 0) {
+    dom.noteList.innerHTML = '';
+  }
   if (state.notes.length === 0) {
     dom.emptyHint.classList.remove('hidden');
   } else {
     dom.emptyHint.classList.add('hidden');
   }
-  // DocumentFragment 批量挂载：消除每行多次插入引发的重排
-  const frag = document.createDocumentFragment();
-  state.notes.forEach(note => {
-    const item = document.createElement('div');
-    item.className = `note-item${note.id === state.activeNoteId ? ' active' : ''}` +
-      (state.selectedIds.has(note.id) ? ' selected' : '');
-    item.dataset.noteId = note.id;
-    item.draggable = true;
-    // SVG 图标定义（统一取 icons.js，避免循环内重复字符串）
-    const svgLock = ICONS.lock;
-    const svgPin = ICONS.pin;
-    const svgStar = ICONS.star;
-    const svgStarOutline = ICONS['star-outline'];
-    const svgTrash = ICONS.trash;
-    const svgKey = ICONS.key;
-    const svgCopy = ICONS.copy;
-    const pinIcon = note.is_pinned ? `<span class="note-status-icon pinned">${svgPin}</span>` : '';
-    const favIcon = note.is_favorite ? `<span class="note-status-icon fav">${svgStar}</span>` : '';
-    const lockIcon = note.has_password ? `<span class="note-status-icon locked">${svgLock}</span>` : '';
-    // 生成封面
-    const coverHtml = generateNoteCover(note);
-    // 事件统一走 #note-list 容器委托（见下方），元素只保留 data-* 路由属性
-    item.innerHTML = `
-      <div class="note-item-row-cover">
-        ${coverHtml}
-        <div class="note-item-info">
-          <div class="note-item-row">
-            <span class="note-item-title">${escapeHtml(note.title || '未命名笔记')}</span>${pinIcon}${favIcon}${lockIcon}
-          </div>
-          <div class="note-item-meta">
-            <span class="note-item-preview">${previewHtmlFor(note)}</span>
-            <span class="note-item-time">${(note.updated_at || '').substring(0, 16)}</span>
-          </div>
-        </div>
-        <button class="note-item-password" title="设置密码" data-pwd-id="${note.id}">${svgKey}</button>
-        <button class="note-item-copy" title="复制这篇笔记" data-copy-id="${note.id}">${svgCopy}</button>
-        <button class="note-item-pin" title="${note.is_pinned ? '取消置顶' : '置顶'}" data-pin-id="${note.id}">${svgPin}</button>
-        <button class="note-item-fav" title="${note.is_favorite ? '取消收藏' : '收藏'}" data-fav-id="${note.id}">${note.is_favorite ? svgStar : svgStarOutline}</button>
-        <button class="note-item-delete" title="删除笔记" data-delete-id="${note.id}">${svgTrash}</button>
-      </div>
-    `;
-    frag.appendChild(item);
-  });
-  dom.noteList.appendChild(frag);
+  renderWindow((note) => buildNoteItem(note), true);
 }
+
+// 封面图加载失败 → 退回首字。走**委托 + 捕获阶段**：
+//   · 图片的 error 事件**不冒泡**，所以要 `capture: true` 才能在容器上接到；
+//   · 用委托而不是给每个 <img> 绑监听：列表是整表重建的（renderNoteList），
+//     逐个绑既要在重建后重绑、也容易漏。
+// 这样封面就不需要内联 `onerror=` 了（以前那串还把手写标题拼进了 JS 字符串里）。
+dom.noteList.addEventListener('error', (e) => {
+  const img = e.target;
+  if (!img || img.tagName !== 'IMG' || !img.dataset || img.dataset.coverFallback === undefined) return;
+  const holder = img.parentElement;
+  img.style.display = 'none';
+  if (holder && !holder.dataset.coverFellBack) {
+    holder.dataset.coverFellBack = '1';
+    holder.textContent = img.dataset.coverFallback || '';
+  }
+}, true);
 
 // 列表点击事件委托：单监听器代替每行 5 个，靠 data-* 属性路由
 // （与 07 文件的 dragstart/dragover/drop 委托是不同事件类型，互不冲突）
@@ -229,20 +256,36 @@ function updateNoteListItem(noteId) {
   });
 }
 
+// selectNote 的请求序号（见函数内说明）：只有最后一次选择的结果允许写界面
+let _selectSeq = 0;
+// saveCurrentNote 的串行队列尾（见函数内说明）。放模块内部而不是 state 上：
+// state 的字段是给界面/探针读的，一条 promise 链不属于那个范畴。
+let _saveChain = null;
+
 export async function selectNote(noteId) {
   if (state.activeNoteId === noteId) return;
+  // 请求序号：连点两篇笔记时两个 selectNote 会并发（开头的 activeNoteId 判断拦不住 ——
+  // 那时它还没被赋值），后发先至就会让**迟到的旧响应**去 setContents，把新笔记的内容盖掉，
+  // 而用户在切换窗口里的按键也随之丢失。同一份能力在 09-boot.js 的 _searchSeq 里已有正确写法。
+  //
+  // 序号必须在这里、在**第一个 await 之前**同步领取：await 处会让出执行权，
+  // 若把 `++_selectSeq` 放在 await flushSave() 之后，先发起的调用可能后恢复执行、
+  // 反而领到更大的序号 —— 迟到的旧请求就被当成"最新"，守卫形同虚设。
+  const seq = ++_selectSeq;
   if (isVoiceRecording) stopVoiceRecording();
   // 重置版本/公式/背景缓存状态防止跨笔记错乱
   setCurrentPreviewVersionId(null);
   setEditingMathNode(null);
   state._noteBgDataUri = null;
   await flushSave();
+  if (seq !== _selectSeq) return;   // flush 期间又切了别的笔记
 
   // 加载新笔记（传递解锁状态）
   state.isLoading = true;
   try {
     const isUnlocked = unlockedNotes[noteId] === true;
     const note = await window.pywebview.api.notes_get(noteId, isUnlocked);
+    if (seq !== _selectSeq) return;   // 已经有更新的选择，这次的结果作废
     if (!note) return;
 
     // 如果笔记已加密且未解锁，不加载内容，显示密码验证面板
@@ -394,17 +437,22 @@ export function setSaveDot(s) {
 }
 
 export async function saveCurrentNote() {
-  // 串行化：撞上在途保存时先等它完成，再重新走去重与保存（不能直接跳过——
-  // 期间可能有新输入；且旧保存完成后会更新基线，跳过会让新改动失去触发时机）
-  if (state._savePromise) await state._savePromise;
-  if (!state.activeNoteId) return;
-  // 加密未解锁时编辑器禁用，防止空内容覆盖（Markdown 笔记走只读源码，不存在这个状态）
-  if (state.noteFormat !== 'md' && state.quill && !state.quill.isEnabled()) return;
-  const noteId = state.activeNoteId;
-  const note = state.notes.find(n => n.id === noteId);
-  if (note && note.has_password && !unlockedNotes[noteId]) return;
+  // 串行化（队列式）：把每次保存挂到上一条的尾巴上，保证**同一时刻只有一条写库在飞**。
+  //
+  // 为什么不能只写 `if (state._savePromise) await state._savePromise`：
+  // 那个写法在并发调用 ≥3 个时就会失效 —— 第 2、3 个调用者会同时等在**同一个** promise 上，
+  // 醒来后各自覆盖 state._savePromise；而先前那条 promise 的 finally 会把**正在飞行中**的
+  // 引用清成 null，于是第 4 个调用者看到 null 就直接并发发起写库。
+  // 两条请求各自读的是自己开始时刻的编辑器内容，桥接返回顺序不保证 ⇒ 旧内容可能后落库。
+  // 触发点很多：500ms 防抖、编辑器 blur、切笔记 flushSave、Ctrl+S、关窗快照。
+  const run = async () => {
+    if (!state.activeNoteId) return;
+    // 加密未解锁时编辑器禁用，防止空内容覆盖（Markdown 笔记走只读源码，不存在这个状态）
+    if (state.noteFormat !== 'md' && state.quill && !state.quill.isEnabled()) return;
+    const noteId = state.activeNoteId;
+    const note = state.notes.find(n => n.id === noteId);
+    if (note && note.has_password && !unlockedNotes[noteId]) return;
 
-  state._savePromise = (async () => {
     try {
       // 保存前同步贴纸覆盖层位置到 Quill blot
       if (typeof syncStickersToQuill === 'function') syncStickersToQuill();
@@ -418,7 +466,13 @@ export async function saveCurrentNote() {
         return;
       }
 
-      await window.pywebview.api.notes_update(noteId, { title, content });
+      // 返回值必须判空：后端在「笔记不在库/已被删进回收站」「没有可更新字段」
+      // 「加密笔记未解锁 → 剥掉 content 后没有别的字段」这三种情况下返回 None。
+      // 桥接层成功时回的是非空回执（{id, title, updated_at, format}），所以能区分。
+      // 不判的后果：走到 None 分支时基线与小圆点照样前进 → 这次改动**永久丢失**
+      // （去重基线已经当成"存过了"，下次输入才会再触发一次比较），而界面显示"已保存"。
+      const ack = await window.pywebview.api.notes_update(noteId, { title, content });
+      if (!ack) throw new Error('后端拒绝了这次保存');
       // 保存成功后才更新基线：失败时基线不动，下次自动重试。
       // 期间若已切换到其他笔记（在途保存的 await 期间 selectNote 完成），
       // 迟到的保存只落库、不得用旧值覆盖新笔记的 currentTitle/currentContent 基线
@@ -433,11 +487,12 @@ export async function saveCurrentNote() {
       console.error('保存笔记失败:', err.message || err);
       reportError('保存笔记失败: ' + (err.message || err), err && err.stack, 'saveCurrentNote');
       setSaveDot('error');
-    } finally {
-      state._savePromise = null;
     }
-  })();
-  return state._savePromise;
+  };
+  // 队列尾：上一条无论成功失败都要继续往下走（run 内部已吞掉异常）
+  const p = (_saveChain || Promise.resolve()).then(run, run);
+  _saveChain = p;
+  return p;
 }
 
 // 防抖自动保存：连续输入合并为一次写库；flushSave 在切换/失焦/锁定等时机立即落盘
@@ -559,9 +614,14 @@ function showSaveToast() {
 $('#btn-save').addEventListener('click', async () => {
   if (!state.activeNoteId) return;
   await flushSave();
-  // 手动保存时自动创建历史版本
+  // 手动保存时自动创建历史版本。
+  // 取正文必须走 currentEditorContent()（它按 state.noteFormat 分流）：这个按钮在 md 笔记下
+  // 是**隐藏**的（Quill 工具栏整体 .hidden），但命令面板的 Ctrl+P `>` 模式用
+  // `getElementById(id).click()` 触发 —— 隐藏元素照样会被点到。那时 Quill 里留着的还是
+  // 上一篇富文本笔记的内容（selectNote 的 md 分支根本不动 Quill），于是会把**别的笔记**
+  // 的内容存成本篇的历史版本。格式守卫在这里，命令面板那条路就自然安全了。
   const title = dom.titleInput.value.trim() || '未命名笔记';
-  const content = state.quill ? JSON.stringify(state.quill.getContents()) : '';
+  const content = currentEditorContent();
   window.pywebview.api.versions_create(state.activeNoteId, title, content).catch(e => console.error('版本创建失败:', e));
   showSaveToast();
 });

@@ -68,12 +68,72 @@ export function buildDividerPanel() {
 // ====== 贴纸印章 ======
 const StickerBlot = Quill.import('blots/embed');
 
+// 贴纸 HTML 的重建式消毒。
+// 为什么必须有这一层：贴纸 blot 走的是 Quill 的**剪贴板 class 匹配**——把
+//   <span class="sticker-blot" data-sticker-id="deco-star" data-sticker-html="<img src=x onerror=...>">
+// 粘进富文本笔记，Sticker.value() 就会把这串 HTML 收进 Delta；随后
+// syncStickersToOverlay() 用 innerHTML 把它写回页面 —— 零点击执行，而且随正文落库
+// （重开笔记再跑一次，持久型 XSS）。本应用不联网、桥接口能读/导出全部笔记，所以这条
+// 通道的后果是"粘一段 HTML 就能拿走整个笔记本"。
+//
+// 贴纸的视觉本来就只有一种形态：`<span class="..." style="...">文字</span>`，全部内容来自
+// 本文件的静态 stickerData 表。所以这里不做通用消毒，而是**只保留这个形态**：
+// 除 span 外的标签一律丢弃、属性只留 class/style、style 只留贴纸用得上的少数几项且不含 url()。
+const STICKER_HTML_TAGS = { SPAN: true };
+const STICKER_STYLE_OK = new Set([
+  'background', 'background-color', 'color', 'font-size', 'font-weight', 'font-style',
+  'border', 'border-color', 'border-width', 'border-style', 'border-radius',
+  'box-shadow', 'letter-spacing', 'line-height', 'text-align', 'padding',
+]);
+
+function _stickerSafeStyle(text) {
+  const out = [];
+  String(text || '').split(';').forEach((decl) => {
+    const i = decl.indexOf(':');
+    if (i < 0) return;
+    const prop = decl.slice(0, i).trim().toLowerCase();
+    const val = decl.slice(i + 1).trim();
+    if (!STICKER_STYLE_OK.has(prop) || !val) return;
+    // 值里不许出现能发起请求/执行的东西：url()/expression()/javascript:
+    if (/url\s*\(|expression\s*\(|javascript:|@import|\\/i.test(val)) return;
+    out.push(prop + ':' + val);
+  });
+  return out.join(';');
+}
+
+/** 把（可能来自粘贴的）贴纸 HTML 重建成"只有 span + 文字 + 安全 style"的形态 */
+export function sanitizeStickerHtml(html) {
+  const holder = document.createElement('div');
+  holder.innerHTML = String(html == null ? '' : html);
+  const out = document.createElement('span');
+  const walk = (src, dst) => {
+    src.childNodes.forEach((node) => {
+      if (node.nodeType === 3) {                       // 文本
+        dst.appendChild(document.createTextNode(node.nodeValue));
+        return;
+      }
+      if (node.nodeType !== 1) return;                 // 注释/其他一律丢
+      if (!STICKER_HTML_TAGS[node.tagName]) return;     // 白名单外整棵子树丢弃（含其文字）
+      const span = document.createElement('span');
+      const cls = node.getAttribute('class');
+      if (cls && /^[A-Za-z0-9_\-\s]+$/.test(cls)) span.setAttribute('class', cls);
+      const st = _stickerSafeStyle(node.getAttribute('style'));
+      if (st) span.setAttribute('style', st);
+      walk(node, span);
+      dst.appendChild(span);
+    });
+  };
+  walk(holder, out);
+  return out.innerHTML;
+}
+
 class Sticker extends StickerBlot {
   static create(data) {
     const node = super.create();
     node.setAttribute('data-sticker-type', data.cat || 'deco');
     node.setAttribute('data-sticker-id', data.id || '');
-    node.setAttribute('data-sticker-html', data.html || '');
+    // 存进属性前先消毒：这是从 Delta/剪贴板进来的值，下面 value() 还会再消毒一次
+    node.setAttribute('data-sticker-html', sanitizeStickerHtml(data.html || ''));
     node.setAttribute('data-x', data.x != null ? data.x : -1);
     node.setAttribute('data-y', data.y != null ? data.y : -1);
     node.contentEditable = 'false';
@@ -87,7 +147,8 @@ class Sticker extends StickerBlot {
     return {
       cat: node.getAttribute('data-sticker-type') || 'deco',
       id: node.getAttribute('data-sticker-id') || '',
-      html: node.getAttribute('data-sticker-html') || node.innerHTML,
+      // 消毒后再收进 Delta —— 粘贴进来的节点属性不可信（见上面 sanitizeStickerHtml 的说明）
+      html: sanitizeStickerHtml(node.getAttribute('data-sticker-html') || node.innerHTML),
       x: parseInt(node.getAttribute('data-x')) || 0,
       y: parseInt(node.getAttribute('data-y')) || 0
     };
@@ -258,7 +319,9 @@ export function syncStickersToOverlay() {
       }
       if (foundSticker) {
         existing.style.cssText = (foundSticker.bg ? 'background:' + foundSticker.bg + ';' : '') + (foundSticker.style||'') + 'display:inline-flex;align-items:center;justify-content:center;';
-        existing.innerHTML = html;
+        // 消毒后再写 innerHTML：html 来自 Delta（可能是被粘贴进来的内容），
+        // 直接 innerHTML 会让里面的 onerror= 之类事件属性跑起来（见 sanitizeStickerHtml）
+        existing.innerHTML = sanitizeStickerHtml(html);
       }
       // 如果位置未设置（-1），自动放在编辑器中心区域
       if (x === -1 || isNaN(x)) x = Math.max(20, (editorRect.width - 60) / 2);

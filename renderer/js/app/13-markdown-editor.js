@@ -10,14 +10,15 @@
 
 import { dom, $, state } from './01-core.js';
 import { debouncedSave, setSaveDot } from './03-notes.js';
+// 侧栏那一组刷新（状态栏/大纲/查找/属性/双链）与 Quill 侧**共用同一个节流入口**，
+// 避免两条编辑器路径的刷新时机各写一套。02-editor 在模块图里排在 13 之前先求值，
+// 这个 const 绑定在 13 求值时已经初始化（且这里只在 change 回调里调用，不是顶层调用）。
+import { scheduleEditorSidebarRefresh } from './02-editor.js';
 import { bindPreviewLinks, hydrateMarkdownAssets, hydrateWikilinks,
   renderMarkdown } from './14-markdown-render.js';
 import { applyMarkdownAction } from './17-markdown-actions.js';
 import { updateStatusBar } from './21-status-bar.js';
-import { refreshOutline, syncOutlineActive } from './22-outline.js';
-import { refreshFindIfOpen } from './23-find-bar.js';
-import { refreshPropBar } from './24-properties.js';
-import { refreshLinksIfOpen } from './25-links.js';
+import { syncOutlineActive } from './22-outline.js';
 
 const PREVIEW_DELAY = 180;      // 预览渲染节流（毫秒）
 
@@ -62,11 +63,9 @@ export function initMarkdownEditor() {
     setSaveDot('dirty');
     debouncedSave();
     schedulePreview();
-    updateStatusBar();
-    refreshOutline();
-    refreshFindIfOpen();
-    refreshPropBar();
-    refreshLinksIfOpen();
+    // 侧栏那一组（状态栏/大纲/查找/属性/双链）与 Quill 侧共用同一个节流入口 ——
+    // 以前这里是每键全量重算，而预览早就是 180ms 节流了，口径不一致
+    scheduleEditorSidebarRefresh();
   });
   cm.on('cursorActivity', () => { updateStatusBar(); syncOutlineActive(); });
   cm.on('scroll', () => syncScroll('source'));

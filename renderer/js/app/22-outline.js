@@ -53,7 +53,13 @@ export function buildOutline() {
   }
 }
 
+// 大纲关闭时直接跳过：正文每次变化都会调 refreshOutline()，而它要做两件不便宜的事 ——
+// 解析全部标题（md 要读整个 CodeMirror 文档、富文本要遍历 Delta）+ 重建整个大纲 DOM。
+// 关着的时候这两件事全是白算（`syncOutlineActive` 反而一开始就有 `_visible` 守卫，
+// 说明这个守卫本来就该有，只是漏在了更贵的这一半上）。
+// 打开时由 toggleOutline 重新算一次，所以不会显示过期内容 —— 不需要额外的"脏"标记。
 export function refreshOutline() {
+  if (!_visible) return;
   buildOutline();
   render();
 }
@@ -150,6 +156,7 @@ export function toggleOutline(force) {
   drawer.classList.toggle('hidden', !_visible);
   const btn = $('#btn-outline');
   if (btn) btn.classList.toggle('active', _visible);
+  // 打开时补算一次（关闭期间 refreshOutline 是直接 return 的，所以这里必须重算）
   if (_visible) { refreshOutline(); syncOutlineActive(); }
 }
 

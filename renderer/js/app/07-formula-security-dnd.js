@@ -53,9 +53,16 @@ function updateMathPreview() {
   const preview = $('#math-preview');
   if (!latex.trim()) { preview.innerHTML = '<span style="color:var(--text-muted);">预览</span>'; return; }
   try {
-    katex.render(latex, preview, { displayMode: mathMode === 'block', throwOnError: false, strict: false, trust: true });
+    // trust:false —— 与 quill-blots.js / 14-markdown-render.js 统一，理由见 quill-blots.js 里的说明
+    katex.render(latex, preview, { displayMode: mathMode === 'block', throwOnError: false, strict: false, trust: false });
   } catch(e) {
-    preview.innerHTML = `<span style="color:var(--danger);">格式错误: ${e.message}</span>`;
+    // 用 textContent 而不是拼 innerHTML：e.message 是第三方库给的字符串，
+    // 把它塞进 innerHTML 等于给"第三方文案"留了一条 HTML 通道（同类写法全项目就这一处）
+    preview.textContent = '';
+    const err = document.createElement('span');
+    err.style.color = 'var(--danger)';
+    err.textContent = '格式错误: ' + (e.message || e);
+    preview.appendChild(err);
   }
 }
 
@@ -104,7 +111,7 @@ $('#btn-insert-math').addEventListener('click', () => {
     editingMathNode.setAttribute('data-display', mathMode);
     editingMathNode.className = mathMode === 'block' ? 'math-block' : 'math-inline';
     try {
-      katex.render(latex, editingMathNode, { displayMode: mathMode === 'block', throwOnError: false, strict: false, trust: true });
+      katex.render(latex, editingMathNode, { displayMode: mathMode === 'block', throwOnError: false, strict: false, trust: false });
     } catch(e) {
       editingMathNode.textContent = '[错误]';
     }
@@ -169,7 +176,56 @@ export async function loadAutoLockSetting() {
   }
   const sel = $('#sel-autolock');
   if (sel) sel.value = String(_autoLockMinutes);
+  // 同一条设置也告诉后端：前端负责"用户一停手就锁"的即时体验，
+  // 后端那层是兜底（前端脚本出错/窗口被挂起时密钥也不长留）。两边的分钟数必须一致，
+  // 否则会出现"界面显示着明文、后端其实已经过期"或反过来。
+  try {
+    await window.pywebview.api.note_set_lock_ttl(_autoLockMinutes);
+  } catch (e) { /* 后端不支持时忽略（旧版本/单测桩） */ }
   return _autoLockMinutes;
+}
+
+/** 与后端对齐解锁状态：后端已经过期/清掉的笔记，界面上也必须回到锁定态。
+ *
+ *  为什么必须有这一步：光在后端清密钥而界面继续显示明文，等于没锁（这个模块开头就写着
+ *  这条教训）。后端那层 TTL 是兜底，它过期时前端不一定知道 —— 所以搭车 30 秒的提醒轮询
+ *  问一次"后端还认为哪些没锁"，把对不上的收回来。
+ */
+export async function reconcileUnlockState() {
+  // 正在加载/切换笔记时不动手：那会把还没建立好的状态当成"该锁了"
+  if (state.isLoading) return;
+  let alive = null;
+  try {
+    alive = await window.pywebview.api.note_unlock_status();
+  } catch (e) {
+    return;                       // 问不到就不动（宁可保持现状，不要误锁用户正在看的笔记）
+  }
+  if (!Array.isArray(alive)) return;
+  const aliveSet = new Set(alive);
+  const stale = Object.keys(unlockedNotes).filter(id => {
+    if (aliveSet.has(id)) return false;
+    // 第二道闸：只收回**真加密**的笔记。`unlockedNotes` 历史上被当成"可打开"用过，
+    // 万一还有别处给明文笔记置了标记，这里也不会把普通笔记锁掉（那会表现为
+    // "用着用着编辑区自己收起"）。后端不该持有明文笔记的密钥，所以这条过滤不会
+    // 放过真正该锁的笔记。
+    const note = state.notes.find(n => n.id === id);
+    return !!(note && note.has_password);
+  });
+  if (!stale.length) return;
+  const activeWasStale = state.activeNoteId && stale.includes(state.activeNoteId);
+  stale.forEach(id => { delete unlockedNotes[id]; });
+  if (activeWasStale) {
+    // 与手动锁定/闲置锁定同一套收尾动作：清编辑器 + 隐藏编辑区
+    await flushSave().catch(() => {});
+    state.activeNoteId = null;
+    state.currentContent = '';
+    state.currentTitle = '';
+    if (state.quill) { state.quill.setContents([]); state.quill.enable(true); }
+    hideEditorUI();
+    showToast('后端已锁定（闲置超时），编辑区已收起', { type: 'info' });
+  }
+  updateLockButton();
+  renderNoteList();
 }
 
 async function _lockAllUnlocked() {
@@ -307,7 +363,12 @@ $('#password-verify-input').addEventListener('keydown', (e) => {
 export async function verifyAndSelectNote(noteId) {
   const hasPwd = await window.pywebview.api.note_has_password(noteId);
   if (!hasPwd || unlockedNotes[noteId]) {
-    unlockedNotes[noteId] = true;
+    // 【注意】只给**加密**笔记记这个标记。`unlockedNotes` 的语义是"已解锁"，而后端能报出的
+    // 解锁集合只含真正持有密钥的笔记 —— 明文笔记永远不在里面。
+    // 以前这里对明文笔记也置 true，于是"后端说它没解锁"与"前端说它解锁了"长期打架：
+    // 与后端对齐解锁状态的逻辑（reconcileUnlockState）每 30 秒就会把打开着的普通笔记
+    // 当成"该锁了"，顺手清空 activeNoteId + 收起编辑区 —— 现象是"用着用着编辑区自己没了"。
+    if (hasPwd) unlockedNotes[noteId] = true;
     await selectNote(noteId);
     return;
   }
@@ -372,12 +433,23 @@ $('#btn-cancel-verify').addEventListener('click', () => {
 // 实际上可以在侧边栏每个笔记的右键菜单里加
 
 // ====== 笔记列表拖拽排序 ======
+// 【注意】索引必须从**数据**里取，不能用 DOM 位置。窗口化渲染之后 `dom.noteList.children`
+// 里夹着上下两个撑高块（`.note-list-spacer`），而且只包含**窗口内的十几行** ——
+// 用 `[...children].indexOf(item)` 既会被撑高块偏移，跨屏拖动还会算出完全错误的落点。
+// 行的 `data-note-id` 才是稳定标识，`state.notes` 的顺序才是真相。
+function dataIndexOfItem(item) {
+  if (!item) return -1;
+  const id = item.dataset.noteId;
+  return state.notes.findIndex(n => n.id === id);
+}
+
 let dragSrcIndex = null;
 
 dom.noteList.addEventListener('dragstart', (e) => {
   const item = e.target.closest('.note-item');
   if (!item) return;
-  dragSrcIndex = [...dom.noteList.children].indexOf(item);
+  dragSrcIndex = dataIndexOfItem(item);
+  if (dragSrcIndex < 0) return;
   item.classList.add('dragging');
   e.dataTransfer.effectAllowed = 'move';
   e.dataTransfer.setData('text/plain', '');
@@ -404,17 +476,21 @@ dom.noteList.addEventListener('drop', async (e) => {
   const item = e.target.closest('.note-item');
   if (!item || dragSrcIndex === null) return;
   item.classList.remove('drag-over');
-  const dstIndex = [...dom.noteList.children].indexOf(item);
-  if (dragSrcIndex === dstIndex) return;
+  const dstIndex = dataIndexOfItem(item);
+  if (dstIndex < 0 || dragSrcIndex === dstIndex) return;
 
   // 重新排列 state.notes（统一走 store）
   notesStore.move(dragSrcIndex, dstIndex);
 
-  // 更新所有笔记的 sort_order：列表按 sort_order DESC 排序，顶部（index 0）取最大值；
-  // 后端对纯排序更新不 bump updated_at，拖拽后顺序才可持久
-  const n = state.notes.length;
-  for (let i = 0; i < n; i++) {
-    await window.pywebview.api.notes_update(state.notes[i].id, { sort_order: n - 1 - i });
+  // 一次桥调用把新顺序写库（后端一个事务）。以前是 for 循环逐条 notes_update ——
+  // 800 篇就是 800 次跨语言往返 + 800 个事务，拖一次卡一下；而本项目对批量动作的
+  // 既有原则就是"一个桥调用"（见 12-bulk-actions.js 开头）。sort_order 的算法
+  // （列表顶部取最大值）已经搬进后端 notes_reorder，与旧写法逐字等价。
+  // 纯排序更新不 bump updated_at，拖拽后顺序才可持久。
+  try {
+    await window.pywebview.api.notes_reorder(state.notes.map(n => n.id));
+  } catch (e) {
+    console.error('保存排序失败:', e);
   }
   renderNoteList();
   dragSrcIndex = null;

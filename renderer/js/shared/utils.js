@@ -26,6 +26,40 @@ export function debounce(fn, delay) {
   return wrapped;
 }
 
+/** 节流（**首个调用立即执行**，之后每 delay 最多一次，且停手后一定补一次尾部调用）。
+ *
+ *  与 debounce 的分工：debounce 是"停手才做"（适合落库——中间态没有价值）；
+ *  throttle 是"边做边限速 + 收尾补偿"（适合刷新界面文案——用户希望敲字时就能看到字数变化，
+ *  但不希望每个按键都全量重算一遍）。
+ *  为什么必须带尾部调用：只有 leading 的节流会让"最后一次输入"永远不反映到界面上
+ *  （用户敲完最后两个字，字数停在之前的值）。
+ */
+export function throttle(fn, delay) {
+  let last = 0;
+  let timer = null;
+  const wrapped = function (...args) {
+    const now = Date.now();
+    const wait = delay - (now - last);
+    if (wait <= 0) {
+      if (timer) { clearTimeout(timer); timer = null; }
+      last = now;
+      fn.apply(this, args);
+      return;
+    }
+    if (timer) return;                       // 已经排了尾部调用，不重复排
+    timer = setTimeout(() => {
+      timer = null;
+      last = Date.now();
+      fn.apply(this, args);
+    }, wait);
+  };
+  wrapped.cancel = () => {
+    if (timer) { clearTimeout(timer); timer = null; }
+    last = 0;
+  };
+  return wrapped;
+}
+
 /** 标题 → 锚点 slug（第 9 轮）。
  *
  *  两处必须用**同一个**函数：markdown-it 生成的标题 id（`md-h-<slug>`）与

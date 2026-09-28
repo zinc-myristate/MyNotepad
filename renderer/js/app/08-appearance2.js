@@ -542,7 +542,12 @@ export function generateNoteCover(note) {
   const type = note.cover_type || 'none';
   const val = note.cover_value || '';
   if (type === 'image' && val) {
-    return '<div class="note-cover"><img class="note-cover-img" src="' + escapeHtml(val) + '" onerror="this.style.display=\'none\';this.parentElement.textContent=\'' + escapeHtml((note.title||'笔')[0]) + '\'"></div>';
+    // 图挂了要退回首字，但**不用内联 onerror**：内联事件处理器是 CSP 里最该消失的一类东西，
+    // 而且这里以前是把标题首字拼进一段 JS 字符串（`textContent='X'`）—— 那个位置一旦能注入
+    // 引号就是 XSS。现在只留一个 data-* 属性，由 03-notes.js 的**委托 error 监听**接手
+    // （图片出错不冒泡，但捕获阶段能接到，见那边的注释）。
+    return '<div class="note-cover"><img class="note-cover-img" src="' + escapeHtml(val) +
+      '" data-cover-fallback="' + escapeHtml((note.title || '笔')[0]) + '"></div>';
   }
   if (type === 'gradient' && val) {
     const colors = val.split(',');

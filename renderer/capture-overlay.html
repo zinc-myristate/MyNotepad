@@ -3,6 +3,22 @@
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
+<!-- 与 index.html 同一套内容安全策略（理由见那边的注释）：这个应用的承诺是"不联网"，
+     而页面资源全是本地文件，所以把网络外发整条路堵死。覆盖窗里唯一的外部数据是
+     冻屏图（data:image/png;base64），落在 img-src data: 里。 -->
+<meta http-equiv="Content-Security-Policy"
+      content="default-src 'self';
+               script-src 'self' 'unsafe-inline';
+               style-src 'self' 'unsafe-inline';
+               img-src 'self' data: blob:;
+               font-src 'self' data:;
+               media-src 'self' data:;
+               connect-src 'none';
+               object-src 'none';
+               frame-src 'none';
+               child-src 'none';
+               base-uri 'none';
+               form-action 'none'">
 <title>截图选区</title>
 <link rel="stylesheet" href="capture.css">
 </head>

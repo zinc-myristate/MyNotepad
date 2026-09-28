@@ -95,7 +95,12 @@ def test_closing_flush_saves_last_edits(tmp_path, monkeypatch):
 
 
 def test_search_filters_note_list(tmp_path, monkeypatch):
-    """搜索框驱动后端 notes_search：正文命中显示、未命中隐藏"""
+    """搜索框驱动后端 notes_search：命中的留在列表里，未命中的不出现。
+
+    ⚠️ 断言在窗口化渲染之后改过：以前未命中的行**仍在 DOM 里**、只是带 `hidden-by-search`
+    类；现在列表是窗口化渲染的，未命中的行**根本不渲染**（撑高块要按"过滤后的行数"算，
+    留着隐藏行会留下大片空白）。所以判据从"hidden 类等于 true"改成"这一行不在列表里"。
+    """
     ns = load_app_partial(monkeypatch, tmp_path)
     import backend
     a = backend.api.notes_create()['id']
@@ -108,15 +113,27 @@ def test_search_filters_note_list(tmp_path, monkeypatch):
             "__app.dom.searchInput.value = '水果种植';"
             "__app.dom.searchInput.dispatchEvent(new Event('input', {bubbles:true}));")
         time.sleep(1.5)  # > 200ms 搜索防抖 + 桥接往返
-        result['hidden'] = window.evaluate_js(
+        result['rows'] = window.evaluate_js(
             "JSON.stringify([...__app.dom.noteList.querySelectorAll('.note-item')]"
-            ".map(el => [el.dataset.noteId, el.classList.contains('hidden-by-search')]))")
+            ".map(el => el.dataset.noteId))")
+        result['matched'] = window.evaluate_js(
+            "JSON.stringify([...(__app.state.searchMatched || [])])")
+        # 清空搜索后两行都该回来
+        window.evaluate_js(
+            "__app.dom.searchInput.value = '';"
+            "__app.dom.searchInput.dispatchEvent(new Event('input', {bubbles:true}));")
+        time.sleep(1.0)
+        result['rows_after_clear'] = window.evaluate_js(
+            "JSON.stringify([...__app.dom.noteList.querySelectorAll('.note-item')]"
+            ".map(el => el.dataset.noteId))")
 
     result = _run_window(ns, actions)
     assert 'error' not in result, result
-    hidden = dict(json.loads(result['hidden']))
-    assert hidden[a] is False, '正文命中的笔记不应被隐藏'
-    assert hidden[b] is True, '未命中的笔记应被隐藏'
+    rows = json.loads(result['rows'])
+    assert a in rows, '正文命中的笔记必须留在列表里'
+    assert b not in rows, '未命中的笔记不该出现在列表里（窗口化：根本不渲染）'
+    assert a in json.loads(result['matched'])
+    assert set(json.loads(result['rows_after_clear'])) == {a, b}, '清空搜索后两行都该回来'
 
 
 def test_image_dict_embed_renders_and_persists(tmp_path, monkeypatch):

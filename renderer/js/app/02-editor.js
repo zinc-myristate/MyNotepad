@@ -15,6 +15,22 @@ import { refreshOutline, syncOutlineActive } from './22-outline.js';
 import { refreshFindIfOpen } from './23-find-bar.js';
 import { refreshPropBar } from './24-properties.js';
 import { refreshLinksIfOpen } from './25-links.js';
+import { throttle } from '../shared/utils.js';
+
+// ====== 编辑器侧栏的合并刷新（状态栏 / 大纲 / 查找 / 属性 / 双链）======
+// 两条编辑器路径（Quill 的 text-change、CodeMirror 的 change）共用这一个入口，
+// 保证"两边的刷新时机与节流口径一致"。
+// 用 throttle（首个立即 + 尾部补偿）而不是 debounce：
+//   · 立即执行 —— 用户敲第一个字就能看到字数变化，不会觉得界面迟钝；
+//   · 尾部补偿 —— 停手后一定会用最终内容刷一次，字数不会停在中间值；
+//   · 中间的连续按键合并 —— 这正是省下来的部分。
+export const scheduleEditorSidebarRefresh = throttle(() => {
+  updateStatusBar();
+  refreshOutline();
+  refreshFindIfOpen();
+  refreshPropBar();
+  refreshLinksIfOpen();
+}, 180);
 
 export function initQuill() {
   const quill = new Quill('#quill-editor', {
@@ -28,14 +44,13 @@ export function initQuill() {
     }
   });
 
-  // 状态栏 / 大纲 / 查找的刷新挂在这里（Quill 侧只有一个入口，避免到处撒监听）
+  // 状态栏 / 大纲 / 查找的刷新挂在这里（Quill 侧只有一个入口，避免到处撒监听）。
+  // 走**节流**而不是每键全量：这批刷新里，状态栏要跑 6 趟正则扫全文、大纲要重建整个列表
+  // DOM、属性栏要全文正则找 front-matter。几千行的笔记下每个按键都做一遍会明显卡手 ——
+  // 而隔壁 Markdown 预览早就是 180ms 节流了（13-markdown-editor.js），这几个当时漏了。
   quill.on('text-change', () => {
     if (state.isLoading) return;
-    updateStatusBar();
-    refreshOutline();
-    refreshFindIfOpen();
-    refreshPropBar();
-    refreshLinksIfOpen();
+    scheduleEditorSidebarRefresh();
   });
   quill.on('selection-change', () => {
     updateStatusBar();

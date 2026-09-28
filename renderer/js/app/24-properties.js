@@ -118,10 +118,33 @@ function syncFromRows() {
   renderChips(props);
 }
 
+/** 面板编辑的防抖落库定时器。`_syncTimerNoteId` 记下它是**为哪篇笔记**排的。
+ *
+ *  为什么必须带笔记身份、而且要在关面板/切笔记时清掉：`syncFromRows()` 读的是**当前面板
+ *  DOM**，然后 `writeProps()` 直接改**当前编辑器**顶部。以前定时器只被"下一次 scheduleSync"
+ *  清除，`closePropsEditor()` 与 `refreshPropBar()` 都不清 —— 于是"敲完属性值 350ms 内切笔记"
+ *  会让它在编辑器已经换成新笔记之后触发：轻则把新笔记的属性按旧面板内容重写一遍，
+ *  重则把上一篇的属性**写进另一篇笔记的 front-matter**。
+ */
 let _syncTimer = null;
+let _syncTimerNoteId = null;
+
+function cancelScheduledSync() {
+  if (_syncTimer) { clearTimeout(_syncTimer); _syncTimer = null; }
+  _syncTimerNoteId = null;
+}
+
 function scheduleSync() {
-  if (_syncTimer) clearTimeout(_syncTimer);
-  _syncTimer = setTimeout(() => { _syncTimer = null; syncFromRows(); }, 350);
+  cancelScheduledSync();
+  const forNote = state.activeNoteId;
+  _syncTimerNoteId = forNote;
+  _syncTimer = setTimeout(() => {
+    _syncTimer = null;
+    _syncTimerNoteId = null;
+    // 双保险：定时器排好之后笔记被切走/关掉了，这次回写就作废
+    if (!forNote || state.activeNoteId !== forNote) return;
+    syncFromRows();
+  }, 350);
 }
 
 function panelHasFocus() {
@@ -133,6 +156,8 @@ function panelHasFocus() {
 export function refreshPropBar() {
   const block = $('#prop-block');
   if (!block) return;
+  // 笔记换了（或清空了）：上一篇排着的回写必须作废，否则会写到这一篇头上
+  if (_syncTimer && _syncTimerNoteId !== state.activeNoteId) cancelScheduledSync();
   if (!state.activeNoteId) {
     block.classList.add('hidden');
     return;
@@ -180,6 +205,12 @@ export function openPropsEditor() {
 export function closePropsEditor(refresh = true) {
   const panel = $('#prop-editor');
   if (panel) panel.classList.add('hidden');
+  // 关面板前先把排着的回写落掉（用户刚敲的值不能丢），再清定时器
+  if (_syncTimer) {
+    const stillSameNote = _syncTimerNoteId && _syncTimerNoteId === state.activeNoteId;
+    cancelScheduledSync();
+    if (stillSameNote) syncFromRows();
+  }
   _draft = null;
   if (refresh) refreshPropBar();
 }

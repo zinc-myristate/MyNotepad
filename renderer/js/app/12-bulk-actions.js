@@ -13,6 +13,7 @@ import { loadNotes, renderNoteList } from './03-notes.js';
 import { loadTagFilter } from './05-shell.js';
 import { verifyAndSelectNote } from './07-formula-security-dnd.js';
 import { loadNotebookBar } from './09-boot.js';
+import { listItems } from './30-virtual-list.js';
 
 let _anchor = null;      // Shift 连选的起点
 let _notebooks = [];
@@ -55,11 +56,31 @@ export function clearSelection() {
 }
 
 export function selectAllVisible() {
-  // 只选"当前列表里看得见的"（搜索过滤后隐藏的不选），符合直觉
-  dom.noteList.querySelectorAll('.note-item').forEach(el => {
-    if (!el.classList.contains('hidden-by-search')) state.selectedIds.add(el.dataset.noteId);
-  });
+  // 只选"当前筛选后真正在列表里的"（搜索没命中的不选），符合直觉。
+  //
+  // 【注意】判据在窗口化之后换过：以前是遍历 DOM 里可见的 `.note-item` 并跳过
+  // `hidden-by-search` 的行 —— 但窗口化之后 DOM 里只有**窗口内的十几行**，
+  // 照旧写法"全选"会只选到那十几行。现在按数据侧取集合，与列表渲染共用同一个来源
+  // （`listItems()`）：语义是"当前筛选下的全部笔记"，也正是用户点"全选"时想要的。
+  listItems().forEach(note => state.selectedIds.add(note.id));
   applySelectionClass();
+}
+
+/** 两个下拉的数据缓存。
+ *
+ *  注释里原本写着"展开时才拉一次，避免每次点击都请求"，但代码每次 `refreshBulkBar()`
+ *  都无条件拉 `notebooks_list` + `tags_list` —— 而 `refreshBulkBar()` 由 `applySelectionClass()`
+ *  调用，后者在 toggle/extend/clear/selectAll 里都调。于是 Ctrl 连选 20 篇 = **40 次跨语言往返**，
+ *  而且每次都 `await` 完才建 option，UI 一顿一顿。
+ *
+ *  现在只在「选区由空变为非空」那一刻拉一次（即用户开始多选的时候），
+ *  与"展开下拉时数据是这一刻的"语义一致，也不必去追每个笔记本/标签的增删点。
+ */
+let _bulkFilled = false;
+
+/** 选区清空后调用：下次开始多选时会重拉一次（数据可能已经变了） */
+function invalidateBulkOptions() {
+  _bulkFilled = false;
 }
 
 async function refreshBulkBar() {
@@ -69,38 +90,43 @@ async function refreshBulkBar() {
   bar.classList.toggle('hidden', n === 0);
   const count = $('#bulk-count');
   if (count) count.textContent = '已选 ' + n + ' 项';
-  if (n === 0) return;
-  // 两个下拉的内容随数据变化，展开时才拉一次，避免每次点击都请求
-  try {
-    _notebooks = await window.pywebview.api.notebooks_list();
-    _tags = await window.pywebview.api.tags_list();
-  } catch (e) {
+  if (n === 0) {
+    invalidateBulkOptions();   // 选区空了 = 这一轮多选结束
     return;
   }
-  const nbSel = $('#bulk-notebook');
-  if (nbSel && nbSel.options.length <= 1) {
-    _notebooks.forEach(nb => {
-      const o = document.createElement('option');
-      o.value = nb.id;
-      o.textContent = nb.name;
-      nbSel.appendChild(o);
-    });
+  if (!_bulkFilled) {
+    try {
+      _notebooks = await window.pywebview.api.notebooks_list();
+      _tags = await window.pywebview.api.tags_list();
+    } catch (e) {
+      return;
+    }
+    _bulkFilled = true;
+    _fillOptions($('#bulk-notebook'), _notebooks);
+    _fillOptions($('#bulk-tag'), _tags);
   }
-  const tagSel = $('#bulk-tag');
-  if (tagSel && tagSel.options.length <= 1) {
-    _tags.forEach(t => {
-      const o = document.createElement('option');
-      o.value = t.id;
-      o.textContent = t.name;
-      tagSel.appendChild(o);
-    });
-  }
+}
+
+/** 用给定数据重建下拉选项（第 0 项是 HTML 里的占位项，保留它） */
+function _fillOptions(sel, items) {
+  if (!sel) return;
+  const placeholder = sel.options.length ? sel.options[0].cloneNode(true) : null;
+  sel.length = 0;
+  if (placeholder) sel.appendChild(placeholder);
+  items.forEach(it => {
+    const o = document.createElement('option');
+    o.value = it.id;
+    o.textContent = it.name;
+    sel.appendChild(o);
+  });
 }
 
 function selectedArray() { return [...state.selectedIds]; }
 
 async function afterBulk(message) {
   clearSelection();
+  // 批量操作可能刚改了笔记本/标签集合（比如把笔记移进某个本、批量打标签），下拉缓存作废
+  invalidateBulkOptions();
   await loadNotes();
   await loadNotebookBar();
   loadTagFilter();

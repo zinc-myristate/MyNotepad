@@ -14,7 +14,7 @@ import threading
 import time
 
 import pytest
-from conftest import PROJECT_ROOT, load_app_partial, make_delta_note
+from conftest import PROJECT_ROOT, load_app_partial, make_delta_note, wait_for_js
 
 RENDERER = PROJECT_ROOT + '/renderer'
 
@@ -184,18 +184,32 @@ def test_capture_menu_daily_note_and_idempotence(tmp_path, monkeypatch):
         _click(window, '#btn-capture')
         time.sleep(0.5)
         _click(window, '#cap-daily')
-        time.sleep(2.0)
-        notes = backend.api.notes_list()
+        # 等"笔记真的建出来了"再读库，别用固定 sleep 赌机器速度（见 conftest.wait_for_js 的说明）。
+        # 读的是后端库而不是 JS，所以直接用 Python 侧轮询。
+        deadline = time.time() + 15.0
+        notes = []
+        while time.time() < deadline:
+            notes = backend.api.notes_list()
+            if notes:
+                break
+            time.sleep(0.25)
         result['first'] = [(n['id'], n['title']) for n in notes]
-        result['first_body'] = backend.api.notes_get(notes[0]['id'])['content']
+        result['first_body'] = backend.api.notes_get(notes[0]['id'])['content'] if notes else ''
         result['notebooks'] = [nb['name'] for nb in backend.api.notebooks_list()]
+        first_id = notes[0]['id'] if notes else ''
         # 再点一次：还是同一篇
         _click(window, '#btn-capture')
         time.sleep(0.5)
         _click(window, '#cap-daily')
-        time.sleep(1.8)
+        time.sleep(0.5)
         result['second'] = [(n['id'], n['title']) for n in backend.api.notes_list()]
-        result['active'] = window.evaluate_js("window.__app.state.activeNoteId || ''")
+        # 「建完要跳过去」是**异步**的（daily_note_open → loadNotes → revealAndSelectNote
+        # → verifyAndSelectNote → selectNote，中间有多次跨语言 await）。原先这里写
+        # `time.sleep(1.8)` 再一次性取值，等于把断言变成"断言机器有多快" ——
+        # 整套 e2e 跑（WebView2 更慢）时偶发读到还没跳完的空 activeNoteId 就红了。
+        # 按 conftest.wait_for_js 的既有约定改成"等条件成立再断言"。
+        result['active'] = wait_for_js(
+            window, "window.__app.state.activeNoteId || ''", first_id, timeout=15.0)
 
     r = _run(ns, actions)
     assert 'error' not in r, r.get('error')

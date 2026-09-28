@@ -108,12 +108,21 @@ def test_modules_are_imported_and_initialised():
 
 
 def test_editors_notify_status_bar_outline_and_find():
-    """两种编辑器（Quill / CodeMirror）输入后都要刷新状态栏、大纲、查找条。"""
+    """两种编辑器（Quill / CodeMirror）输入后都要刷新状态栏、大纲、查找条。
+
+    刷新时机现在统一走 `02-editor.js` 导出的 `scheduleEditorSidebarRefresh()`（180ms 节流：
+    首个按键立即 + 停手补一次）。所以这里断言的是"两边都接到了那个入口"，
+    而**那个入口内部**确实刷新了这三样 —— 一半查接线、一半查它真调了。
+    """
+    entry_owner = _app('02-editor.js')
+    assert 'export const scheduleEditorSidebarRefresh = throttle(' in entry_owner, \
+        '合并刷新的入口应该定义在 02-editor.js 并走节流'
+    for fn in ('updateStatusBar()', 'refreshOutline()', 'refreshFindIfOpen()'):
+        assert fn in entry_owner, '合并刷新的入口没有调用 %s' % fn
     for name in ('02-editor.js', '13-markdown-editor.js'):
         src = _app(name)
-        assert 'updateStatusBar()' in src, '%s 没有刷新状态栏' % name
-        assert 'refreshOutline()' in src, '%s 没有刷新大纲' % name
-        assert 'refreshFindIfOpen()' in src, '%s 没有在内容变化后重算查找' % name
+        assert 'scheduleEditorSidebarRefresh()' in src, \
+            '%s 输入后没有走合并刷新（状态栏/大纲/查找）' % name
 
 
 def test_ctrl_f_opens_find_bar_inside_editor():

@@ -358,6 +358,53 @@ def _build_startup_notice():
 
 _STARTUP_NOTICE = _build_startup_notice()
 
+
+# ====== 桥接层的返回值投影 ======
+# 为什么在这一层做：这些接口在后端是**返回整篇笔记**的（含 content），而 content 可能几十上百 KB；
+# 每次过桥都要序列化一遍。而前端实际只读其中一两个字段 —— 逐个查过调用点（见下）。
+#
+# ⚠️ 绝对不能改后端语义来省这点开销：`notes_create_from_template` / `daily_note_open` /
+# `capture_text` 等 5 处后端方法**串联**使用 `notes_update` 的返回值，把后端返回值收窄
+# 会让"模板/捕获建的笔记丢掉 content"（实测踩到，测试立刻红）。所以投影只发生在桥上。
+#
+# 字段清单都对应"前端真的会读"的东西，改这里之前先 grep 调用点：
+#   id  —— 所有调用点都读（判空 + 后续 selectNote）
+#   title / format / updated_at —— versions_restore 之后要按 format 分流编辑器、更新标题
+#   has_password —— 避免把"加密笔记"当普通笔记写（保留给未来的判空逻辑）
+_ACK_FIELDS = ('id', 'title', 'format', 'updated_at', 'created_at', 'has_password')
+
+
+def _ack(note, extra=()):
+    """把后端返回的完整笔记压成"回执"（见 _ACK_FIELDS 的说明）。
+
+    非 dict（None / 布尔）原样返回：桥的另一侧靠 `if (!note)` 判失败，
+    把 None 变成 {} 会让"后端拒绝"看起来像成功 —— 那正是上一轮修掉的丢数据 bug。
+    带 `error` 键的 dict 也原样返回：那是后端的**拒绝**（`file_copy_to_note` 等接口就用它），
+    按字段白名单过一遍会把 error 吃掉、只剩一个空的 `{}`，同样变成假成功。
+    """
+    if not isinstance(note, dict):
+        return note
+    if 'error' in note:
+        return note
+    keys = _ACK_FIELDS + tuple(extra)
+    return {k: note[k] for k in keys if k in note}
+
+
+# 保存确认只需要更少几个字段（前端只判真假，连 id 都只是顺带）
+_SAVE_ACK_FIELDS = ('id', 'title', 'updated_at', 'format')
+
+
+def _save_ack(note):
+    """保存回执。
+
+    必须**非空**才能让前端区分"写成功"与"后端拒绝写入（返回 None）"—— 后端在笔记进回收站、
+    无可更新字段、加密未解锁时会返回 None，不判的话前端照样推进去重基线，那次改动永久丢失。
+    """
+    if not isinstance(note, dict):
+        return note
+    return {k: note[k] for k in _SAVE_ACK_FIELDS if k in note}
+
+
 # 扩展 API，添加文件对话框功能
 class AppApi:
     def __init__(self, backend):
@@ -372,10 +419,14 @@ class AppApi:
         return self.backend.notebook_counts()
     def notes_created_on(self, date_str):
         return self.backend.notes_created_on(date_str)
-    def notes_get(self, note_id, unlocked=False): return self.backend.notes_get(note_id, unlocked)
+    def notes_get(self, note_id, unlocked=False, fields=None):
+        return self.backend.notes_get(note_id, unlocked, fields)
     def notes_create(self, notebook_id=None):
-        return self.backend.notes_create(notebook_id)
-    def notes_duplicate(self, note_id): return self.backend.notes_duplicate(note_id)
+        # 投影：前端两个调用点都只读 note.id（03-notes 新建、08 日历新建日期笔记）
+        return _ack(self.backend.notes_create(notebook_id))
+    def notes_duplicate(self, note_id):
+        # 投影：前端只读 note.id（03-notes 复制笔记）
+        return _ack(self.backend.notes_duplicate(note_id))
     # 第 7 轮：派生指标 / 跨笔记待办 / 标签管理 / 保存的搜索
     def note_metrics(self, note_id): return self.backend.note_metrics(note_id)
     def metrics_bulk(self, note_ids=None): return self.backend.metrics_bulk(note_ids)
@@ -394,7 +445,8 @@ class AppApi:
     def note_links(self, note_id): return self.backend.note_links(note_id)
     def notes_resolve_link(self, title): return self.backend.notes_resolve_link(title)
     def notes_create_from_link(self, title, notebook_id=None):
-        return self.backend.notes_create_from_link(title, notebook_id)
+        # 投影：前端只读 note.id（25-links 双链「尚未创建」）
+        return _ack(self.backend.notes_create_from_link(title, notebook_id))
     def notes_table(self, note_ids=None): return self.backend.notes_table(note_ids)
 
     # 第 10 轮：模板 / 每日笔记 / 快速捕获
@@ -406,11 +458,14 @@ class AppApi:
     def template_delete(self, template_id): return self.backend.template_delete(template_id)
     def template_render(self, template_id, title=''):
         return self.backend.template_render(template_id, title)
-    def daily_note_open(self): return self.backend.daily_note_open()
+    def daily_note_open(self):
+        # 投影：两个调用点都只读 note.id（08 日历今日笔记、28 捕获菜单今日日记）
+        return _ack(self.backend.daily_note_open())
     def capture_text(self, text, notebook_name=None):
-        return self.backend.capture_text(text, notebook_name)
+        return _ack(self.backend.capture_text(text, notebook_name))
     def capture_image(self, src_path, title=None, body=None):
-        return self.backend.capture_image(src_path, title, body)
+        # 投影：前端只读 note.id（29-ocr「存为新笔记」）
+        return _ack(self.backend.capture_image(src_path, title, body))
 
     def clipboard_capture(self):
         """读系统剪贴板文本并捕获成笔记（剪贴板只在 Python 侧读，前端不碰）"""
@@ -428,7 +483,9 @@ class AppApi:
         return self.backend.capture_text(text) if (text or '').strip() else None
 
     def notes_create_from_template(self, template_id, title=None, notebook_name=None, notebook_id=None):
-        return self.backend.notes_create_from_template(template_id, title, notebook_name, notebook_id)
+        # 投影：前端只读 note.id（27-templates 用模板新建）
+        return _ack(self.backend.notes_create_from_template(
+            template_id, title, notebook_name, notebook_id))
 
     # 第 10 轮：截图选区覆盖窗 / 迷你捕获窗（实现在本文件下方，见「捕获窗口」一节）
     def capture_begin(self, note_id=None): return _capture_begin(note_id)
@@ -474,9 +531,21 @@ class AppApi:
     def notes_delete_many(self, note_ids): return self.backend.notes_delete_many(note_ids)
     def notes_move_many(self, note_ids, notebook_id=None):
         return self.backend.notes_move_many(note_ids, notebook_id)
+    def notes_reorder(self, note_ids):
+        return self.backend.notes_reorder(note_ids)
     def notes_add_tag_many(self, note_ids, tag_id):
         return self.backend.notes_add_tag_many(note_ids, tag_id)
-    def notes_update(self, note_id, fields): return self.backend.notes_update(note_id, fields)
+    def notes_update(self, note_id, fields):
+        """保存笔记 —— 桥接层**故意只回元数据**，不回正文。
+
+        前端 18 个调用点（自动保存、四个外观滑杆、置顶/收藏、拖拽排序…）没有一个读
+        返回值，而回整篇等于每次自动保存都把这篇文章序列化一遍再过跨语言桥：46KB 的
+        笔记会变成 151KB JSON，拖一次不透明度滑杆就来一回。后端内部仍返回完整笔记
+        （notes_create_from_template / daily_note_open / capture_text 等 5 处**串联**用
+        它的返回值），所以投影只在这一层做 —— 改后端语义会把那 5 条路径一起改坏
+        （实测：模板/捕获建的笔记会丢掉 content）。需要正文请用 notes_get。
+        """
+        return _save_ack(self.backend.notes_update(note_id, fields))
     def notes_delete(self, note_id): return self.backend.notes_delete(note_id)
     def notes_trash_list(self): return self.backend.notes_trash_list()
     def notes_restore(self, note_id): return self.backend.notes_restore(note_id)
@@ -574,7 +643,11 @@ class AppApi:
     # 历史版本
     def versions_list(self, note_id): return self.backend.versions_list(note_id)
     def versions_get(self, vid, unlocked=False): return self.backend.versions_get(vid, unlocked)
-    def versions_restore(self, vid, unlocked=False): return self.backend.versions_restore(vid, unlocked)
+    def versions_restore(self, vid, unlocked=False):
+        # 投影：06-versions-reminders 恢复后要读 note.title 与 **note.format**
+        # （按版本里的格式重新分流编辑器 —— 上一轮刚加的分支），所以这两个必须保住；
+        # content 不投影出去也没关系：前端恢复后走 reloadActiveNote() 重新取正文。
+        return _ack(self.backend.versions_restore(vid, unlocked))
     def versions_create(self, note_id, title, content): return self.backend.versions_create(note_id, title, content)
     def versions_delete(self, vid): return self.backend.versions_delete(vid)
     def versions_delete_all(self, note_id): return self.backend.versions_delete_all(note_id)
@@ -586,6 +659,8 @@ class AppApi:
     def note_remove_password(self, note_id, password): return self.backend.note_remove_password(note_id, password)
     def note_has_password(self, note_id): return self.backend.note_has_password(note_id)
     def note_lock(self, note_id): return self.backend.note_lock(note_id)
+    def note_unlock_status(self): return self.backend.note_unlock_status()
+    def note_set_lock_ttl(self, minutes): return self.backend.note_set_lock_ttl(minutes)
 
     # 前端错误上报
     def log_error(self, message, stack='', source='js'): return self.backend.log_error(message, stack, source)

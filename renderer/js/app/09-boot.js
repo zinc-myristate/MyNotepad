@@ -1,7 +1,7 @@
 // ====== 笔记本管理 ======
 // ====== ESM 依赖（原先靠全局作用域与加载顺序隐式依赖，现显式声明）======
 import { $, closePanel, dom, hideEditorUI, openPanel, showConfirmAsync, showInputDialog, showToast, state } from './01-core.js';
-import { flushSave, loadNotes, previewHtmlFor } from './03-notes.js';
+import { flushSave, loadNotes, previewHtmlFor, renderNoteList } from './03-notes.js';
 import { initQuill, syncFontSizeDisplay } from './02-editor.js';
 import { initMarkdownEditor } from './13-markdown-editor.js';
 import { initNoteFormatBadge } from './15-note-format.js';
@@ -11,6 +11,7 @@ import { initSavedSearches } from './20-saved-searches.js';
 import { initStatusBar } from './21-status-bar.js';
 import { initOutline } from './22-outline.js';
 import { initFindBar } from './23-find-bar.js';
+import { initVirtualList } from './30-virtual-list.js';
 import { initProperties } from './24-properties.js';
 import { initLinks } from './25-links.js';
 import { initTableView } from './26-table-view.js';
@@ -221,16 +222,41 @@ $('#btn-move-notebook')?.addEventListener('click', async () => {
 // 后端 FTS5 全文搜索（标题+正文明文提取索引；加密笔记只搜标题；<3 字符自动 LIKE 回退）
 let _searchSeq = 0;  // 请求序号：丢弃迟到的乱序响应
 
+/** 让搜索筛选生效（数据侧 + 重渲染列表）。
+ *
+ *  【注意】这里的实现方式在窗口化之后**换过一次**，两代都在修同一个坑，值得说清：
+ *  第一代：筛选只写在 DOM 的 `hidden-by-search` 类上，而 `renderNoteList()` 会重建全部行、
+ *   不带这个类 → 置顶/收藏/复制/勾选待办/OCR 落库等 20+ 条刷新路径只要发生一次，筛选就
+ *   变回全量，而 `state.searchQuery` 还是旧词、高亮还在（"筛选莫名失效、高亮却还在"）。
+ *   修法是重建后重放一次。
+ *  第二代（现在）：列表改窗口化渲染，**不能再靠给行加类**了 —— 撑高块要按"过滤后的行数"
+ *   算，否则被隐藏的行会留下大片空白。所以筛选的真相源从 DOM 挪回数据：
+ *   `state.searchMatched` 由过滤逻辑写入，`30-virtual-list.js` 的 `listItems()` 据此取集合、
+ *   只渲染命中的行。本函数因此变成"通知重渲染 + 更新范围提示"。
+ */
+export function applySearchToDom() {
+  const q = state.searchQuery;
+  const matched = state.searchMatched || new Set();
+  // 列表窗口按新的过滤结果重建（listItems() 会读 state.searchMatched）
+  renderNoteList();
+  if (!q) {
+    updateScopeSearchHint(0);
+    return;
+  }
+  // 命中数与"列表里真的有的"求交：笔记本视角下搜索天然是"在当前笔记本里搜"；
+  // 一篇都没命中而全库有命中时，把原因说出来，别让用户以为"搜不到"
+  const visible = state.notes.filter(n => matched.has(n.id)).length;
+  updateScopeSearchHint(visible === 0 ? matched.size : 0);
+}
+
 async function filterNotesBySearch(query) {
   const q = query.trim();
   if (!q) {
     // 无搜索词：显示全部，摘要恢复为正文摘要
     state.searchQuery = '';
     state.searchSnippets = {};
-    dom.noteList.querySelectorAll('.note-item').forEach(el => {
-      el.classList.remove('hidden-by-search');
-      refreshItemPreview(el);
-    });
+    state.searchMatched = new Set();
+    renderNoteList();          // 清掉搜索：列表要按"全部"重建窗口
     dom.btnSearchClear.style.display = 'none';
     updateScopeSearchHint(0);
     return;
@@ -253,16 +279,8 @@ async function filterNotesBySearch(query) {
   }
   state.searchQuery = q;
   state.searchSnippets = snippets;
-  let visible = 0;
-  dom.noteList.querySelectorAll('.note-item').forEach(item => {
-    const hit = matched.has(item.dataset.noteId);
-    if (hit) visible++;
-    item.classList.toggle('hidden-by-search', !hit);
-    refreshItemPreview(item);
-  });
-  // 命中的笔记与"列表里真的有的"求交 → 笔记本视角下搜索天然是"在当前笔记本里搜"；
-  // 一篇都没命中而全库有命中时，把原因说出来，别让用户以为"搜不到"
-  updateScopeSearchHint(visible === 0 ? matched.size : 0);
+  state.searchMatched = matched;
+  applySearchToDom();
 }
 
 /** 「当前笔记本里没有匹配」提示条（范围筛选 + 搜索叠加时的解释）。
@@ -321,9 +339,23 @@ dom.btnSearchClear.addEventListener('click', () => {
 });
 
 // ====== 启动应用 ======
+/** 启动阶段的追踪（诊断/e2e 可读）。
+ *
+ *  为什么要它：启动是一条很长的串行链（十几个 init + 两次 await），中间任何一步抛出，
+ *  后面的步骤就静默不执行 —— 现象是"界面看起来好了一半"（列表出来了、编辑区空着），
+ *  而控制台只在 DevTools 里能看到。把走过的步骤记在 window 上，出问题时一眼看出断在哪。
+ *  只在 __bootError 为空时记录（成功路径），失败信息仍走 __bootError。 */
+function _bootStep(name) {
+  try {
+    (window.__bootTrace = window.__bootTrace || []).push(name);
+  } catch (e) { /* 追踪失败不影响启动 */ }
+}
+
+/** 启动应用 */
 async function initApp() {
   // 初始化 Quill
   initQuill();
+  _bootStep('quill');
   initMarkdownEditor();   // Markdown 笔记的源码 + 预览双栏（与 Quill 二选一显示）
   initNoteFormatBadge();  // 标题栏的格式徽标：Markdown ⇄ 富文本 互转
   initMarkdownToolbar();  // Markdown 工具栏（加粗/列表/待办/表格/图片/附件…）
@@ -338,20 +370,26 @@ async function initApp() {
   initTemplates();        // 模板抽屉（第 10 轮）
   initCapture();          // 快速捕获菜单 + 跨窗口插入桥（第 10 轮）
   initOcr();              // 图片文字识别（第 11 轮）
+  // 列表窗口化渲染（滚动时只重建窗口内的行，见 30-virtual-list.js）
+  initVirtualList(() => renderNoteList());
+  _bootStep('virtual-list');
   // 字体/字号下拉同步
   syncFontSizeDisplay();
 
   // 加载设置
   await loadSettings();
+  _bootStep('settings');
   // 闲置自动锁定（读设置 + 起每分钟检查）
   initAutoLock();
 
   // 加载笔记列表
   const notes = await loadNotes();
+  _bootStep('load-notes:' + (notes ? notes.length : 'null'));
 
   // 如果有笔记，自动选择第一篇（加密笔记会弹出密码验证）
   if (notes.length > 0) {
     await verifyAndSelectNote(notes[0].id);
+    _bootStep('selected-first');
   } else {
     // 无笔记状态
     hideEditorUI();

@@ -2,8 +2,11 @@
 // ====== ESM 依赖（原先靠全局作用域与加载顺序隐式依赖，现显式声明）======
 import { $, $$, closePanel, dom, openPanel, showConfirmAsync, showToast, state } from './01-core.js';
 import { revealAndSelectNote } from './09-boot.js';
+// 03-notes ↔ 06 互为 import（03 要 setCurrentPreviewVersionId 给版本预览用），
+// ES 模块对函数声明有提升，两边都只在事件回调里调用，不会踩到 TDZ。
+import { reloadActiveNote } from './03-notes.js';
 import { _intervals } from './05-shell.js';
-import { unlockedNotes } from './07-formula-security-dnd.js';
+import { unlockedNotes, reconcileUnlockState } from './07-formula-security-dnd.js';
 import { ICONS } from '../shared/icons.js';
 import { escapeHtml } from '../shared/utils.js';
 
@@ -94,18 +97,17 @@ $('#btn-restore-version').addEventListener('click', async () => {
   const isUnlocked = unlockedNotes[state.activeNoteId] === true;
   const note = await window.pywebview.api.versions_restore(currentPreviewVersionId, isUnlocked);
   if (!note) { showToast('无法恢复：笔记已加密或版本不存在', { type: 'warn' }); return; }
-  if (note && state.quill) {
-    try {
-      const delta = JSON.parse(note.content);
-      state.quill.setContents(delta);
-    } catch {
-      state.quill.root.innerHTML = note.content;
-    }
-    dom.titleInput.value = note.title || '';
-    state.currentContent = note.content || '';
-    state.currentTitle = note.title || '';
-  }
+  // 【坑】恢复必须走 reloadActiveNote()，不能直接往 Quill 里写。
+  // 版本是**带 format** 恢复的（后端 UPDATE ... format=?），所以一篇 md 笔记恢复一个 delta
+  // 版本之后，库里 format 与正文就对不上了；而这里以前只改隐藏的 Quill 与去重基线：
+  //   · 可见的 md 源码（CodeMirror）还是旧文 → 用户接着敲一个字，saveCurrentNote 就把
+  //     **旧文**写回库，恢复被静默撤销；
+  //   · 同时 format 已经变成 delta 而正文是 Markdown 文本 → 下次打开走 JSON.parse 失败分支，
+  //     整篇笔记显示成一大段纯文本，格式全丢。
+  // reloadActiveNote() 会按 note.format 重新分流编辑器，两种格式都对。
+  dom.titleInput.value = note.title || '';
   closePanel($('#version-preview-panel'));
+  await reloadActiveNote();
   showToast('已恢复到所选版本', { type: 'success' });
 });
 
@@ -692,8 +694,17 @@ function checkReminders() {
   }).catch(() => {});
 }
 
-// 首次 5 秒后检查，之后每 30 秒
-setTimeout(() => { checkReminders(); _intervals.push(setInterval(checkReminders, 30000)); }, 5000);
+// 首次 5 秒后检查，之后每 30 秒。
+// 同一条轮询里顺带与后端对齐解锁状态：后端那层 TTL 过期时前端不一定知道，
+// 光在后端清密钥而界面继续显示明文等于没锁（见 07 的 reconcileUnlockState）。
+setTimeout(() => {
+  checkReminders();
+  reconcileUnlockState();
+  _intervals.push(setInterval(() => {
+    checkReminders();
+    reconcileUnlockState();
+  }, 30000));
+}, 5000);
 
 // ====== 待办清单右键菜单：设置提醒 ======
 let _checklistContextMenu = null;

@@ -300,23 +300,28 @@ def test_search_snippet_highlighted(tmp_path, monkeypatch):
             "__app.dom.searchInput.value = '火龙果';"
             "__app.dom.searchInput.dispatchEvent(new Event('input', {bubbles:true}));")
         time.sleep(1.6)   # > 200ms 防抖 + 桥接往返
-        # 必须读**命中那篇**的摘要：列表里第一个 .note-item 可能是被搜索隐藏的另一篇
+        # 读**命中那篇**的摘要（未命中的那篇在窗口化渲染下根本不在 DOM 里，
+        # 所以这里也顺带验"列表里只剩命中的行"）
+        result['rows'] = window.evaluate_js(
+            "JSON.stringify([...document.querySelectorAll('.note-item')].map(e => e.dataset.noteId))")
         result['previewText'] = window.evaluate_js(
             "var el = document.querySelector('.note-item[data-note-id=\"%s\"] .note-item-preview');"
             "el ? el.textContent : 'MISSING'" % a)
         result['previewHtml'] = window.evaluate_js(
             "var el = document.querySelector('.note-item[data-note-id=\"%s\"] .note-item-preview');"
             "el ? el.innerHTML : 'MISSING'" % a)
-        result['hidden_b'] = window.evaluate_js(
-            "document.querySelector('.note-item[data-note-id=\"%s\"]')"
-            ".classList.contains('hidden-by-search')" % b)
+        # `b` 的行现在**不渲染**（而不是渲染后隐藏）
+        result['b_present'] = window.evaluate_js(
+            "!!document.querySelector('.note-item[data-note-id=\"%s\"]')" % b)
 
     res = _run(ns, actions)
     assert 'error' not in res, res
     assert '火龙果' in res['previewText'], '命中片段应显示关键词：%r' % res['previewText']
     assert '<mark>火龙果</mark>' in res['previewHtml'], \
         '关键词必须被 <mark> 高亮（且转义安全）：%r' % res['previewHtml']
-    assert res['hidden_b'] is True, '未命中的笔记应被隐藏'
+    assert a in json.loads(res['rows']), '命中的笔记要留在列表里'
+    assert res['b_present'] is False, \
+        '未命中的笔记不该出现在列表里（窗口化：根本不渲染，而不是渲染后加 hidden 类）'
 
 
 @pytest.mark.e2e

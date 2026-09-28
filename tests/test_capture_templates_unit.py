@@ -264,6 +264,12 @@ def test_bridge_signatures_accept_the_arguments_js_passes(app_ns):
         'notes_by_tag': 2,           # notes_by_tag(tag_id, notebook_id)
         'notes_create_from_link': 2,
         'notes_created_on': 1,
+        'notes_get': 3,              # notes_get(note_id, unlocked, fields) —— 保存链路传字段投影
+        'notes_update': 2,
+        'notes_reorder': 1,          # notes_reorder(ids) —— 拖拽排序一次桥调用
+        # 解锁 TTL：前端把同一条设置同步给后端，并在 30s 轮询里对齐解锁状态
+        'note_set_lock_ttl': 1,
+        'note_unlock_status': 0,
         'notebook_counts': 0,
         'import_markdown_dialog': 1,  # import_markdown_dialog(notebook_id)
         # 第 11 轮：OCR
