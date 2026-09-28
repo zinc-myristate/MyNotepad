@@ -1,8 +1,8 @@
 # coding: utf-8
 VSVersionInfo(
   ffi=FixedFileInfo(
-    filevers=(1, 0, 1, 0),
-    prodvers=(1, 0, 1, 0),
+    filevers=(1, 0, 2, 0),
+    prodvers=(1, 0, 2, 0),
     mask=0x3f,
     flags=0x0,
     OS=0x40004,
@@ -15,11 +15,11 @@ VSVersionInfo(
       StringTable('080404b0', [
         StringStruct('CompanyName', '我的记事本'),
         StringStruct('FileDescription', '我的记事本 - 本地桌面记事本'),
-        StringStruct('FileVersion', '1.0.1.0'),
+        StringStruct('FileVersion', '1.0.2.0'),
         StringStruct('InternalName', 'MyNotepad'),
         StringStruct('OriginalFilename', 'MyNotepad.exe'),
         StringStruct('ProductName', '我的记事本'),
-        StringStruct('ProductVersion', '1.0.1.0')
+        StringStruct('ProductVersion', '1.0.2.0')
       ])
     ]),
     VarFileInfo([VarStruct('Translation', [2052, 1200])])
