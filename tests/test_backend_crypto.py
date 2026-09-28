@@ -4,6 +4,10 @@ import hashlib
 
 import pytest
 
+# 第 14 轮起加密实现在 backend/crypto.py。monkeypatch 必须打**函数定义所在的模块**，
+# 打门面（backend_mod）不会影响子模块内部的调用 —— 见 test_unwrap_dek_caps_iterations。
+import backend.crypto as backend_crypto
+
 DELTA1 = '{"ops":[{"insert":"秘密内容\\n"}]}'
 DELTA2 = '{"ops":[{"insert":"版本1\\n"}]}'
 
@@ -161,6 +165,11 @@ class TestCryptoPrimitives:
 
         PBKDF2 无法短路失败，迭代数多大就得算多久，所以解包时必须截断到上限。
         这里替换 _derive_kek 记录实参，避免真的花掉 10 亿次迭代的时间。
+
+        ⚠️ patch 的目标必须是 **`backend.crypto`**，不能是门面上的 `backend_mod`：
+        第 14 轮把加密拆到子模块后，`_unwrap_dek` 调用的是**它自己模块里的**全局名，
+        改门面上的那份属性不会影响它 —— 于是假函数不会被调用，`seen` 是空的，
+        测试报 KeyError（**已实测踩到**）。"patch 函数定义所在的模块"是通用规则。
         """
         seen = {}
 
@@ -168,7 +177,7 @@ class TestCryptoPrimitives:
             seen['iters'] = iterations
             raise ValueError('不真的计算')
 
-        monkeypatch.setattr(backend_mod, '_derive_kek', fake_derive)
+        monkeypatch.setattr(backend_crypto, '_derive_kek', fake_derive)
         enc = 'dekv1:%s:%d:%s' % ('00' * 32, 10 ** 9, 'AAAA')
         assert backend_mod._unwrap_dek(enc, 'whatever') is None
         assert seen['iters'] == backend_mod.MAX_PBKDF2_ITERATIONS
@@ -181,7 +190,7 @@ class TestCryptoPrimitives:
             seen['iters'] = iterations
             raise ValueError('不真的计算')
 
-        monkeypatch.setattr(backend_mod, '_derive_kek', fake_derive)
+        monkeypatch.setattr(backend_crypto, '_derive_kek', fake_derive)
         enc = 'dekv1:%s:%d:%s' % ('00' * 32, 200000, 'AAAA')
         assert backend_mod._unwrap_dek(enc, 'whatever') is None
         assert seen['iters'] == 200000

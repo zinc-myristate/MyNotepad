@@ -19,11 +19,17 @@ import time
 import uuid
 from datetime import datetime, timedelta
 
-from cryptography.hazmat.primitives.ciphers.aead import AESGCM
-
 # 数据目录：优先存 exe 旁边（便携模式，拷到 U 盘/其他电脑数据一起走）
 # MYNOTEPAD_DATA_DIR 环境变量可覆盖（测试用临时目录隔离，避免碰真实数据）
-_EXE_DIR = os.path.dirname(sys.executable) if getattr(sys, 'frozen', False) else os.path.dirname(os.path.abspath(__file__))
+#
+# ⚠️ 源码运行时取的是**仓库根**（`backend/` 的上一层）：第 14 轮把 backend.py 拆成
+# backend/ 包时，`__file__` 从 `…/backend.py` 变成了 `…/backend/__init__.py`，
+# 只取一次 dirname 会让 DATA_DIR 变成 `…/backend/data`（**已验证踩到**）。
+# 这个错只在"源码直接跑且没设 MYNOTEPAD_DATA_DIR"时出现 —— 也就是用户最常用的
+# `python app.pyw`；测试全都设了环境变量、打包版走 sys.executable，两边都盖住了它，
+# 所以必须靠这里写清楚，不能靠测试兜底。
+_EXE_DIR = (os.path.dirname(sys.executable) if getattr(sys, 'frozen', False)
+            else os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 _ENV_DATA_DIR = os.environ.get('MYNOTEPAD_DATA_DIR')
 DATA_DIR = _ENV_DATA_DIR or os.path.join(_EXE_DIR, "data")
 
@@ -374,7 +380,7 @@ if not _ENV_DATA_DIR:  # 测试环境不碰系统计划任务
 # 每篇加密笔记有一个随机 DEK（数据密钥）加密正文和历史版本；
 # DEK 被「密码派生的 KEK」包裹后存库（notes.enc_dek）。
 # 改密码只需重新包裹 32 字节 DEK，内容零重加密。
-# 解锁状态在后端进程内存（_unlocked_deks），前端传来的 unlocked 标志不再作为安全依据。
+# 解锁状态在后端进程内存（crypto.unlocked_deks），前端传来的 unlocked 标志不再作为安全依据。
 
 _db_lock = threading.RLock()   # 保护全局 conn 与解锁缓存（pywebview 每个 JS 调用运行在独立线程）
 # 写锁持有者（线程 id）+ 它的保护锁。为什么不用 RLock 自己判定持有者：见 _in_write_path
@@ -384,132 +390,26 @@ _write_owner_lock = threading.Lock()
 _write_owner_local = threading.local()   # 每线程的写锁递归深度（见 _locked 的说明）
 
 
-class _UnlockedDeks(dict):
-    """note_id -> DEK bytes 的解锁缓存（会话级，随进程消亡）。
+# 加密 / 解锁缓存已抽到 backend/crypto.py。它只依赖 stdlib + cryptography + applog
+# （**不碰数据库**），是依赖图上的叶子。下面 re-export 保持既有名字与外部引用不变；
+# 模块内其它代码通过 `crypto.unlocked_deks` 访问那份**唯一**的解锁缓存 ——
+# 用属性访问而不是 `from .crypto import unlocked_deks`，才不会出现两份状态。
+from . import crypto
+from .crypto import (  # noqa: F401
+    ENC_PREFIX,
+    MAX_PBKDF2_ITERATIONS,
+    PBKDF2_ITERATIONS,
+    _decrypt_content,
+    _derive_kek,
+    _encrypt_content,
+    _UnlockedDeks,
+    _unwrap_dek,
+    _wrap_dek,
+)
 
-    **带后端 TTL**：为什么必须有 —— 以前"闲置自动锁定"完全由前端驱动
-    （`07-formula-security-dnd.js` 的 setInterval + 自己的 `unlockedNotes`），
-    后端这个字典**永不过期**。于是"解锁状态是后端安全边界"这句话在**过期**这件事上不成立：
-    前端一旦漏了（脚本出错、窗口被挂起、用户直接改内存标志），密钥就在进程里一直留着。
-
-    实现方式：读的时候顺手把过期的删掉（惰性过期），所以 25 处 `get()` / `in` 调用点
-    一行都不用改。**刻意不碰 `__setitem__`**：写入是"刚解锁/刚设完密码"，它当然要刷新时间戳。
-    ⚠️ 惰性过期只在"有人读"时生效：只挂机不操作时字典里会留着过期项 —— 那由
-    `_sweep_unlocked_deks()` 在既有的 30 秒提醒轮询里顺带清（不新开线程）。
-    """
-
-    def __init__(self, *a, **kw):
-        super().__init__(*a, **kw)
-        self.ttl_minutes = 0          # 0 = 不启用（与前端默认「关闭」一致）
-        self._stamps = {}             # note_id -> 最近一次解锁/访问的 monotonic 时间
-
-    # ----- 时间戳维护 -----
-    def __setitem__(self, key, value):
-        self._stamps[key] = time.monotonic()
-        super().__setitem__(key, value)
-
-    def __delitem__(self, key):
-        self._stamps.pop(key, None)
-        super().__delitem__(key)
-
-    def pop(self, key, *args):
-        self._stamps.pop(key, None)
-        return super().pop(key, *args)
-
-    def clear(self):
-        self._stamps.clear()
-        return super().clear()
-
-    # ----- 惰性过期 -----
-    def _expired(self, key):
-        if not self.ttl_minutes:
-            return False
-        ts = self._stamps.get(key)
-        if ts is None:
-            return False
-        return (time.monotonic() - ts) > self.ttl_minutes * 60
-
-    def _prune(self, key):
-        if key in dict.keys(self) and self._expired(key):
-            dict.__delitem__(self, key)
-            self._stamps.pop(key, None)
-            applog.get_logger().info('解锁已过期（闲置 %d 分钟）：%s', self.ttl_minutes, key)
-
-    def get(self, key, default=None):
-        self._prune(key)
-        return super().get(key, default)
-
-    def __contains__(self, key):
-        self._prune(key)
-        return super().__contains__(key)
-
-    def __getitem__(self, key):
-        self._prune(key)
-        return super().__getitem__(key)
-
-    # ----- 主动清理（提醒轮询里调用）-----
-    def sweep(self):
-        """清掉全部已过期的项，返回被清掉的 note_id 列表。"""
-        gone = []
-        for key in list(dict.keys(self)):
-            if self._expired(key):
-                gone.append(key)
-                dict.__delitem__(self, key)
-                self._stamps.pop(key, None)
-        if gone:
-            applog.get_logger().info('解锁过期清理：%d 篇', len(gone))
-        return gone
-
-
-_unlocked_deks = _UnlockedDeks()   # note_id -> DEK bytes
-
-PBKDF2_ITERATIONS = 600000     # OWASP 2023
-MAX_PBKDF2_ITERATIONS = 6_000_000  # 解包 DEK 时接受的最大迭代数（当前值的 10 倍）。
-                                   # 迭代数存在库里，损坏或被篡改的库可以塞个天文数字，让
-                                   # 「输入密码解锁」变成纯 CPU 卡死（PBKDF2 无法短路失败）。
-                                   # 留足未来上调迭代数的空间，同时把最坏耗时限制在当前
-                                   # 解锁成本的 10 倍以内。
-ENC_PREFIX = 'encv1:'          # 密文标记；明文是 Delta JSON（{ 开头）或空串，不会冲突
-
-def _derive_kek(password, salt, iterations=PBKDF2_ITERATIONS):
-    return hashlib.pbkdf2_hmac('sha256', password.encode(), salt, iterations)
-
-def _wrap_dek(dek, password):
-    """用密码包裹 DEK，返回存库格式 dekv1:<salt_hex>:<iters>:<b64(nonce+ct)>"""
-    kek_salt = os.urandom(32)
-    kek = _derive_kek(password, kek_salt)
-    nonce = os.urandom(12)
-    ct = AESGCM(kek).encrypt(nonce, dek, None)
-    return f"dekv1:{kek_salt.hex()}:{PBKDF2_ITERATIONS}:{base64.b64encode(nonce + ct).decode()}"
-
-def _unwrap_dek(enc_dek, password):
-    """解包 DEK；密码错误或格式损坏返回 None"""
-    try:
-        tag, salt_hex, iters, blob = enc_dek.split(':')
-        if tag != 'dekv1':
-            return None
-        kek = _derive_kek(password, bytes.fromhex(salt_hex),
-                          min(int(iters), MAX_PBKDF2_ITERATIONS))
-        raw = base64.b64decode(blob)
-        return AESGCM(kek).decrypt(raw[:12], raw[12:], None)
-    except Exception:
-        return None
-
-def _encrypt_content(dek, plaintext, note_id):
-    """明文 -> encv1:<b64(nonce+ct)>；AAD 绑定 note_id，防止密文跨笔记移植"""
-    nonce = os.urandom(12)
-    ct = AESGCM(dek).encrypt(nonce, (plaintext or '').encode('utf-8'), note_id.encode('utf-8'))
-    return ENC_PREFIX + base64.b64encode(nonce + ct).decode()
-
-def _decrypt_content(dek, stored, note_id):
-    """encv1 密文 -> 明文；非密文原样返回（迁移期兼容）；解密失败返回 None"""
-    if not stored or not stored.startswith(ENC_PREFIX):
-        return stored or ''
-    try:
-        raw = base64.b64decode(stored[len(ENC_PREFIX):])
-        return AESGCM(dek).decrypt(raw[:12], raw[12:], note_id.encode('utf-8')).decode('utf-8')
-    except Exception:
-        return None
+# 解锁缓存对外沿用旧名 `_unlocked_deks`（测试与外部靠它访问）；模块**内部**一律用
+# `crypto.unlocked_deks` 属性访问，避免出现两份状态（见上面注释）。
+from .crypto import unlocked_deks as _unlocked_deks  # noqa: F401
 
 # ====== 数据库定期备份 ======
 BACKUP_DIR = os.path.join(DATA_DIR, "backups")
@@ -2150,7 +2050,7 @@ def purge_expired_trash(days=30):
             _purge_note_files(r['id'])
             conn.execute("DELETE FROM notes WHERE id = ?", (r['id'],))
             _fts_delete(r['id'])
-            _unlocked_deks.pop(r['id'], None)
+            crypto.unlocked_deks.pop(r['id'], None)
             n += 1
         if n:
             conn.commit()
@@ -2287,7 +2187,7 @@ class Api:
         if not row:
             return None
         has_pwd = bool(row['password_hash'])
-        locked = has_pwd and note_id not in _unlocked_deks
+        locked = has_pwd and note_id not in crypto.unlocked_deks
         return {
             'format': row['format'] or 'delta',
             'has_delta_backup': bool(row['delta_backup']),
@@ -2320,7 +2220,7 @@ class Api:
             return {'ok': True, 'format': target, 'unchanged': True}
         dek = None
         if note.get('password_hash'):
-            dek = _unlocked_deks.get(note_id)
+            dek = crypto.unlocked_deks.get(note_id)
             if dek is None:
                 return {'ok': False, 'error': '加密笔记需先解锁再转换格式'}
             content = _decrypt_content(dek, note['content'] or '', note_id)
@@ -2380,7 +2280,7 @@ class Api:
         backup = note.get('delta_backup')
         if not backup:
             return {'ok': False, 'error': '这篇笔记没有可还原的原始富文本'}
-        if note.get('password_hash') and note_id not in _unlocked_deks:
+        if note.get('password_hash') and note_id not in crypto.unlocked_deks:
             return {'ok': False, 'error': '加密笔记需先解锁'}
         self.versions_create(note_id, note['title'], note['content'] or '')
         try:
@@ -2424,7 +2324,7 @@ class Api:
         note.pop('enc_dek', None)
         note['has_password'] = has_pwd
         if has_pwd:
-            dek = _unlocked_deks.get(note_id)
+            dek = crypto.unlocked_deks.get(note_id)
             pt = _decrypt_content(dek, note['content'], note_id) if dek else None
             if pt is None:
                 # 未解锁（或解密失败），隐藏内容
@@ -2458,7 +2358,7 @@ class Api:
         src = dict(row)
         content = src.get('content') or ''
         if src.get('password_hash'):
-            dek = _unlocked_deks.get(note_id)
+            dek = crypto.unlocked_deks.get(note_id)
             if dek is None:
                 return None
             content = _decrypt_content(dek, content, note_id)
@@ -2542,7 +2442,7 @@ class Api:
         if 'content' in updates:
             row = conn.execute("SELECT password_hash FROM notes WHERE id = ?", (note_id,)).fetchone()
             if row and row['password_hash']:
-                dek = _unlocked_deks.get(note_id)
+                dek = crypto.unlocked_deks.get(note_id)
                 if dek is None:
                     updates.pop('content')  # 未解锁，拒绝写入内容
                     if not updates:
@@ -2569,7 +2469,7 @@ class Api:
         conn.execute("UPDATE notes SET deleted_at = datetime('now','localtime') WHERE id = ?", (note_id,))
         _fts_delete(note_id)  # 移出搜索索引
         conn.commit()
-        _unlocked_deks.pop(note_id, None)
+        crypto.unlocked_deks.pop(note_id, None)
         return True
 
     def notes_trash_list(self):
@@ -2596,7 +2496,7 @@ class Api:
         conn.execute("DELETE FROM notes WHERE id = ?", (note_id,))
         _fts_delete(note_id)
         conn.commit()
-        _unlocked_deks.pop(note_id, None)
+        crypto.unlocked_deks.pop(note_id, None)
         return True
 
     def notes_purge_all(self):
@@ -3178,7 +3078,7 @@ class Api:
         fmt = note.get('format') or 'delta'
         dek = None
         if note.get('password_hash'):
-            dek = _unlocked_deks.get(note_id)
+            dek = crypto.unlocked_deks.get(note_id)
             if dek is None:
                 return {'ok': False, 'error': '加密笔记需先解锁'}
             content = _decrypt_content(dek, note['content'] or '', note_id)
@@ -3582,7 +3482,7 @@ class Api:
         # 检查父笔记是否加密
         parent = conn.execute("SELECT password_hash FROM notes WHERE id = ?", (ver['note_id'],)).fetchone()
         if parent and parent['password_hash']:
-            dek = _unlocked_deks.get(ver['note_id'])
+            dek = crypto.unlocked_deks.get(ver['note_id'])
             pt = _decrypt_content(dek, ver['content'], ver['note_id']) if dek else None
             if pt is None:
                 ver['content'] = ''
@@ -3601,7 +3501,7 @@ class Api:
             return None
         ver = dict(r)
         parent = conn.execute("SELECT password_hash FROM notes WHERE id = ?", (ver['note_id'],)).fetchone()
-        if parent and parent['password_hash'] and ver['note_id'] not in _unlocked_deks:
+        if parent and parent['password_hash'] and ver['note_id'] not in crypto.unlocked_deks:
             return None  # 笔记已加密且未解锁，拒绝恢复
         # 版本与正文共用同一 DEK 且 AAD 均为 note_id，密文可直接拷贝，无需解密重加密
         conn.execute(
@@ -3632,7 +3532,7 @@ class Api:
                               (note_id,)).fetchone()
         dek = None
         if parent and parent['password_hash']:
-            dek = _unlocked_deks.get(note_id)
+            dek = crypto.unlocked_deks.get(note_id)
             if dek is None:
                 return None  # 未解锁，不创建版本
         # 检查是否和最新版本相同（密文含随机 nonce 不可直接比较，需解密后比较明文）
@@ -3737,16 +3637,16 @@ class Api:
         # 还没走过懒迁移）正好是 password_hash 非空而 enc_dek 为 NULL —— 只查 enc_dek 的话
         # 守卫整个被跳过，任何调用方都能用**自选的新密码**调本函数，随后该笔记就被算作"已解锁"，
         # 原本被隐藏的正文直接被读出来（实测复现）。改密码请走 note_change_password（要验旧密码）。
-        if row['password_hash'] and note_id not in _unlocked_deks:
+        if row['password_hash'] and note_id not in crypto.unlocked_deks:
             return False
         # 复用已解锁的 DEK（旧格式升级等路径），否则生成新 DEK
-        dek = _unlocked_deks.get(note_id) or os.urandom(32)
+        dek = crypto.unlocked_deks.get(note_id) or os.urandom(32)
         conn.execute("UPDATE notes SET password_hash = ?, enc_dek = ? WHERE id = ?",
                      (self._hash_password(password), _wrap_dek(dek, password), note_id))
         self._encrypt_all_note_content(note_id, dek)  # 内部 commit
         _fts_sync_from_row(note_id)  # 加密后 body 清空（索引绝不留明文正文）
         conn.commit()
-        _unlocked_deks[note_id] = dek  # 设完保持解锁
+        crypto.unlocked_deks[note_id] = dek  # 设完保持解锁
         return True
 
     def note_verify_password(self, note_id, password):
@@ -3783,7 +3683,7 @@ class Api:
             conn.execute("UPDATE notes SET password_hash = ? WHERE id = ?",
                          (self._hash_password(password), note_id))
             conn.commit()
-        _unlocked_deks[note_id] = dek
+        crypto.unlocked_deks[note_id] = dek
         return True
 
     def note_change_password(self, note_id, old_password, new_password):
@@ -3792,7 +3692,7 @@ class Api:
             return False
         if not self.note_verify_password(note_id, old_password):
             return False
-        dek = _unlocked_deks.get(note_id)
+        dek = crypto.unlocked_deks.get(note_id)
         if dek is None:
             return False
         conn.execute("UPDATE notes SET password_hash = ?, enc_dek = ? WHERE id = ?",
@@ -3804,19 +3704,19 @@ class Api:
         """移除密码并把内容解密回明文"""
         if not self.note_verify_password(note_id, password):
             return False
-        dek = _unlocked_deks.get(note_id)
+        dek = crypto.unlocked_deks.get(note_id)
         if dek is not None and not self._decrypt_all_note_content(note_id, dek):
             return False  # 解密失败，保守不动
         conn.execute("UPDATE notes SET password_hash = NULL, enc_dek = NULL WHERE id = ?", (note_id,))
         _fts_sync_from_row(note_id)  # 回明文后正文重新入索引
         _refresh_derived(note_id)    # 明文可索引了，派生指标要跟着填回来
         conn.commit()
-        _unlocked_deks.pop(note_id, None)
+        crypto.unlocked_deks.pop(note_id, None)
         return True
 
     def note_lock(self, note_id):
         """锁定笔记：清除后端解锁缓存"""
-        _unlocked_deks.pop(note_id, None)
+        crypto.unlocked_deks.pop(note_id, None)
         return True
 
     def note_unlock_status(self):
@@ -3827,8 +3727,8 @@ class Api:
         等于没锁。现在前端每轮提醒轮询（30s）顺带问一次这个接口：
         返回的集合里没有的笔记，就按"已锁定"处理（清编辑器 + 隐藏编辑区）。
         """
-        _unlocked_deks.sweep()
-        return list(dict.keys(_unlocked_deks))
+        crypto.unlocked_deks.sweep()
+        return list(dict.keys(crypto.unlocked_deks))
 
     def note_set_lock_ttl(self, minutes):
         """设置后端解锁缓存的有效期（分钟；0 = 不过期）。
@@ -3841,9 +3741,9 @@ class Api:
             m = int(minutes)
         except (TypeError, ValueError):
             return False
-        _unlocked_deks.ttl_minutes = max(0, min(24 * 60, m))
-        if _unlocked_deks.ttl_minutes:
-            _unlocked_deks.sweep()      # 立刻按新 TTL 清一遍
+        crypto.unlocked_deks.ttl_minutes = max(0, min(24 * 60, m))
+        if crypto.unlocked_deks.ttl_minutes:
+            crypto.unlocked_deks.sweep()      # 立刻按新 TTL 清一遍
         return True
 
     def note_has_password(self, note_id):
@@ -3952,7 +3852,7 @@ class Api:
         # 搭车清理解锁缓存：提醒是 30 秒轮询的（前端与托盘守护各一条），够密。
         # 这样"惰性过期"之外还有一层主动过期 —— 用户挂着不动时密钥也不会一直留在进程里。
         # 刻意不新开线程：这个应用已经有主循环 + 提醒守护 + 热键三条线程了。
-        _unlocked_deks.sweep()
+        crypto.unlocked_deks.sweep()
         # INNER JOIN notes + deleted 过滤：软删笔记的提醒不再触发（恢复笔记后提醒自动重现）
         due = conn.execute(
             "SELECT r.* FROM reminders r INNER JOIN notes n ON r.note_id = n.id "
@@ -4186,7 +4086,7 @@ class Api:
             note = dict(row)
             content = note.get('content') or ''
             if note.get('password_hash'):
-                dek = _unlocked_deks.get(note_id)
+                dek = crypto.unlocked_deks.get(note_id)
                 if dek is None:
                     return False
                 content = _decrypt_content(dek, content, note_id) or ''
@@ -4613,7 +4513,7 @@ def _format_size(size):
 from .paths import _REJECT_PATH_CHARS, _is_under, _safe_path_part, safe_join  # noqa: F401
 
 # ====== 线程安全 ======
-# pywebview 的每个 JS API 调用运行在独立线程，全局 conn 与 _unlocked_deks 需要串行化保护。
+# pywebview 的每个 JS API 调用运行在独立线程，全局 conn 与 crypto.unlocked_deks 需要串行化保护。
 # 统一给 Api 的公开方法加 RLock（可重入：方法间存在互调，如 notes_update→notes_get）。
 #
 # 【慢调用记录】为什么留在代码里而不是量完就删：这类"用起来卡"的反馈以后还会有，
