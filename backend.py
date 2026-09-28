@@ -377,6 +377,11 @@ if not _ENV_DATA_DIR:  # 测试环境不碰系统计划任务
 # 解锁状态在后端进程内存（_unlocked_deks），前端传来的 unlocked 标志不再作为安全依据。
 
 _db_lock = threading.RLock()   # 保护全局 conn 与解锁缓存（pywebview 每个 JS 调用运行在独立线程）
+# 写锁持有者（线程 id）+ 它的保护锁。为什么不用 RLock 自己判定持有者：见 _in_write_path
+# 的注释 —— `acquire(blocking=False)` 在已持锁时返回 False，无法据此判断"谁在锁里"。
+_write_owner = None
+_write_owner_lock = threading.Lock()
+_write_owner_local = threading.local()   # 每线程的写锁递归深度（见 _locked 的说明）
 
 
 class _UnlockedDeks(dict):
@@ -2055,6 +2060,13 @@ def _externalize_image(note_id, data_uri):
                 "INSERT INTO attachments (id, note_id, filename, original_name, file_size, mime_type, type) "
                 "VALUES (?,?,?,?,?,?, 'image')",
                 (aid, note_id, fname, fname, len(raw), mime))
+            # 自己提交，别把"未提交状态"留给调用方。两个理由：
+            #   1. 只读方法走的是**独立连接**（见 _ctx_conn），看不到未提交的行 ——
+            #      锁外调用本函数之后再去 attachments_list 就会读到空列表（实测踩到：
+            #      test_externalize_deterministic 因此红过）。
+            #   2. 文件已经落盘了，行却还在事务里 —— 进程崩在中间就留下"有文件没有行"。
+            # 幂等性不受影响：上面已按 (note_id, filename) 查过存在即跳过。
+            conn.commit()
         return aid, fname, dest
     except Exception:
         applog.get_logger().exception("图片外置失败")
@@ -2171,6 +2183,7 @@ class Api:
         列表却变回全部笔记混在一起"。范围交给后端后，只要调用方带上同一个 notebook_id，
         列表就永远只有那一本，"混在一起"这类回归不可能再靠某处忘记重筛而复现。
         """
+        conn = _ctx_conn()   # 只读连接（上下文解析）：见 _ctx_conn 的说明
         # 排序：置顶 → 手动排序（sort_order，拖拽写入）→ 最近更新。新建笔记 sort_order=max+1，
         # 在 DESC 下自然排最前，与旧的「仅 updated_at」行为一致；未拖拽过的存量笔记 sort_order
         # 全为 0，退化为 updated_at DESC（兼容旧行为）。
@@ -2238,6 +2251,7 @@ class Api:
         靠它 filter(created_at.startsWith(日期)) 必然漏掉「日记」「收件箱」里的笔记 ——
         点日历会以为那天没写过，于是一遍遍重复建当天笔记。
         """
+        conn = _ctx_conn()   # 只读连接（上下文解析）：见 _ctx_conn 的说明
         rows = conn.execute(
             "SELECT id, title, notebook_id, created_at FROM notes "
             "WHERE deleted_at IS NULL AND substr(created_at, 1, 10) = ? "
@@ -2266,6 +2280,7 @@ class Api:
 
     def note_format_info(self, note_id):
         """给前端决定"格式徽标"的文案：当前格式、是否有可还原的原始富文本、能否转换"""
+        conn = _ctx_conn()   # 只读连接（上下文解析）：见 _ctx_conn 的说明
         row = conn.execute(
             "SELECT format, delta_backup, password_hash FROM notes "
             "WHERE id = ? AND deleted_at IS NULL", (note_id,)).fetchone()
@@ -2398,6 +2413,7 @@ class Api:
         **一处都没用到**这个返回值（18 个调用点全是 await 完就丢）。给投影就把这一趟省掉。
         fields=None 保持旧行为（全字段），既有调用方与测试不受影响。
         """
+        conn = _ctx_conn()   # 只读连接（上下文解析）：见 _ctx_conn 的说明
         r = conn.execute("SELECT * FROM notes WHERE id = ? AND deleted_at IS NULL", (note_id,)).fetchone()
         if not r:
             return None
@@ -2558,6 +2574,7 @@ class Api:
 
     def notes_trash_list(self):
         """回收站列表：标题 + 删除时间，按删除时间倒序"""
+        conn = _ctx_conn()   # 只读连接（上下文解析）：见 _ctx_conn 的说明
         return [dict(r) for r in conn.execute(
             "SELECT id, title, deleted_at FROM notes WHERE deleted_at IS NOT NULL "
             "ORDER BY deleted_at DESC").fetchall()]
@@ -2792,12 +2809,14 @@ class Api:
     # ----- 派生指标 / 待办（第 7 轮） -----
     def note_metrics(self, note_id):
         """单篇的派生指标（字符数/待办数/链接数…），面板与表格视图用"""
+        conn = _ctx_conn()   # 只读连接（上下文解析）：见 _ctx_conn 的说明
         _refresh_derived(note_id)
         r = conn.execute("SELECT * FROM note_derived WHERE note_id = ?", (note_id,)).fetchone()
         return dict(r) if r else None
 
     # ====== 模板（第 10 轮）======
     def templates_list(self):
+        conn = _ctx_conn()   # 只读连接（上下文解析）：见 _ctx_conn 的说明
         return [dict(r) for r in conn.execute(
             "SELECT * FROM templates ORDER BY sort_order, name").fetchall()]
 
@@ -2810,6 +2829,7 @@ class Api:
         return self.template_get(tid)
 
     def template_get(self, template_id):
+        conn = _ctx_conn()   # 只读连接（上下文解析）：见 _ctx_conn 的说明
         row = conn.execute("SELECT * FROM templates WHERE id = ?", (template_id,)).fetchone()
         return dict(row) if row else None
 
@@ -2830,6 +2850,7 @@ class Api:
 
     def template_render(self, template_id, title=''):
         """模板 → 渲染后的正文（变量替换一次；模板不存在返回空串）"""
+        conn = _ctx_conn()   # 只读连接（上下文解析）：见 _ctx_conn 的说明
         row = conn.execute("SELECT content FROM templates WHERE id = ?", (template_id,)).fetchone()
         return render_template(row['content'], title) if row else ''
 
@@ -2859,6 +2880,7 @@ class Api:
 
     def notebook_id_by_name(self, name):
         """给前端用：拿到（或直接创建）某个名字的笔记本 id"""
+        conn = _ctx_conn()   # 只读连接（上下文解析）：见 _ctx_conn 的说明
         nid = _find_or_create_notebook(name)
         conn.commit()
         return nid
@@ -2935,6 +2957,7 @@ class Api:
         **解析放在查询时**（标题 → 笔记），不物化 target_id：标题随时会改，
         物化就等于给自己埋一个必然过期的索引——改完标题所有反向链接一起断。
         """
+        conn = _ctx_conn()   # 只读连接（上下文解析）：见 _ctx_conn 的说明
         row = conn.execute("SELECT title FROM notes WHERE id = ?", (note_id,)).fetchone()
         title_key = (row['title'] or '').strip().lower() if row else ''
         outgoing, missing = [], []
@@ -2969,6 +2992,7 @@ class Api:
 
     def notes_resolve_link(self, title):
         """标题 → 笔记。多条同名时取**最近更新**的那条，并把命中数回报给前端提示。"""
+        conn = _ctx_conn()   # 只读连接（上下文解析）：见 _ctx_conn 的说明
         key = (title or '').strip().lower()
         if not key:
             return None
@@ -2997,6 +3021,7 @@ class Api:
         这件事应该由调用方传 id 列表来保证（前端传的就是当前筛选后的那批 id）。
         加密笔记只回标题等元信息（派生数据本来就是空的），**绝不下发 password_hash**。
         """
+        conn = _ctx_conn()   # 只读连接（上下文解析）：见 _ctx_conn 的说明
         if note_ids is None:
             note_ids = [r['id'] for r in conn.execute(
                 "SELECT id FROM notes WHERE deleted_at IS NULL "
@@ -3072,6 +3097,7 @@ class Api:
         还在（修复前的版本会把明文指标写进去），而且锁定态也不该给出"字数/属性/待办"这类
         正文侧面。这一层过滤是第二道闸，不依赖派生表本身是否干净。
         """
+        conn = _ctx_conn()   # 只读连接（上下文解析）：见 _ctx_conn 的说明
         if note_ids:
             rows = []
             for chunk in _chunked(note_ids):   # 分块：表格视图可能一次要看全库
@@ -3093,6 +3119,7 @@ class Api:
         SQL 过滤是必须的第二道闸：修复前的版本存在旁路，明文待办会留在 note_todos 里
         （存量库的脏行不会自己消失），光靠"派生时清空"挡不住历史数据。
         """
+        conn = _ctx_conn()   # 只读连接（上下文解析）：见 _ctx_conn 的说明
         today = datetime.now().strftime('%Y-%m-%d')
         week = (datetime.now() + timedelta(days=7)).strftime('%Y-%m-%d')
         where = ["n.deleted_at IS NULL", "COALESCE(n.password_hash, '') = ''"]
@@ -3250,6 +3277,7 @@ class Api:
 
     # ----- 保存的搜索 -----
     def saved_searches_list(self):
+        conn = _ctx_conn()   # 只读连接（上下文解析）：见 _ctx_conn 的说明
         rows = conn.execute("SELECT * FROM saved_searches ORDER BY sort_order, created_at").fetchall()
         out = []
         for r in rows:
@@ -3290,6 +3318,7 @@ class Api:
 
     # ----- 附件 -----
     def attachments_list(self, note_id):
+        conn = _ctx_conn()   # 只读连接（上下文解析）：见 _ctx_conn 的说明
         rows = conn.execute(
             "SELECT * FROM attachments WHERE note_id = ? ORDER BY created_at",
             (note_id,)
@@ -3306,6 +3335,7 @@ class Api:
         交出一个纯 UNC 路径；下游 read_file_base64 的 realpath 一旦解析它就发起对外 SMB 连接
         （NetNTLM 泄露），打开笔记即触发、不需要点击。
         """
+        conn = _ctx_conn()   # 只读连接（上下文解析）：见 _ctx_conn 的说明
         if not note_id or not conn.execute("SELECT 1 FROM notes WHERE id = ?", (note_id,)).fetchone():
             return None
         return safe_join(ATTACH_DIR, note_id, filename)
@@ -3382,6 +3412,7 @@ class Api:
 
     # ----- 设置 -----
     def settings_get(self, key):
+        conn = _ctx_conn()   # 只读连接（上下文解析）：见 _ctx_conn 的说明
         r = conn.execute("SELECT value FROM settings WHERE key = ?", (key,)).fetchone()
         return r['value'] if r else None
 
@@ -3391,6 +3422,7 @@ class Api:
         return True
 
     def settings_get_all(self):
+        conn = _ctx_conn()   # 只读连接（上下文解析）：见 _ctx_conn 的说明
         rows = conn.execute("SELECT key, value FROM settings").fetchall()
         return {r['key']: r['value'] for r in rows}
 
@@ -3423,6 +3455,7 @@ class Api:
         带 `/` 的标签名就是层级（`项目/子项目`），前端按 `/` 缩进展示；搜索时
         `tag:项目` 会自动包含子标签（见 _scope_where）。
         """
+        conn = _ctx_conn()   # 只读连接（上下文解析）：见 _ctx_conn 的说明
         rows = conn.execute(
             "SELECT t.*, (SELECT COUNT(*) FROM note_tags nt JOIN notes n ON n.id = nt.note_id "
             "            WHERE nt.tag_id = t.id AND n.deleted_at IS NULL) AS note_count "
@@ -3436,6 +3469,7 @@ class Api:
         return self.tags_get(tid)
 
     def tags_get(self, tid):
+        conn = _ctx_conn()   # 只读连接（上下文解析）：见 _ctx_conn 的说明
         r = conn.execute("SELECT * FROM tags WHERE id = ?", (tid,)).fetchone()
         return dict(r) if r else None
 
@@ -3445,6 +3479,7 @@ class Api:
         return True
 
     def note_tags_get(self, note_id):
+        conn = _ctx_conn()   # 只读连接（上下文解析）：见 _ctx_conn 的说明
         rows = conn.execute(
             "SELECT t.* FROM tags t JOIN note_tags nt ON t.id = nt.tag_id WHERE nt.note_id = ? ORDER BY t.name",
             (note_id,)
@@ -3464,6 +3499,7 @@ class Api:
         标签与笔记本是两个独立筛选，**必须能叠加**：否则在「原神」里点一个标签，
         列表会把别的笔记本的同标签笔记也倒进来 —— 又变回"混在一起"。
         """
+        conn = _ctx_conn()   # 只读连接（上下文解析）：见 _ctx_conn 的说明
         sql = (
             "SELECT n.id, n.title, n.bg_type, n.bg_value, n.bg_opacity, n.is_pinned, n.is_favorite, "
             "n.notebook_id, n.sort_order, n.created_at, n.updated_at, "
@@ -3484,6 +3520,7 @@ class Api:
 
     # ----- 笔记本 -----
     def notebooks_list(self):
+        conn = _ctx_conn()   # 只读连接（上下文解析）：见 _ctx_conn 的说明
         rows = conn.execute("SELECT * FROM notebooks ORDER BY sort_order, created_at").fetchall()
         return [dict(r) for r in rows]
 
@@ -3494,6 +3531,7 @@ class Api:
         "全部笔记有几篇、别的笔记本有几篇"（下拉里那些 `N 篇` 会全变成假的）。所以计数一律
         由这里给：一次 GROUP BY，前端只在刷新笔记本栏时拉一次。
         """
+        conn = _ctx_conn()   # 只读连接（上下文解析）：见 _ctx_conn 的说明
         rows = conn.execute(
             "SELECT notebook_id, COUNT(*) AS n FROM notes "
             "WHERE deleted_at IS NULL GROUP BY notebook_id").fetchall()
@@ -3527,6 +3565,7 @@ class Api:
 
     # ----- 历史版本 -----
     def versions_list(self, note_id):
+        conn = _ctx_conn()   # 只读连接（上下文解析）：见 _ctx_conn 的说明
         rows = conn.execute(
             "SELECT id, title, created_at FROM versions WHERE note_id = ? ORDER BY created_at DESC LIMIT 50",
             (note_id,)
@@ -3535,6 +3574,7 @@ class Api:
 
     def versions_get(self, vid, unlocked=False):
         """获取版本详情。父笔记加密时仅在后端已解锁后返回解密内容（unlocked 参数保留兼容，不作依据）。"""
+        conn = _ctx_conn()   # 只读连接（上下文解析）：见 _ctx_conn 的说明
         r = conn.execute("SELECT * FROM versions WHERE id = ?", (vid,)).fetchone()
         if not r:
             return None
@@ -3807,6 +3847,7 @@ class Api:
         return True
 
     def note_has_password(self, note_id):
+        conn = _ctx_conn()   # 只读连接（上下文解析）：见 _ctx_conn 的说明
         stored = conn.execute(
             "SELECT password_hash FROM notes WHERE id = ?", (note_id,)
         ).fetchone()
@@ -3854,6 +3895,7 @@ class Api:
 
     def reminder_get(self, reminder_id):
         """获取单条提醒"""
+        conn = _ctx_conn()   # 只读连接（上下文解析）：见 _ctx_conn 的说明
         r = conn.execute("SELECT * FROM reminders WHERE id = ?", (reminder_id,)).fetchone()
         return dict(r) if r else None
 
@@ -3877,6 +3919,7 @@ class Api:
 
     def reminder_list(self, note_id=None):
         """列出提醒（可选按笔记筛选，仅返回未完成的）"""
+        conn = _ctx_conn()   # 只读连接（上下文解析）：见 _ctx_conn 的说明
         if note_id:
             rows = conn.execute(
                 "SELECT r.* FROM reminders r INNER JOIN notes n ON r.note_id = n.id "
@@ -3894,6 +3937,7 @@ class Api:
 
     def reminder_list_all(self):
         """列出所有提醒（包括已完成的，用于管理面板）"""
+        conn = _ctx_conn()   # 只读连接（上下文解析）：见 _ctx_conn 的说明
         # 决策：软删笔记的提醒不显示（行保留，恢复笔记后自动重现）
         rows = conn.execute(
             "SELECT r.*, n.title as note_title FROM reminders r "
@@ -4133,6 +4177,7 @@ class Api:
         换台机器就全断图；复制到同级目录后整个文件夹可以整体带走。
         加密笔记只在已解锁时可导出（与复制笔记同一条规则）。
         """
+        conn = _ctx_conn()   # 只读连接（上下文解析）：见 _ctx_conn 的说明
         try:
             row = conn.execute("SELECT * FROM notes WHERE id = ? AND deleted_at IS NULL",
                                (note_id,)).fetchone()
@@ -4632,6 +4677,118 @@ except (TypeError, ValueError):
     _SLOW_LOG_THRESHOLD = 0.0
 
 
+# ====== 只读连接（读不再和写抢同一把锁）======
+# 为什么需要：一把全局 RLock 串行化了全部 101 个公开方法，于是**读操作也会挡住打字** ——
+# 800 篇 × 10KB 的库实测 notes_search(常见词) 持锁 523ms、backup_database 691ms、
+# 导出用的快照 275ms。而这三个全是"读"。
+# WAL 已经让"写不阻塞读"成立，所以这里给只读方法开**独立连接**，不再进那把锁。
+#
+# 三条设计约束（都是踩过才知道的）：
+#   1. **写连接永远只有一个**：SQLite 任何时刻只允许一个写连接，所以写路径继续走
+#      conn + _db_lock，一个字不改；
+#   2. **嵌套调用必须回落到写连接**：读方法会被写方法内部调用（如 todos_list 在持锁下
+#      叫 notes_search）。那一次必须用写连接 —— 否则独立连接看不到同事务里未提交的数据。
+#      判据是 `_db_lock` 的持有者：持锁的是本线程就说明"我们正在写路径里"。
+#   3. **用 mode=ro 打开，靠数据库强制只读**，不靠"我们记得别写"：万一某个方法被错标成
+#      只读却真的写了，mode=ro 会当场抛错（而不是把写入静默丢弃 = 数据丢失）。
+_ro_local = threading.local()
+_ro_lock = threading.Lock()          # 只保护下面这个集合的新增/遍历，不是每连接一把
+_ro_conns = set()                    # 所有已创建的只读连接（退出时统一关）
+
+
+def _ctx_kind():
+    """诊断用：当前上下文会用哪种连接（`'write'` / `'read'`）。
+
+    只给测试用 —— 上下文判定错了是"读不到未提交数据"这类难查的 bug，
+    必须能直接断言，而不是靠间接现象猜。
+    """
+    return 'write' if _in_write_path() else 'read'
+
+
+def _ctx_conn():
+    """按**上下文**返回该用的连接 —— 只读方法体与它们的私有辅助函数统一走这里。
+
+    为什么需要这么一层间接：只读方法并不总是自己发 SQL —— `notes_search` 把活派给
+    `_search_plain` / `_snippets_for`，`export_all_to_zip` 派给 `_snapshot_db`，
+    `notes_table` 也派给 `_snippets_for`…… 那些私有函数**读写两条路径共用**。
+    给它们逐个加 conn 参数会把签名弄脏、还容易漏掉一处；改成按上下文解析：
+
+      · 在写路径里（本线程持有 `_db_lock`）→ 返回写连接 `conn`。
+        必须如此：独立连接看不到同事务里**未提交**的数据，而 `todos_list`（写路径）
+        会在持锁状态下调用 `notes_search`。
+      · 否则 → 返回本线程的只读连接（mode=ro；读不再被写阻塞，也不再抢那把全局锁）
+    """
+    return conn if _in_write_path() else _readonly_conn()
+
+
+def _in_write_path():
+    """当前线程是否正处在写路径里（持有 `_db_lock`）。
+
+    ⚠️ **不要用 `_db_lock.acquire(blocking=False)` 来判定** —— 那是第一版写法，错的：
+    CPython 的 RLock 在**自己已经持有**锁时，`acquire(blocking=False)` 会**返回 False**
+    （它只在 `blocking=True` 时才允许递归计数）。于是"拿到就说明没人在锁里"这个推断
+    正好反了：持锁线程被判成"不在写路径"，只读方法就会去用独立连接、
+    **看不到同事务里未提交的数据**。实测就是这样（持锁线程里 `_in_write_path()` 返回 False）。
+    RLock 也不提供"当前持有者是谁"的公开 API，所以自己记一张归属表。
+    """
+    with _write_owner_lock:
+        return _write_owner == threading.get_ident()
+
+
+def _mark_write_owner():
+    """进入写锁时登记持有者（`_locked` 的 wrapper 调用）。"""
+    global _write_owner
+    with _write_owner_lock:
+        _write_owner = threading.get_ident()
+
+
+def _clear_write_owner():
+    """退出写锁时清掉登记 —— 注意这**不是**可重入计数：
+    `_locked` 的 wrapper 每次进出都成对调用，而内层方法（被外层写方法调用）退出时
+    会把归属清掉。这没关系：内层退出时外层**仍然持有锁**，此时任何新的 `_ctx_conn()`
+    都在同一个线程里同步执行，清掉只会让它在"外层早已进入写路径"的前提下拿只读连接 ——
+    为避免这一点，改成只在**最外层**清除（见 `_locked` 里对深度的判断）。"""
+    global _write_owner
+    with _write_owner_lock:
+        _write_owner = None
+
+
+def _readonly_conn():
+    """本线程的只读连接（没有就建一个）。mode=ro 是硬保证，见上面第 3 条。"""
+    c = getattr(_ro_local, 'conn', None)
+    if c is not None:
+        return c
+    uri = 'file:%s?mode=ro' % DB_PATH.replace('?', '%3f').replace('#', '%23')
+    c = sqlite3.connect(uri, uri=True, timeout=5.0)
+    c.row_factory = sqlite3.Row
+    # 只读连接不需要 journal/synchronous（它不写）；foreign_keys 要开，读里的 JOIN 语义才一致
+    try:
+        c.execute("PRAGMA foreign_keys=ON")
+        c.execute("PRAGMA busy_timeout=5000")
+    except sqlite3.Error:
+        pass
+    _ro_local.conn = c
+    with _ro_lock:
+        _ro_conns.add(c)
+    return c
+
+
+def close_readonly_conns():
+    """关掉本进程建过的所有只读连接（退出时调；幂等）。"""
+    global _ro_conns
+    with _ro_lock:
+        conns, _ro_conns = list(_ro_conns), set()
+    for c in conns:
+        try:
+            c.close()
+        except Exception:
+            pass
+    try:
+        _ro_local.conn = None
+    except Exception:
+        pass
+
+
 def _slow_log(name, args, kwargs, seconds):
     """把一次慢调用写进 error.log（走既有 applog，不新开文件）。"""
     try:
@@ -4655,25 +4812,128 @@ def _slow_log(name, args, kwargs, seconds):
 
 
 def _locked(fn):
+    """写路径包装：持全局写锁 + 维护"当前线程在不在写路径里"的归属。
+
+    归属维护用**每线程递归深度**，而不是"进锁前先问一句自己持没持锁"：
+      · 进锁前问是错的 —— 那一刻还没拿锁，别人持有的话答案就过期了（第一版这么写，错了）；
+      · 深度归零才清归属 —— RLock 可重入，内层方法退出时外层往往还持着锁，
+        这时清掉归属会让外层后续的 `_ctx_conn()` 误判成读路径、改用只读连接，
+        于是看不到外层**未提交**的数据。
+    """
     @functools.wraps(fn)
     def wrapper(*args, **kwargs):
-        # 阈值关掉时（默认）完全不取时钟、不进 try，与改动前逐字一致
+        depth = getattr(_write_owner_local, 'depth', 0)
         if not _SLOW_LOG_THRESHOLD:
+            # 阈值关掉时（默认）完全不取时钟，与改造前逐字一致
             with _db_lock:
-                return fn(*args, **kwargs)
+                _write_owner_local.depth = depth + 1
+                if depth == 0:
+                    _mark_write_owner()
+                try:
+                    return fn(*args, **kwargs)
+                finally:
+                    _write_owner_local.depth = depth
+                    if depth == 0:
+                        _clear_write_owner()
         _t0 = time.perf_counter()
         try:
             with _db_lock:
-                return fn(*args, **kwargs)
+                _write_owner_local.depth = depth + 1
+                if depth == 0:
+                    _mark_write_owner()
+                try:
+                    return fn(*args, **kwargs)
+                finally:
+                    _write_owner_local.depth = depth
+                    if depth == 0:
+                        _clear_write_owner()
         finally:
             _dt = time.perf_counter() - _t0
             if _dt >= _SLOW_LOG_THRESHOLD:
                 _slow_log(fn.__name__, args, kwargs, _dt)
     return wrapper
 
+
+# 【只读方法清单】由 `tests/test_readonly_methods.py` 用 AST 守住：这 46 个方法体里
+# **不许出现任何写语句**（INSERT/UPDATE/DELETE/CREATE/...）也不许调事务控制。
+# 为什么这么严：它们会跑在独立连接上，而独立连接**不会提交** —— 一个被错标成只读的方法
+# 如果真的写了，那次写入要么被 mode=ro 当场拒绝（好事），要么被静默丢弃（数据丢失）。
+# 往这个清单里加方法前，先跑那条测试；它红了就是分类错了。
+_READONLY_METHODS = frozenset((
+    # 笔记读取
+    # ⚠️ `note_metrics` **不在**这里：它体内会调 `_refresh_derived`（惰性回填派生行，
+    #    含 INSERT OR REPLACE），是写路径。放只读连接会直接报 "attempt to write a readonly
+    #    database"（用 _readonly_methods.py 的传递闭包测试当场抓到）。
+    'notes_list', 'notes_get', 'notes_search', 'notes_table', 'notes_trash_list',
+    'notes_created_on', 'notes_resolve_link', 'notes_by_tag', 'note_format_info',
+    'note_links', 'note_has_password',
+    # 笔记本 / 标签 / 模板 / 视图
+    # ⚠️ `notebook_id_by_name` **不在**这里：它用 `_find_or_create_notebook`，
+    #    **找不到就建一个**（真 INSERT + commit）—— 名字有迷惑性，是写路径。
+    'notebooks_list', 'notebook_counts',
+    'tags_list', 'tags_get', 'note_tags_get',
+    'templates_list', 'template_get', 'template_render',
+    'saved_searches_list',
+    # 派生 / 待办 / 提醒
+    'metrics_bulk', 'todos_list',
+    'reminder_get', 'reminder_list', 'reminder_list_all',
+    # 版本 / 设置
+    'versions_list', 'versions_get',
+    'settings_get', 'settings_get_all',
+    # 密码与解锁状态
+    'note_unlock_status', 'note_set_lock_ttl', 'note_lock',
+    # 文件 / 附件（只读查询；实际文件 IO 不碰数据库）
+    'attachments_list', 'attachments_get_path', 'file_get_note_attachment_path',
+    'file_open', 'file_pick_background_path', 'read_file_base64', 'save_temp_image',
+    # 导出（内部快照走 backup API，不写主库）
+    'export_all_to_zip', 'export_note', 'export_note_markdown', 'export_table_csv',
+    # 日志
+    'log_error',
+))
+
+
+def _locked_readonly(fn):
+    """只读方法：不进全局写锁，改用自己的独立只读连接（见上面三条设计约束）。"""
+    @functools.wraps(fn)
+    def wrapper(*args, **kwargs):
+        # 第 2 条约束：正在写路径里（本线程持有写锁）时回落成写连接 + 不进锁
+        #（已经持锁了，再进就是同一把可重入锁，无害；但必须用 conn 才看得到未提交数据）
+        if _in_write_path():
+            return fn(*args, **kwargs)
+        if not _SLOW_LOG_THRESHOLD:
+            return fn(*args, **kwargs)
+        _t0 = time.perf_counter()
+        try:
+            return fn(*args, **kwargs)
+        finally:
+            _dt = time.perf_counter() - _t0
+            if _dt >= _SLOW_LOG_THRESHOLD:
+                _slow_log(fn.__name__, args, kwargs, _dt)
+    return wrapper
+
+
+# 分类施加：只读方法走独立连接，其余（含写、以及读写混合）继续走全局写锁。
+# ⚠️ 顺序有意义：这条循环必须在 `import` 时就定下来，之后不再改 Api 的方法表。
+_ro_applied = []
 for _name, _attr in list(vars(Api).items()):
-    if not _name.startswith('_') and callable(_attr):
+    if _name.startswith('_') or not callable(_attr):
+        continue
+    if _name in _READONLY_METHODS:
+        setattr(Api, _name, _locked_readonly(_attr))
+        _ro_applied.append(_name)
+    else:
         setattr(Api, _name, _locked(_attr))
+
+# 自检：清单里写了、但 Api 上根本没有的方法名 —— 拼错一个就会静默退化成"走写锁"
+#（不报错、只是没优化到），所以启动时就记一条，别让它悄悄烂在那。
+_missing_ro = sorted(_READONLY_METHODS - set(vars(Api)))
+if _missing_ro:
+    try:
+        applog.get_logger().warning(
+            "只读方法清单里有 %d 个不存在的名字（拼写错误？）：%s",
+            len(_missing_ro), ', '.join(_missing_ro))
+    except Exception:
+        pass
 
 
 api = Api()
