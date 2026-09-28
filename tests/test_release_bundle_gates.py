@@ -536,3 +536,58 @@ class TestBuildLoggingIsAsciiSafe:
     def test_workflows_force_utf8_python_output(self, name):
         wf = _read(os.path.join(WORKFLOWS, name))
         assert 'PYTHONIOENCODING' in wf, '%s 要把 Python 输出统一成 UTF-8' % name
+
+
+class TestBuildBackupPruning:
+    """`build.py` 的备份剪枝必须**按时间**留最近的那份。
+
+    为什么单开一组：这个 bug 是**完全静默**的 —— 构建照常成功、日志照打"已备份"，
+    只是那份备份转头就被自己剪掉了。而它正是构建/还原失败时的回滚凭据
+    （`main()` 的 except 分支就靠 `restore(backup)`），剪错等于把后悔药丢了。
+
+    实测踩到的形状：两套命名在同一目录里共存时**名字序与时间序相反** ——
+    `_predist-backup-<新>` 永远小于 `_predist-data-backup-<旧>`（'b' < 'd'），
+    于是"保留名字最大的 keep 份"会剪掉刚做的那份、留下几天前的旧备份。
+    同一条教训在 `restore.py` 的 `latest_backup()` 上也踩过一次（那边是 mtime + 只认 notes- 前缀）。
+    """
+
+    def test_keeps_newest_by_mtime_not_by_name(self, tmp_path, monkeypatch):
+        import build
+        old = tmp_path / '_predist-data-backup-20260101-000000'   # 名字更大，但更旧
+        new = tmp_path / '_predist-backup-20260102-000000'        # 名字更小，但更新
+        for d in (old, new):
+            d.mkdir()
+        os.utime(str(old), (1_000_000, 1_000_000))
+        os.utime(str(new), (2_000_000, 2_000_000))
+
+        monkeypatch.setattr(build, 'BACKUP_ROOT', str(tmp_path))
+        build.prune_backups(keep=1)
+
+        assert new.is_dir(), '必须留下**刚做的那份**（按时间），不是名字最大的那份'
+        assert not old.exists(), '按名字排序时这条会反过来 —— 就是实测踩到的 bug'
+
+    def test_keep_n_prunes_all_older(self, tmp_path, monkeypatch):
+        import build
+        for i in range(4):
+            d = tmp_path / ('_predist-backup-2026010%d-000000' % (i + 1))
+            d.mkdir()
+            os.utime(str(d), (1_000_000 + i * 1000, 1_000_000 + i * 1000))
+        monkeypatch.setattr(build, 'BACKUP_ROOT', str(tmp_path))
+        build.prune_backups(keep=2)
+        left = sorted(p.name for p in tmp_path.iterdir())
+        assert len(left) == 2, 'keep=2 应该只留两份：%r' % left
+        assert left[-1].endswith('20260104-000000'), '留下的必须是时间上最近的两份：%r' % left
+
+    def test_non_directory_and_foreign_names_are_ignored(self, tmp_path, monkeypatch):
+        """只认 `_predist*` 目录：同目录下的文件、以及 dist 里别的东西不能被误删。"""
+        import build
+        keep = tmp_path / '_predist-backup-20260105-000000'
+        keep.mkdir()
+        (tmp_path / '_predist-backup-20260105-000000.zip').write_text('x', encoding='utf-8')
+        other = tmp_path / 'MyNotepad'
+        other.mkdir()
+        monkeypatch.setattr(build, 'BACKUP_ROOT', str(tmp_path))
+        build.prune_backups(keep=1)
+        assert keep.is_dir()
+        assert (tmp_path / '_predist-backup-20260105-000000.zip').exists(), '文件不该被当成备份目录'
+        assert other.is_dir(), '非 _predist* 的目录不能被碰'

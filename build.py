@@ -101,12 +101,18 @@ def prune_backups(keep=1):
 
     匹配 `_predist*` 而非 `_predist-*`：早期版本把备份命名为
     `_predist-data-backup-<时间戳>`，要能一并清掉。
+
+    ⚠️ **必须按修改时间排序，不能按名字**：两套命名在同一目录里共存时，名字序与时间序
+    是相反的 —— `_predist-backup-<新>` 永远**小于** `_predist-data-backup-<旧>`
+    （'b' < 'd'），于是"保留名字最大的 keep 份"会**把刚做的那份剪掉、留下几天前的旧备份**。
+    而这份备份正是构建失败/还原失败时的回滚凭据（`main()` 里失败分支就靠它），
+    剪错等于把后悔药丢了。同一条教训在 `restore.py` 的 `latest_backup()` 上也踩过。
     """
     try:
-        items = sorted(
-            (d for d in os.listdir(BACKUP_ROOT)
-             if d.startswith('_predist') and os.path.isdir(os.path.join(BACKUP_ROOT, d))),
-            reverse=True)
+        items = [d for d in os.listdir(BACKUP_ROOT)
+                 if d.startswith('_predist') and os.path.isdir(os.path.join(BACKUP_ROOT, d))]
+        # 新 → 旧
+        items.sort(key=lambda d: os.path.getmtime(os.path.join(BACKUP_ROOT, d)), reverse=True)
     except OSError:
         return
     for old in items[keep:]:
