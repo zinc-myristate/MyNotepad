@@ -1044,6 +1044,17 @@ def make_closing_handler(target_window, backend, tray=None, is_quitting=None, sh
                 except Exception:
                     pass
         state['phase'] = 'done'
+        # 真正退出（不是隐藏到托盘）时把 WAL 归零，让 data 目录回到单文件状态 ——
+        # 用户手动拷贝/丢进同步盘时只拷 notes.db 不会丢最近的写入。
+        # 必须放在这里而不是 _flush_and_close：隐藏到托盘时进程还活着，不该做全量回写。
+        try:
+            backend.checkpoint_and_close()
+        except Exception:
+            try:
+                import applog
+                applog.get_logger().exception("退出前 WAL checkpoint 失败")
+            except Exception:
+                pass
         try:
             target_window.destroy()
         except Exception:

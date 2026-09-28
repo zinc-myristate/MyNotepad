@@ -57,12 +57,12 @@ if not _ENV_DATA_DIR and os.path.exists(_OLD_APP_DATA) and _OLD_APP_DATA != DATA
 DB_PATH = os.path.join(DATA_DIR, "notes.db")
 ATTACH_DIR = os.path.join(DATA_DIR, "attachments")
 
-# 清理旧 WAL 文件（切换到 DELETE 模式后的残留）
-for _f in ['notes.db-wal', 'notes.db-shm']:
-    _fp = os.path.join(DATA_DIR, _f)
-    if os.path.exists(_fp):
-        try: os.remove(_fp)
-        except Exception: pass
+# 【坑】这里以前有一段"清理旧 WAL 文件（notes.db-wal / notes.db-shm）"的代码 ——
+# 在 DELETE 模式下它是无害的，但**一旦启用 WAL 就变成数据丢失**：那两个文件里装着
+# 还没回写主库的**已提交**事务，启动时删掉 = 上次会话最后的写入全部消失。
+# 而它执行在 sqlite3.connect **之前**，所以真的会在 SQLite 有机会恢复 WAL 之前把文件删掉。
+# 现在不需要它了：WAL 模式下 SQLite 打开库时会自动恢复/回放 WAL，正常退出时
+# checkpoint(TRUNCATE) 会把 WAL 归零（见 checkpoint_and_close）。
 
 # 确保目录存在
 os.makedirs(DATA_DIR, exist_ok=True)
@@ -76,9 +76,26 @@ applog.init(DATA_DIR)
 # ====== 数据库初始化 ======
 conn = sqlite3.connect(DB_PATH, check_same_thread=False)
 conn.row_factory = sqlite3.Row
-conn.execute("PRAGMA journal_mode=DELETE")
+# WAL（write-ahead logging）：写事务追加到 notes.db-wal，**读不再被写阻塞**。
+# 为什么值得切：这个应用的"卡"主要来自长操作（导出大库、备份、VACUUM、大库搜索）
+# 与日常打字/切笔记抢同一把锁；WAL 是"让读走独立连接"这件事成立的前提。
+# ⚠️ 两个必须一起记住的连带项：
+#   1. journal_mode 是**持久属性**（写进库头），切了之后旧版本打开会自动降级回 DELETE，
+#      所以回退是安全的 —— 但不会再自动切回来；
+#   2. 目录里从此常驻 notes.db-wal / notes.db-shm。**别再用裸文件拷贝备份这个库**
+#      （必须用 sqlite backup API，它会把 WAL 里的事务一并算进去）；
+#      正常退出时走 checkpoint_and_close() 把 WAL 归零，让"手动拷 data 目录"也安全。
+conn.execute("PRAGMA journal_mode=WAL")
+# synchronous：DELETE 模式下原本是 FULL（每次提交都 fsync 主库）。
+# WAL + NORMAL 是 SQLite 官方推荐的组合：提交只追加 WAL 并 fsync 它，
+# **应用崩溃 / 进程被杀不会丢已提交数据**（这正是这个应用最在意的场景），
+# 只有断电/系统崩溃才可能丢掉最后几个事务。换成 FULL 会让每次自动保存都多一次
+# 主库 fsync，而收益只在断电场景 —— 不值得。**刻意不写 FULL。**
+conn.execute("PRAGMA synchronous=NORMAL")
 conn.execute("PRAGMA foreign_keys=ON")
-conn.execute("PRAGMA synchronous=FULL")
+# WAL 自动 checkpoint 阈值（页）：默认就是 1000，显式写出来是为了"这个数字被人看见"。
+# 调小会让主库更早收到数据、WAL 更小，但写放大会变多。
+conn.execute("PRAGMA wal_autocheckpoint=1000")
 
 conn.executescript("""
     CREATE TABLE IF NOT EXISTS notes (
@@ -1241,6 +1258,18 @@ def backup_database():
         try:
             if os.path.exists(tmp):
                 os.remove(tmp)
+            # 【坑】WAL 模式下给一个还不存在的文件建连接，SQLite 会顺手生成
+            # `<tmp>-wal` / `<tmp>-shm`（这里是 `notes-<时间戳>.db.part-wal` / `.part-shm`）。
+            # `os.replace(tmp, dest)` 只搬走主文件，那两个伴生文件会**留在备份目录里**
+            # （实测：备份完目录里多出 0 字节的 .part-wal 和 32KB 的 .part-shm）。
+            # 所以下面统一用 _sidecar() 清掉它们 —— 改名后、失败分支都要清。
+            def _sidecar(p):
+                for suffix in ('-wal', '-shm'):
+                    try:
+                        if os.path.exists(p + suffix):
+                            os.remove(p + suffix)
+                    except OSError:
+                        pass
             src = sqlite3.connect(DB_PATH)
             dst = sqlite3.connect(tmp)
             try:
@@ -1255,17 +1284,25 @@ def backup_database():
             if count_notes(tmp) is None:
                 raise OSError('备份里读不出笔记数')
             os.replace(tmp, dest)
+            _sidecar(tmp)            # 清掉 .part-wal / .part-shm
+            _sidecar(dest)           # 万一 SQLite 在主文件名下也留了
         except Exception:
             try:
                 if os.path.exists(tmp):
                     os.remove(tmp)
             except OSError:
                 pass
+            _sidecar(tmp)
             raise
         # 滚动保留最近 7 份（文件名含时间戳，字典序即时间序）
+        # 【坑】必须排掉 WAL 的伴生文件：备份写的是 `notes-<时间戳>.db.part`，SQLite 会给它
+        # 生成 `.part-wal` / `.part-shm`，而这两个名字**不以 `.part` 结尾**（结尾是 `-wal`），
+        # 所以旧的 `not.endswith('.part')` 过滤放它们过去 —— 一份备份被数成三份，
+        # "保留 7 份"实际留下 9 个文件（实测踩到，WAL 切完立刻红了一条测试）。
+        _shard = ('.part', '.part-wal', '.part-shm', '.db-wal', '.db-shm')
         all_backups = sorted(
             f for f in os.listdir(BACKUP_DIR)
-            if f.startswith('notes-') and f.endswith('.db') and not f.endswith('.part')
+            if f.startswith('notes-') and f.endswith('.db') and not f.endswith(_shard)
         )
         for old in all_backups[:-7]:
             try:
@@ -1360,6 +1397,11 @@ def reclaim_space(threshold=0.30, db_path=None):
                 c.execute("PRAGMA foreign_keys=OFF")
                 c.execute("VACUUM")          # 触发隐式提交；若被事务挡住则 repair 分支处理
                 c.commit()
+                # 【坑】WAL 模式下 VACUUM 重写出来的页**先落在 notes.db-wal 里**，
+                # 主库文件此时不会变小 —— 于是"回收后文件小了"这件事根本不成立
+                # （实测：12226560 -> 12226560，测试当场红）。VACUUM 完立刻 checkpoint
+                # 把回写落到主库并让 WAL 归零，回收才算真的完成（也顺带缩小了磁盘占用）。
+                c.execute("PRAGMA wal_checkpoint(TRUNCATE)")
             finally:
                 c.close()
         except Exception:
@@ -4575,11 +4617,58 @@ def _is_under(path, base):
 # ====== 线程安全 ======
 # pywebview 的每个 JS API 调用运行在独立线程，全局 conn 与 _unlocked_deks 需要串行化保护。
 # 统一给 Api 的公开方法加 RLock（可重入：方法间存在互调，如 notes_update→notes_get）。
+#
+# 【慢调用记录】为什么留在代码里而不是量完就删：这类"用起来卡"的反馈以后还会有，
+# 而重新写一遍仪表盘的成本远高于留着它。默认关，排查时设 MYNOTEPAD_SLOW_LOG=<毫秒阈值>：
+#     MYNOTEPAD_SLOW_LOG=200 python app.pyw
+# 记录的是**方法持锁时长**（= 该方法阻塞其它桥调用的时长），含方法名、参数、耗时、毫秒阈值。
+# ⚠️ 不记录返回值与笔记内容（日志可能被用户贴到 issue 里）。
+_SLOW_LOG_THRESHOLD = 0.0
+try:
+    _slow_env = os.environ.get('MYNOTEPAD_SLOW_LOG', '').strip()
+    if _slow_env:
+        _SLOW_LOG_THRESHOLD = max(0.001, float(_slow_env) / 1000.0)
+except (TypeError, ValueError):
+    _SLOW_LOG_THRESHOLD = 0.0
+
+
+def _slow_log(name, args, kwargs, seconds):
+    """把一次慢调用写进 error.log（走既有 applog，不新开文件）。"""
+    try:
+        # 参数只留"能说明是哪一次调用"的部分：id 之类的标量，不碰大对象
+        brief = []
+        for a in args[1:4]:                       # args[0] 是 self
+            if isinstance(a, (str, int, float, bool)) or a is None:
+                brief.append(repr(a)[:40])
+            elif isinstance(a, (list, tuple, set, dict)):
+                brief.append('<%s len=%d>' % (type(a).__name__, len(a)))
+            else:
+                brief.append('<%s>' % type(a).__name__)
+        for k, v in list(kwargs.items())[:4]:
+            brief.append('%s=%s' % (k, repr(v)[:30] if isinstance(v, (str, int, float, bool, type(None)))
+                                    else '<%s>' % type(v).__name__))
+        applog.get_logger().warning(
+            "[slow] %s(%s) 持锁 %.0f ms（阈值 %.0f ms）",
+            name, ', '.join(brief), seconds * 1000, _SLOW_LOG_THRESHOLD * 1000)
+    except Exception:
+        pass
+
+
 def _locked(fn):
     @functools.wraps(fn)
     def wrapper(*args, **kwargs):
-        with _db_lock:
-            return fn(*args, **kwargs)
+        # 阈值关掉时（默认）完全不取时钟、不进 try，与改动前逐字一致
+        if not _SLOW_LOG_THRESHOLD:
+            with _db_lock:
+                return fn(*args, **kwargs)
+        _t0 = time.perf_counter()
+        try:
+            with _db_lock:
+                return fn(*args, **kwargs)
+        finally:
+            _dt = time.perf_counter() - _t0
+            if _dt >= _SLOW_LOG_THRESHOLD:
+                _slow_log(fn.__name__, args, kwargs, _dt)
     return wrapper
 
 for _name, _attr in list(vars(Api).items()):
@@ -4588,3 +4677,35 @@ for _name, _attr in list(vars(Api).items()):
 
 
 api = Api()
+
+
+def checkpoint_and_close():
+    """退出时把 WAL 归零并关掉连接：让 data 目录回到"只有 notes.db"的状态。
+
+    为什么必须做：WAL 模式下数据可能还躺在 notes.db-wal 里。用户手动拷 data 目录
+    （或者把 data 丢进同步盘）时只拷走 notes.db 就会**丢最近的写入**，而同步盘
+    只同步主库、不同步 -wal 更可能直接同步出一个坏库。
+    退出时 TRUNCATE 一次，退出后的目录就是干净的单文件 —— 这条路才安全。
+
+    ⚠️ 只在**真正退出**时调用。关窗驻留托盘那条路只是隐藏窗口、进程还活着，
+    那里 checkpoint 会平白做一次全量回写（WAL 一大就卡住关窗）。
+
+    幂等：重复调用只是再关一次已关的连接（sqlite3 允许，抛错也吞掉）。
+    """
+    try:
+        with _db_lock:
+            try:
+                row = conn.execute("PRAGMA wal_checkpoint(TRUNCATE)").fetchone()
+                # 返回 (busy, log_pages, checkpointed_pages)；busy=1 表示有别的连接在读，
+                # 此时 WAL 没归零 —— 记一行但不拦退出（数据是安全的，只是文件没缩小）
+                if row and row[0]:
+                    applog.get_logger().warning(
+                        "退出前 WAL checkpoint 未完全成功（有其它连接在用），WAL 未归零")
+            except Exception:
+                applog.get_logger().exception("退出前 WAL checkpoint 失败")
+            try:
+                conn.close()
+            except Exception:
+                pass
+    except Exception:
+        pass
