@@ -1,9 +1,68 @@
 # -*- coding: utf-8 -*-
 """启动自检 + 死代码回归测试"""
 
+import os
+import sqlite3
+
 
 def test_integrity_healthy(backend_mod):
     assert backend_mod.check_integrity(backend_mod.DB_PATH) is True
+
+
+def test_integrity_missing_file_is_false(tmp_path):
+    """库文件不存在 → False（不该"放行"）。
+
+    ⚠️ 判据必须用 isfile：早先写的是 `os.path.exists`，而**目录**也满足 exists，
+    于是传目录时 sqlite 抛 "unable to open database file"，再被"瞬时错误"判定放行，
+    变成"传一个目录却返回 True"（实测踩到）。
+    """
+    import backend
+    assert backend.check_integrity(str(tmp_path / 'nope.db')) is False
+    assert backend.check_integrity(str(tmp_path)) is False, \
+        '目录不是库文件，必须返回 False'
+
+
+def test_integrity_locked_db_is_not_reported_as_corrupt(backend_mod):
+    """**库被锁住 ≠ 库损坏**：这时必须放行（True），否则会误导用户去用备份覆盖好库。
+
+    为什么这条重要：`app.pyw` 拿 False 就弹
+    "数据库完整性检查失败…可尝试从 data/backups/ 恢复最近备份" 并退出。
+    如果"另一个实例正持锁 / 杀软在扫 / 刚崩溃留下的锁"也被报成损坏，
+    用户可能真拿旧备份把好库覆盖掉 —— 那才是真的数据丢失。
+    所以取舍是**宁可漏报，不可误报**（漏报由后续读写报错兜底）。
+    """
+    import backend
+    db = backend_mod.DB_PATH
+    locker = sqlite3.connect(db, timeout=0.1)
+    locker.execute('BEGIN EXCLUSIVE')          # 独占锁，模拟"暂时打不开"
+    try:
+        assert backend_mod.check_integrity() is True, \
+            '被锁住的库不该被判成损坏（那会让用户以为要恢复备份）'
+    finally:
+        locker.rollback()
+        locker.close()
+    # 锁释放后仍然正常
+    assert backend_mod.check_integrity() is True
+
+
+def test_integrity_corrupt_after_retries_is_false(backend_mod):
+    """真损坏必须返回 False（重试几次之后仍不行）。
+
+    与上一条配对：瞬时错误放行、真损坏拦下 —— 两个方向都要有测试，
+    否则把 `return True` 一写到底也能"全绿"。
+    """
+    import backend
+    real = backend_mod.DB_PATH
+    bad = real + '.corrupt'
+    try:
+        with open(bad, 'wb') as f:
+            f.write(b'this is not a sqlite database at all' * 20)
+        assert backend_mod.check_integrity(bad) is False
+    finally:
+        try:
+            os.remove(bad)
+        except OSError:
+            pass
 
 
 def test_integrity_corrupt(tmp_path):

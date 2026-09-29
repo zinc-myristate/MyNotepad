@@ -24,6 +24,7 @@ r"""数据库备份 / 完整性校验 / 空间回收。
 import contextlib
 import os
 import sqlite3
+import time
 
 # ⚠️ 必须是 `from datetime import datetime`（**类**），不是 `import datetime`（模块）：
 # 函数体里写的是 `datetime.now()`。原文件（backend.py）就是 `from datetime import datetime`，
@@ -131,24 +132,69 @@ def backup_database():
         applog.get_logger().exception("数据库备份失败")
         return None
 
+_INTEGRITY_RETRIES = 3          # 瞬时锁的重试次数
+_INTEGRITY_BACKOFF = 0.15       # 首次退避秒数（之后翻倍）
+
+# 这些是「暂时打不开」，不是「库坏了」：SQLite 的措辞会变，所以按关键字匹配。
+_TRANSIENT_HINTS = ('locked', 'busy', 'unable to open', 'disk i/o', 'temporarily')
+
+
+def _is_transient(exc):
+    """这个异常像不像"等一会儿就好"？"""
+    msg = str(exc).lower()
+    return any(h in msg for h in _TRANSIENT_HINTS)
+
+
 def check_integrity(db_path=None):
-    """独立连接跑 PRAGMA integrity_check；损坏返回 False。启动自检用，绝不进模块级执行。
+    """跑 PRAGMA integrity_check。**损坏返回 False**；「暂时打不开」返回 True 且记警告。
+
+    启动自检用它，所以这里的取舍很关键：**宁可漏报，不可误报**。
+    误报的后果是弹"完整性检查失败，可尝试从备份恢复"并退出 —— 用户可能真拿旧备份
+    去覆盖一个好库，那才是真的数据丢失。而漏报（库真坏了却让程序起来）由后续的
+    读写报错兜底，危害小得多。
+
+    所以：
+      * 连接/查询抛异常 → 退避重试 `_INTEGRITY_RETRIES` 次（瞬时锁通常很快释放）；
+      * 仍是"锁/忙碌/无法打开"类 → 返回 True + 警告（放行，不吓用户）；
+      * 能连上但 integrity_check 结果不是 'ok' → False（真损坏）；
+      * 库文件不存在 → False。
 
     ⚠️ 参数默认值必须是 `None`、在函数体里再解析成 `DB_PATH`，**不能写成 `db_path=DB_PATH`**：
     默认值在**函数定义时**就求值了，于是它被冻结成"第一次导入那一刻"的路径 ——
     测试换了 `MYNOTEPAD_DATA_DIR` 之后，`check_integrity()` 还在检查上一个库
     （实测：拆包后 `inspect.signature` 显示默认值是**上一个测试的 temp 路径**）。
     同文件的 `space_stats` / `reclaim_space` 一直是惰性解析的写法，这里统一过来。
+
+    ⚠️ 上次退出留下的 `notes.db-wal` 不算异常：SQLite 打开时会自己回放它，
+    这是 WAL 的正常工作方式（而"退出时归零"只是为了让用户手动拷 data 目录更安全）。
     """
     path = db_path or DB_PATH
-    try:
-        c = sqlite3.connect(path)
-        try:
-            return c.execute("PRAGMA integrity_check").fetchone()[0] == 'ok'
-        finally:
-            c.close()
-    except Exception:
+    # 用 isfile 而不是 exists：传进来一个**目录**时 exists 为真，然后 sqlite 抛
+    # "unable to open database file" —— 那会被下面的瞬时判定当成"等会儿就好"而放行，
+    # 实测就出现过"传目录却返回 True"。用 isfile 直接排除。
+    if not os.path.isfile(path):
         return False
+
+    delay = _INTEGRITY_BACKOFF
+    last = None
+    for attempt in range(_INTEGRITY_RETRIES + 1):
+        try:
+            c = sqlite3.connect(path, timeout=2)
+            try:
+                return c.execute("PRAGMA integrity_check").fetchone()[0] == 'ok'
+            finally:
+                c.close()
+        except Exception as exc:
+            last = exc
+            if attempt < _INTEGRITY_RETRIES:
+                time.sleep(delay)
+                delay *= 2
+    if _is_transient(last):
+        applog.get_logger().warning(
+            '完整性自检暂时打不开库（%s），按"未损坏"放行以免误报：%s', type(last).__name__, last)
+        return True
+    applog.get_logger().warning('完整性自检失败：%s: %s', type(last).__name__, last)
+    return False
 
 
 def count_notes(db_path):
