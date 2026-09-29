@@ -618,6 +618,18 @@ def _trash_title_ids(text):
 # 它不碰数据库，是依赖图上的叶子。下面 re-export 保持既有名字与外部引用不变。
 # ⚠️ `_filter_props` / `_load_props` **不在**这里：名字像文本处理，实际是搜索范围语法
 # （`prop:键=值`）的执行者、要查库，归 fts 域。
+# 备份 / 完整性 / 空间回收已抽到 backend/backup.py（路径默认值见该模块 docstring）。
+# ⚠️ 这里**不写** `from . import backup`：本模块里 `backup` 已经是局部变量名
+# （`backup = note.get('delta_backup')`，见 convert_note_format / restore_delta_backup），
+# 两者撞名会被 ruff 报 F811，而且读代码的人会以为它一直是模块。
+# 子模块本身照旧可以 `import backend.backup` 访问（文件在那儿）。
+from .backup import (  # noqa: F401
+    backup_database,
+    check_integrity,
+    count_notes,
+    reclaim_space,
+    space_stats,
+)
 from .text import (  # noqa: F401
     _DUE_RE,
     _FM_RE,
@@ -686,204 +698,6 @@ from .text import (  # noqa: F401
     parse_front_matter,
     render_template,
 )  # noqa: E501
-
-
-def backup_database():
-    """启动时调用（app.pyw 后台线程）：距最新备份 >24h 才备份，保留最近 7 份。
-
-    用 sqlite3 backup API 而非文件复制：DELETE journal 模式写入瞬间有 -journal
-    残留，直接 copy 可能撕裂；backup API 页级一致且遇写入自动重启。
-    返回备份文件路径；未到期或失败返回 None。
-
-    写盘顺序：先写 `.part` → 校验 → os.replace 成正式名。为什么不直接写正式名：
-    `sqlite3.connect(dest)` **在 backup 之前就把文件建出来了**，backup 一旦抛错就留下一个
-    0 字节的 `notes-<现在>.db`。它的名字最新、mtime 是"现在"，于是接下来 24h 都不会再备份，
-    滚动裁剪时还会把最旧的一份**好**备份挤掉；恢复工具那边也会把它当候选（见 restore.py）。
-    """
-    try:
-        if not os.path.exists(DB_PATH):
-            return None
-        os.makedirs(BACKUP_DIR, exist_ok=True)
-        existing = sorted(
-            f for f in os.listdir(BACKUP_DIR)
-            if f.startswith('notes-') and f.endswith('.db')
-        )
-        if existing:
-            latest = os.path.join(BACKUP_DIR, existing[-1])
-            if (datetime.now().timestamp() - os.path.getmtime(latest)) < 24 * 3600:
-                return None  # 24h 内已有备份
-        dest = os.path.join(BACKUP_DIR, datetime.now().strftime('notes-%Y%m%d-%H%M%S.db'))
-        tmp = dest + '.part'
-        try:
-            if os.path.exists(tmp):
-                os.remove(tmp)
-            # 【坑】WAL 模式下给一个还不存在的文件建连接，SQLite 会顺手生成
-            # `<tmp>-wal` / `<tmp>-shm`（这里是 `notes-<时间戳>.db.part-wal` / `.part-shm`）。
-            # `os.replace(tmp, dest)` 只搬走主文件，那两个伴生文件会**留在备份目录里**
-            # （实测：备份完目录里多出 0 字节的 .part-wal 和 32KB 的 .part-shm）。
-            # 所以下面统一用 _sidecar() 清掉它们 —— 改名后、失败分支都要清。
-            def _sidecar(p):
-                for suffix in ('-wal', '-shm'):
-                    try:
-                        if os.path.exists(p + suffix):
-                            os.remove(p + suffix)
-                    except OSError:
-                        pass
-            src = sqlite3.connect(DB_PATH)
-            dst = sqlite3.connect(tmp)
-            try:
-                with dst:
-                    src.backup(dst)
-            finally:
-                src.close()
-                dst.close()
-            # 校验过才改名：宁可这次没备份，也不要留个"看起来最新"的坏备份
-            if not check_integrity(tmp):
-                raise OSError('备份完整性校验失败')
-            if count_notes(tmp) is None:
-                raise OSError('备份里读不出笔记数')
-            os.replace(tmp, dest)
-            _sidecar(tmp)            # 清掉 .part-wal / .part-shm
-            _sidecar(dest)           # 万一 SQLite 在主文件名下也留了
-        except Exception:
-            try:
-                if os.path.exists(tmp):
-                    os.remove(tmp)
-            except OSError:
-                pass
-            _sidecar(tmp)
-            raise
-        # 滚动保留最近 7 份（文件名含时间戳，字典序即时间序）
-        # 【坑】必须排掉 WAL 的伴生文件：备份写的是 `notes-<时间戳>.db.part`，SQLite 会给它
-        # 生成 `.part-wal` / `.part-shm`，而这两个名字**不以 `.part` 结尾**（结尾是 `-wal`），
-        # 所以旧的 `not.endswith('.part')` 过滤放它们过去 —— 一份备份被数成三份，
-        # "保留 7 份"实际留下 9 个文件（实测踩到，WAL 切完立刻红了一条测试）。
-        _shard = ('.part', '.part-wal', '.part-shm', '.db-wal', '.db-shm')
-        all_backups = sorted(
-            f for f in os.listdir(BACKUP_DIR)
-            if f.startswith('notes-') and f.endswith('.db') and not f.endswith(_shard)
-        )
-        for old in all_backups[:-7]:
-            try:
-                os.remove(os.path.join(BACKUP_DIR, old))
-            except OSError:
-                pass
-        return dest
-    except Exception:
-        applog.get_logger().exception("数据库备份失败")
-        return None
-
-def check_integrity(db_path=DB_PATH):
-    """独立连接跑 PRAGMA integrity_check；损坏返回 False。启动自检用，绝不进模块级执行。"""
-    try:
-        c = sqlite3.connect(db_path)
-        try:
-            return c.execute("PRAGMA integrity_check").fetchone()[0] == 'ok'
-        finally:
-            c.close()
-    except Exception:
-        return False
-
-
-def count_notes(db_path):
-    """只读数一下某个库里有几篇笔记；文件不存在/打不开返回 None。
-
-    必须用 `mode=ro` URI：`sqlite3.connect` 会顺手创建空文件——探测别的数据目录
-    不该留下任何副作用（启动提示用它比较两份数据的笔记数）。
-    """
-    if not db_path or not os.path.exists(db_path):
-        return None
-    try:
-        c = sqlite3.connect('file:%s?mode=ro' % db_path.replace('?', '%3f'), uri=True)
-        try:
-            return c.execute(
-                "SELECT COUNT(*) FROM notes WHERE deleted_at IS NULL").fetchone()[0]
-        finally:
-            c.close()
-    except Exception:
-        return None
-
-
-def space_stats(db_path=None):
-    """返回 (page_size, page_count, freelist_count, 空闲页字节数, 空闲占比)。
-
-    空闲页（freelist）是 SQLite 删除/改写大字段后**不会自动归还文件系统**的页。
-    本应用有两个持续制造空闲页的来源：
-      1) 图片外置迁移——把正文里的 base64 挪到 attachments/，文本从 MB 级缩到几十字节；
-      2) 历史版本快照反复写入再按 50 条上限删除。
-    实测某库：文件 12.02 MB，其中空闲页 3046 页 = 11.90 MB（占 99%），有效数据仅 0.12 MB。
-    """
-    path = db_path or DB_PATH
-    if not os.path.exists(path):
-        return None   # 必须先判断：sqlite3.connect 会顺手创建空文件，不能让它有副作用
-    try:
-        c = sqlite3.connect(path)
-        try:
-            page_size = c.execute("PRAGMA page_size").fetchone()[0]
-            page_count = c.execute("PRAGMA page_count").fetchone()[0]
-            freelist = c.execute("PRAGMA freelist_count").fetchone()[0]
-        finally:
-            c.close()
-    except Exception:
-        return None
-    free_bytes = freelist * page_size
-    ratio = (freelist / page_count) if page_count else 0.0
-    return page_size, page_count, freelist, free_bytes, ratio
-
-
-def reclaim_space(threshold=0.30, db_path=None):
-    """空闲页占比超过 threshold 时 VACUUM 回收磁盘空间（启动维护线程调用）。
-
-    调用时机在 backup_database() **之前**：先有一份页级一致的备份兜底，再压缩。
-    VACUUM 需要重写整个库，必须独占——所以独立连接 + 全局锁。
-    返回 (是否执行, 执行前字节, 执行后字节)；无需回收或失败返回 (False, size, size)。
-    """
-    path = db_path or DB_PATH
-    if not os.path.exists(path):
-        return False, 0, 0
-    before = os.path.getsize(path)
-    st = space_stats(path)
-    if st is None:
-        return False, before, before
-    _ps, _pc, _fl, _free, ratio = st
-    if ratio < threshold:
-        return False, before, before
-
-    with _db_lock:
-        try:
-            c = sqlite3.connect(path)
-            try:
-                c.execute("PRAGMA foreign_keys=OFF")
-                c.execute("VACUUM")          # 触发隐式提交；若被事务挡住则 repair 分支处理
-                c.commit()
-                # 【坑】WAL 模式下 VACUUM 重写出来的页**先落在 notes.db-wal 里**，
-                # 主库文件此时不会变小 —— 于是"回收后文件小了"这件事根本不成立
-                # （实测：12226560 -> 12226560，测试当场红）。VACUUM 完立刻 checkpoint
-                # 把回写落到主库并让 WAL 归零，回收才算真的完成（也顺带缩小了磁盘占用）。
-                c.execute("PRAGMA wal_checkpoint(TRUNCATE)")
-            finally:
-                c.close()
-        except Exception:
-            # 「VACUUM cannot run from within a transaction」兜底：用 isolation_level=None
-            # 的连接（无隐式事务）再试一次。修复连接泄漏（try/finally 释放）。
-            applog.get_logger().exception("VACUUM 失败，尝试 autocommit 重试")
-            try:
-                c2 = sqlite3.connect(path, isolation_level=None)
-                try:
-                    c2.execute("VACUUM")
-                finally:
-                    c2.close()
-            except Exception:
-                applog.get_logger().exception("数据库空间回收失败")
-                return False, before, before
-    after = os.path.getsize(path)
-    try:
-        applog.get_logger().info(
-            "数据库空间回收：%.1f MB -> %.1f MB（空闲页占比 %.0f%%）",
-            before / 1048576, after / 1048576, ratio * 100)
-    except Exception:
-        pass
-    return True, before, after
 
 
 # ====== FTS5 全文搜索（trigram，中文可用） ======

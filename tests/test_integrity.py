@@ -19,6 +19,57 @@ def test_integrity_unopenable(tmp_path):
     assert backend.check_integrity(str(tmp_path)) is False
 
 
+def test_check_integrity_resolves_db_path_lazily(backend_mod):
+    """`check_integrity()` 不传参时必须检查**当前**的库，而不是"导入那一刻"的库。
+
+    踩过的坑（第 14 轮拆出 backup.py 时）：原本签名的默认值是 `db_path=DB_PATH`，
+    而**默认值在函数定义时求值** —— 于是它被冻结成第一次导入的路径。拆包后
+    `inspect.signature` 直接显示默认值是**上一个测试的 temp 路径**：
+    `check_integrity(db_path='C:\\...\\pytest-12\\test_foo0\\notes.db')`。
+
+    为什么单测当时全绿：一个测试进程里 `DB_PATH` 只在 import 时定一次，
+    默认值恰好等于它，看起来完全正常。只有"import 之后路径会变"的场景才暴露。
+    """
+    import inspect
+
+    from backend import backup
+
+    # ① 静态判据：默认值必须是 None（惰性），不能是某个具体路径
+    default = inspect.signature(backup.check_integrity).parameters['db_path'].default
+    assert default is None, (
+        'check_integrity 的 db_path 默认值被冻结成了 %r —— 默认值在定义时就求值，\n'
+        '换过数据目录之后它会去检查**旧的**库。必须写成 db_path=None + 体内 `db_path or DB_PATH`。'
+        % (default,))
+
+    # ② 行为判据：改动 DB_PATH 之后，不传参的调用要跟着走
+    import os
+    import shutil
+
+    original = backup.DB_PATH
+    probe = original + '.probe'
+    try:
+        # 先放一份**完好**的副本：应判 True
+        shutil.copyfile(original, probe)
+        backup.DB_PATH = probe
+        assert backend_mod.check_integrity() is True, \
+            '换了 DB_PATH 之后 check_integrity() 应该检查新路径'
+
+        # 再把它写坏：同一个调用必须变成 False —— 这才证明它看的是**当前** DB_PATH。
+        # （不能拿"不存在的路径"当反例：sqlite 会新建空库，空库的 integrity 是 ok，
+        #   那样即使 bug 还在也会通过 —— 这是我第一版写错的地方。）
+        with open(probe, 'wb') as f:
+            f.write(b'this is not a sqlite database at all' * 20)
+        assert backend_mod.check_integrity() is False, \
+            ('把当前 DB_PATH 指向的库写坏之后仍返回 True —— 说明它检查的不是当前路径，\n'
+             '而是导入时冻结的那个（默认值求值时机的问题）。')
+    finally:
+        backup.DB_PATH = original
+        try:
+            os.remove(probe)
+        except OSError:
+            pass
+
+
 def test_chem_struct_panel_removed():
     """死代码回归：化学结构式面板不得复活"""
     import os

@@ -15,6 +15,19 @@ APP_PYW = os.path.join(PROJECT_ROOT, 'app.pyw')
 APP_SPLIT_MARKER = '# ====== 创建窗口 ======'
 
 
+def _purge_backend_modules():
+    """把 `backend` 与**它的全部子模块**从 sys.modules 里清掉。
+
+    ⚠️ 只 pop `backend` 是不够的（第 14 轮拆包时发现）：子模块是**独立**的 sys.modules
+    条目，不会被父包的 pop 带走。对不读环境变量的子模块（paths / crypto / text）无所谓，
+    但 `backend.db` 在**导入时**就按 `MYNOTEPAD_DATA_DIR` 定下 `DB_PATH` ——
+    残留的话第二个测试会拿到**上一个测试的临时目录**，表现为随机的"串目录"失败，
+    而且报错点离原因很远。所以这里按前缀清干净。
+    """
+    for name in [m for m in list(sys.modules) if m == 'backend' or m.startswith('backend.')]:
+        sys.modules.pop(name, None)
+
+
 @pytest.fixture
 def backend_mod(tmp_path, monkeypatch):
     """全新导入 backend 模块，数据目录指向 pytest 临时目录（绝不碰真实数据）。
@@ -22,7 +35,7 @@ def backend_mod(tmp_path, monkeypatch):
     不能用 importlib.reload：模块级 conn 和 _locked 二次包装会出问题，必须 pop 后重新 import。
     """
     monkeypatch.setenv('MYNOTEPAD_DATA_DIR', str(tmp_path))
-    sys.modules.pop('backend', None)
+    _purge_backend_modules()
     backend = importlib.import_module('backend')
     assert backend.DATA_DIR == str(tmp_path), '数据目录未被环境变量覆盖，拒绝继续（防止误碰真实数据）'
     yield backend
@@ -30,7 +43,7 @@ def backend_mod(tmp_path, monkeypatch):
         backend.conn.close()  # Windows 文件锁：不关掉 tmp_path 清不掉
     except Exception:
         pass
-    sys.modules.pop('backend', None)
+    _purge_backend_modules()
 
 
 @pytest.fixture
@@ -74,7 +87,7 @@ def load_app_partial(monkeypatch, tmp_path):
     掩盖了它；单跑 `test_window_persistence.py` 才暴露）。
     """
     monkeypatch.setenv('MYNOTEPAD_DATA_DIR', str(tmp_path))
-    sys.modules.pop('backend', None)
+    _purge_backend_modules()
     src = open(APP_PYW, encoding='utf-8').read()
     parts = src.split(APP_SPLIT_MARKER)
     assert len(parts) == 2, 'app.pyw 缺少「创建窗口」分节标记，conftest 需要同步更新'
@@ -107,7 +120,7 @@ def app_ns(tmp_path, monkeypatch):
         _b.conn.close()
     except Exception:
         pass
-    sys.modules.pop('backend', None)
+    _purge_backend_modules()
 
 
 def wait_for_js(window, expression, expected=None, timeout=20.0, interval=0.25):

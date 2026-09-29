@@ -321,10 +321,14 @@ def _startup_maintenance():
     except Exception:
         import applog
         applog.get_logger().exception("回收站超期清理失败")
-    # 空间回收放在备份之后：先落一份页级一致的备份，再压缩库（见 reclaim_space 文档）
+    # 空间回收放在备份之后：先落一份页级一致的备份，再压缩库（见 reclaim_space 文档）。
+    # ⚠️ 必须把全局写锁传进去（第 14 轮起 reclaim_space 的 lock 是参数）：
+    # VACUUM 要独占重写整个库，不持锁就可能与界面的写入撞上 —— 它在后台线程里跑，
+    # 而 pywebview 的每个 JS 调用都在别的线程。拆包前它直接引用模块全局 `_db_lock`，
+    # 搬进子模块后改成显式传入（子模块 import 主模块的锁会循环导入）。
     _backend_mod.backup_database()
     try:
-        _backend_mod.reclaim_space()
+        _backend_mod.reclaim_space(lock=_backend_mod._db_lock)
     except Exception:
         import applog
         applog.get_logger().exception("数据库空间回收失败")

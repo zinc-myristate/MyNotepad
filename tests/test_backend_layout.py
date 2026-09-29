@@ -83,7 +83,7 @@ def test_submodules_are_importable_on_their_own():
     # 这个清单随拆包增长。**加新模块时记得登记** —— 漏登记不会报错，
     # 但"打包漏收子模块"这类事故就没人挡了（PyInstaller 靠 __init__ 的 import 收集，
     # 而那与"能独立 import"是两回事）。
-    mods = ['paths', 'crypto', 'text']
+    mods = ['paths', 'crypto', 'text', 'backup']
     code = ('import json\n'
             'import importlib\n'
             'out = {}\n'
@@ -184,7 +184,7 @@ def test_packaged_exe_contains_the_backend_submodules():
     if not os.path.exists(PACKAGED_EXE):
         pytest.skip('没有 dist 产物（干净检出），跳过打包内容检查')
 
-    mods = ['backend', 'backend.paths', 'backend.crypto', 'backend.text']
+    mods = ['backend', 'backend.paths', 'backend.crypto', 'backend.text', 'backend.backup']
     r = subprocess.run([sys.executable, '-c', _PROBE_PYZ, PACKAGED_EXE, ','.join(mods)],
                        capture_output=True, text=True, encoding='utf-8', timeout=300)
     if r.returncode != 0:
