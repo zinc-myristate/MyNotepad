@@ -47,7 +47,35 @@ jobs:
       - name: Install dependencies
         run: python -m pip install -r requirements.txt
       - name: Run headless E2E tests
-        run: python -m pytest -m e2e --reruns 2 --reruns-delay 5
+        shell: pwsh
+        run: |
+          # 失败信息必须**能被看到**：Actions 的 job 日志要登录才读得到（403），
+          # 而 e2e 一旦红了就完全不知道挂在哪。所以：
+          #   · --junitxml 把每个用例的结果落成 XML；
+          #   · 失败时把 XML 里的失败详情写进 **step summary**（公开可读、支持多行）；
+          #   · 再把「哪几个用例挂了」作为 `::error::` 注释（注释是 64KB 上限、换行会被拍平，
+          #     所以只放用例名，不放 traceback）。
+          # 这里保留 --reruns 2（消掉与代码无关的时序抖动），不加 -x —— 拿全量失败清单更有用。
+          $env:PYTEST_ADDOPTS = ''
+          python -m pytest -m e2e --reruns 2 --reruns-delay 5 `
+            --junitxml=e2e-results.xml -rf --tb=short
+          $rc = $LASTEXITCODE
+          if ($rc -ne 0 -and (Test-Path e2e-results.xml)) {
+            [xml]$x = Get-Content e2e-results.xml -Raw -Encoding utf8
+            $cases = @($x.testsuites.testsuite.testcase | Where-Object {
+              $_.failure -or $_.error
+            })
+            $names = @($cases | ForEach-Object { "$($_.classname)::$($_.name)" })
+            $summary = "## E2E 失败详情（$($names.Count) 个用例）`n`n"
+            foreach ($c in $cases) {
+              $body = if ($c.failure) { $c.failure.'#text' } else { $c.error.'#text' }
+              $summary += "### $($c.classname)::$($c.name)`n`n``````text`n$body`n```````n`n"
+            }
+            Add-Content -Path $env:GITHUB_STEP_SUMMARY -Value $summary -Encoding utf8
+            $head = if ($names.Count -gt 12) { $names[0..11] } else { $names }
+            Write-Host "::error title=E2E 失败（$($names.Count) 个）::$($head -join ' | ')"
+          }
+          exit $rc
 
   # 打包冒烟：仅主分支，构建 exe 并启动 5 秒验证
   package:
