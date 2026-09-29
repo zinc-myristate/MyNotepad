@@ -3122,10 +3122,17 @@ body.adaptive-bg {
 
 /* ====== 笔记本选择栏 ====== */
 /* 左右 14px 与 .sidebar-header 一致：红圈里"搜索框"和"笔记本按钮"要能对上左右边
-   （原来左边距 10px，两块各差 4px，看着像没对齐） */
+   （原来左边距 10px，两块各差 4px，看着像没对齐）。
+   ⚠️ 上下内边距必须**对称**（8px/8px），这是第二次红圈反馈：
+   原来是 `2px 14px 4px`，于是这条栏的 border-bottom 分界线**上方 9px、下方只有 2px** ——
+   笔记本行像是"贴着分界线挂上去"的，整块看着挤。实测（1200×800）：
+     搜索框底 88 ──9px── 分界线 97 ──2px── 笔记本行顶 99
+   现在两侧都是 8px（与 .sidebar-header 自己的 8px 同值），笔记本行成为独立一段；
+   红框那行占位从 41px 变 51px，下方按钮只下移 2px。
+   ⚠️ 别再为了"省一点高度"把这两个值改成不对称 —— 有实机断言钉住（test_ui_layout）。 */
 .notebook-bar {
   display: flex; align-items: center; gap: 4px;
-  padding: 2px 14px 4px;
+  padding: 8px 14px 8px;
   border-bottom: 1px solid var(--border-light);
 }
 .notebook-select-btn {

@@ -73,12 +73,57 @@ class TestStaticUI:
         btn = block('.notebook-select-btn', 'min-height')
         plus = block('.btn-new-notebook', 'min-height')
         assert 'padding: 18px 14px 8px' in header, '侧栏头部左右内边距是 14px（搜索框据此对齐）'
-        assert 'padding: 2px 14px 4px' in bar, '笔记本栏左右内边距必须与侧栏头部一致（都用 14px）'
+        # ⚠️ 这里只钉**左右** 14px —— 那才是这条断言想守的东西（与侧栏头部对齐）。
+        # 原来写的是完整字面量 `padding: 2px 14px 4px`，把上下的值也一起锁死了，
+        # 于是第二次红圈反馈（分界线上下不对称）改不动它，得先来改测试。
+        # 上下留白由下面那条 test_notebook_bar_padding_is_vertically_symmetric 单独守。
+        assert re.search(r'padding:\s*[\d.]+px\s+14px\s+[\d.]+px', bar), \
+            '笔记本栏左右内边距必须与侧栏头部一致（都用 14px），实际：%r' % bar
         assert 'var(--input-bg)' in btn, '笔记本按钮底色要跟搜索框同一档'
         assert '--bg-secondary' not in btn, '浅灰底会让同一条边框看着更重'
         assert 'min-height: 35px' in btn, '高度要跟搜索框的 35px 对齐'
         assert 'min-height: 35px' in plus, '「+」也要 35px（同一行三个控件等高）'
         assert 'margin: 0' in plus, '「+」的 8px 右边距会把它的右边界推进来，与搜索框对不齐'
+
+    def test_notebook_bar_padding_is_vertically_symmetric(self):
+        """笔记本栏的上下内边距必须相等（用户第二次红圈反馈：那一行看着挤）。
+
+        它是 `.sidebar-header` 的 `border-bottom` 分界线**下方**的第一块，所以它的
+        `padding-top` 就是"分界线到笔记本行"的距离。原来的 `2px 14px 4px` 让分界线
+        上方 9px、下方只有 2px —— 笔记本行像贴着分界线挂上去的。
+
+        为什么必须靠测试钉：这种 6px 的差肉眼能感觉出"挤"但说不清是哪儿，
+        而"省一点侧栏高度"是很自然的改动，很容易又被改回不对称。
+        实机像素另有 e2e 断言（test_sidebar_divider_gaps_are_symmetric）。
+        """
+        css = _style()
+        bar = None
+        for b in re.findall(r'\.notebook-bar\s*\{[^}]*\}', css, re.S):
+            if 'padding' in b:
+                bar = re.sub(r'/\*.*?\*/', '', b, flags=re.S)
+                break
+        assert bar, '找不到 .notebook-bar 的 padding 规则'
+        m = re.search(r'padding:\s*([\d.]+)px\s+[\d.]+px\s+([\d.]+)px', bar)
+        assert m, 'padding 必须是"上 左右 下"三值写法才好看对称性，实际：%r' % bar
+        top, bottom = float(m.group(1)), float(m.group(2))
+        assert top == bottom, (
+            '笔记本栏上下内边距必须相等（分界线两侧才对称）。\n'
+            '  现在 上 %gpx / 下 %gpx —— 上方是搜索区、下方是笔记本行，'
+            '不对称会让这一行看着贴住分界线。' % (top, bottom))
+        assert top >= 6, '上下留白至少 6px，否则仍然显得挤（实测 8px 合适）'
+
+    def test_new_note_button_still_separated_from_notebook_bar(self):
+        """加完笔记本栏的留白后，「新建笔记」按钮不能反而贴上去。
+
+        这条守的是"改一处、坏一处"：笔记本栏 padding 从 4px 变 8px 会让按钮下移，
+        如果谁为了把按钮挪回去而把它的 margin-top 改成 0，红框下方就又挤了。
+        """
+        css = _style()
+        m = re.search(r'\.btn-new-note\s*\{[^}]*?margin:\s*([^;]+);', css, re.S)
+        assert m, '找不到 .btn-new-note 的 margin'
+        parts = m.group(1).split()
+        top = float(re.sub(r'[^\d.]', '', parts[0]))
+        assert top >= 2, '「新建笔记」按钮上方至少要留 2px（当前 margin: %s）' % m.group(1)
 
     def test_note_time_never_wraps_and_yields_on_hover(self):
         """笔记行的时间戳：正常态不折行；悬停态让位给那 5 个操作按钮。
@@ -433,3 +478,64 @@ def test_sidebar_pair_and_note_row_pixels(tmp_path, monkeypatch):
     # ③ 置顶图标：细描边图钉（无圆点），悬停底色是圆
     assert res['pin'] == {'circles': 0, 'paths': 2, 'stroke': '2'}, res['pin']
     assert res['pinBtnRadius'] == '50%', '悬停底框应是圆：%s' % res['pinBtnRadius']
+
+
+SIDEBAR_DIVIDER = r"""JSON.stringify((() => {
+  const r = (sel) => { const el = document.querySelector(sel);
+    if (!el) return null; const b = el.getBoundingClientRect();
+    return {top: Math.round(b.top), bottom: Math.round(b.bottom),
+            h: Math.round(b.height)}; };
+  const hdr = r('.sidebar-header');
+  const search = r('#search-input');
+  const bar = r('.notebook-bar');
+  const row = r('#btn-notebook-select');
+  const newNote = r('.btn-new-note');
+  return {
+    gapAbove: row.top - hdr.bottom,       // 分界线 → 笔记本行
+    gapBelow: hdr.bottom - search.bottom, // 搜索框 → 分界线
+    gapBarToNewNote: newNote.top - bar.bottom,
+    barHeight: bar.h,
+  };
+})())"""
+
+
+@pytest.mark.e2e
+def test_sidebar_divider_gaps_are_symmetric(tmp_path, monkeypatch):
+    """分界线两侧的留白必须对称（用户第二次红圈反馈：笔记本行看着挤）。
+
+    **实测过的旧状态**（1200×800）：搜索框底 88 → 分界线 97（9px）→ 笔记本行顶 99（**2px**）。
+    分界线上方 9px、下方只有 2px，笔记本行像贴着分界线挂上去；它到「新建笔记」按钮又只有 7px。
+
+    根因：`.notebook-bar` 的 `padding` 是 `2px 14px 4px` —— 上 2px。
+    现在两侧都是 8px（与 `.sidebar-header` 自己的 8px 同值）。
+
+    这条用**算出来的像素**验收，而不是看 CSS 里写了什么 —— CSS 里还有 border、
+    min-height、flex 居中，叠加起来才是肉眼看到的缝。
+    """
+    ns = load_app_partial(monkeypatch, tmp_path)
+    import backend
+    backend.api.notes_create()
+
+    def actions(window, result):
+        time.sleep(1.0)
+        result.update(json.loads(window.evaluate_js(SIDEBAR_DIVIDER)))
+
+    res = _run(ns, actions)
+    assert 'error' not in res, res
+    above, below = res['gapAbove'], res['gapBelow']
+
+    # ① 分界线两侧对称（这是本次反馈的核心）
+    assert abs(above - below) <= 1, (
+        '笔记本栏的上下留白不对称：分界线上方 %dpx / 下方 %dpx。\n'
+        '下方明显偏小 ⇒ 笔记本行会显得贴住分界线（用户红圈反馈）。\n'
+        '修法是 .notebook-bar 的 padding 上下取同一个值（当前 8px）。' % (below, above))
+
+    # ② 留白要给够（1px 对称也算对称，但依然挤）
+    assert above >= 6, '分界线下方只留了 %dpx，仍然偏挤（实测 8px 合适）' % above
+
+    # ③ 加完笔记本栏的留白后，按钮不能被挤到贴着它
+    assert res['gapBarToNewNote'] >= 2, \
+        '笔记本行到「新建笔记」按钮只剩 %dpx' % res['gapBarToNewNote']
+
+    # ④ 别把这一行本身压扁（padding 改成不对称的一个常见动机是"省高度"）
+    assert res['barHeight'] >= 45, '笔记本栏总高只有 %dpx（8+35+8 = 51 才对）' % res['barHeight']
