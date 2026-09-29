@@ -79,8 +79,10 @@ def test_data_dir_is_the_repo_root_not_the_package_dir():
 
 def test_submodules_are_importable_on_their_own():
     """`import backend.X` 直接可用（打包收集与隔离测试都依赖这一点）。"""
-    # 目前只有 paths / crypto；这个清单随拆包增长，写全是为了"新加的模块忘登记"时能发现
-    mods = ['paths', 'crypto']
+    # 这个清单随拆包增长。**加新模块时记得登记** —— 漏登记不会报错，
+    # 但"打包漏收子模块"这类事故就没人挡了（PyInstaller 靠 __init__ 的 import 收集，
+    # 而那与"能独立 import"是两回事）。
+    mods = ['paths', 'crypto', 'text']
     code = ('import json\n'
             'import importlib\n'
             'out = {}\n'
