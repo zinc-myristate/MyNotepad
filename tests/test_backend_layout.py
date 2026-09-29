@@ -194,3 +194,94 @@ def test_packaged_exe_contains_the_backend_submodules():
         '打包产物里缺这些模块：%r\n'
         '说明 dist 是**旧的**（源码改了但没重新打包），或者 PyInstaller 漏收了子模块。\n'
         '重跑 `python build.py` 即可。' % missing)
+
+
+# ---------- backup 模块的路径必须从门面解析 ----------
+
+BACKUP_SRC = os.path.join(PROJECT_ROOT, 'backend', 'backup.py')
+
+
+def test_backup_does_not_derive_paths_from_dunder_file():
+    r"""`backup.py` 不许自己按 `__file__` 推导数据目录。
+
+    为什么：冻结（PyInstaller 6.x）后 `__file__` 落在 `_internal/backend/backup.py`，
+    自己推导会算出 `…\dist\MyNotepad\_internal\data` —— 而真正的数据在
+    `…\dist\MyNotepad\data`。后果是 `check_integrity()` 去检查一个**不存在的文件**，
+    返回 False，启动自检弹"数据库完整性检查失败…可尝试从备份恢复"并退出：
+    **程序完全打不开，而数据其实完好**（实测踩到，用户反复报"无法启动"）。
+
+    判据：源码里不得出现 `dirname(...__file__...)` 出现在 `DATA_DIR` / `DB_PATH` /
+    `BACKUP_DIR` 的推导里。用 AST 而不是正则 —— 注释里会提到 `__file__`（就是这个坑的说明）。
+    """
+    import ast
+
+    tree = ast.parse(open(BACKUP_SRC, encoding='utf-8').read())
+    offenders = []
+    for node in ast.walk(tree):
+        # 找形如 X = <含 __file__ 的表达式> 的模块级赋值
+        if isinstance(node, ast.Assign):
+            names = [t.id for t in node.targets if isinstance(t, ast.Name)]
+            if not any(n in ('DATA_DIR', 'DB_PATH', 'BACKUP_DIR') for n in names):
+                continue
+            src = ast.dump(node.value)
+            if '__file__' in src:
+                offenders.append((node.lineno, names, ast.unparse(node.value)[:80]))
+    assert offenders == [], (
+        'backup.py 里出现了按 __file__ 推导数据目录的赋值 —— 冻结后它会算错目录，\n'
+        '导致启动自检检查一个不存在的库并弹框退出（程序完全打不开）。\n'
+        '路径必须从门面解析（见 backup.py 里 _facade() 的注释）。\n'
+        '命中：%r' % offenders)
+
+
+def test_backup_paths_resolve_through_the_facade(backend_mod):
+    """`backup` 模块的三个路径必须与门面完全一致（同一个真相源）。"""
+    from backend import backup as bk
+
+    assert bk.DATA_DIR() == backend_mod.DATA_DIR, \
+        'backup.DATA_DIR() 与门面的不一致：%r vs %r' % (bk.DATA_DIR(), backend_mod.DATA_DIR)
+    assert bk.DB_PATH() == backend_mod.DB_PATH, \
+        'backup.DB_PATH() 与门面的不一致：%r vs %r' % (bk.DB_PATH(), backend_mod.DB_PATH)
+    assert bk.BACKUP_DIR() == backend_mod.BACKUP_DIR, \
+        'backup.BACKUP_DIR() 与门面的不一致：%r vs %r' % (bk.BACKUP_DIR(), backend_mod.BACKUP_DIR)
+
+
+def test_facade_path_names_are_still_strings(backend_mod):
+    """门面上的路径名必须仍是**字符串** —— 外部（测试 / app.pyw / restore.py）按字符串用。
+
+    `backup.py` 内部把这三个名字改成了函数（为了延迟解析、避开冻结时机问题），
+    但门面 re-export 时必须还是字符串，否则所有 `backend.DB_PATH` 的用法都会坏。
+    """
+    for name in ('DATA_DIR', 'DB_PATH', 'ATTACH_DIR', 'BACKUP_DIR'):
+        value = getattr(backend_mod, name)
+        assert isinstance(value, str), \
+            '门面 %s 应该是字符串，实际是 %s（re-export 时把 backup 的函数透出来了？）' % (
+                name, type(value).__name__)
+
+
+def test_backup_default_path_matches_the_facade_not_the_module_location(backend_mod):
+    """即使 `backup` 模块被重新导入，它的默认路径也要跟着门面走。
+
+    这条模拟"门面换了数据目录"：直接改门面的 DATA_DIR/DB_PATH，不带参数调用
+    `check_integrity()` 也必须看新的路径（而不是模块自己缓存的旧值）。
+    """
+    from backend import backup as bk
+
+    original = (backend_mod.DATA_DIR, backend_mod.DB_PATH, backend_mod.BACKUP_DIR)
+    probe = backend_mod.DB_PATH + '.probe'
+    try:
+        import shutil
+        shutil.copyfile(backend_mod.DB_PATH, probe)
+        backend_mod.DB_PATH = probe
+        assert bk.DB_PATH() == probe, 'backup.DB_PATH() 没跟着门面走'
+        assert backend_mod.check_integrity() is True, '应检查新的路径'
+
+        with open(probe, 'wb') as f:
+            f.write(b'not a sqlite database' * 20)
+        assert backend_mod.check_integrity() is False, \
+            '把门面指向的库写坏后仍返回 True —— 说明 backup 没走门面的路径'
+    finally:
+        backend_mod.DATA_DIR, backend_mod.DB_PATH, backend_mod.BACKUP_DIR = original
+        try:
+            os.remove(probe)
+        except OSError:
+            pass

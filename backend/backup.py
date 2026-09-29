@@ -11,15 +11,14 @@ r"""数据库备份 / 完整性校验 / 空间回收。
 
 ## 为什么路径是模块级默认 + 显式参数
 
-它们必须知道"哪一个库"（`DB_PATH`）与"备份放哪"（`BACKUP_DIR`）。本模块按 `DATA_DIR`
-算出一份默认值，同时每个函数都接显式参数：
+它们必须知道"哪一个库"（`DB_PATH`）与"备份放哪"（`BACKUP_DIR`）。本模块的路径**从门面（backend/__init__.py）解析**，同时每个函数都接显式参数：
 
 * 生产路径不传参，用默认值；
 * **测试可以指向任意临时库**，不必改模块全局 —— 改全局在拆包后对子模块不生效，
   这是"patch 打错模块"那类坑的近亲（上一轮在 crypto 上踩过）。
 
-⚠️ 这两个默认值与 `backend/__init__.py` 的 `DATA_DIR` 是**同一个来源**（都读环境变量），
-不是第二个真相源。真要说谁是唯一来源，是 `__init__.py` 的 `DATA_DIR`；这里是它的投影。
+⚠️ **不要在这里自己推导路径**（曾经这么写过，导致打包版完全打不开）：冻结后
+`__file__` 在 `_internal/` 里，自己推导会算出错的目录。见下面 `DATA_DIR()` 的注释。
 """
 import contextlib
 import os
@@ -34,12 +33,41 @@ from datetime import datetime
 
 import applog
 
-# 与 __init__.py 的 DATA_DIR 同一口径：环境变量优先，否则仓库根下的 data/
-DATA_DIR = os.environ.get('MYNOTEPAD_DATA_DIR') or os.path.join(
-    os.path.dirname(os.path.dirname(os.path.abspath(__file__))), 'data')
 
-DB_PATH = os.path.join(DATA_DIR, 'notes.db')
-BACKUP_DIR = os.path.join(DATA_DIR, 'backups')
+# ⚠️⚠️ 这三个名字**必须**从 backend/__init__.py 解析，绝不能自己按 `__file__` 推导。
+#
+# 为什么（实测踩过、后果是"程序完全打不开"）：
+# 拆 backup.py 时我写过一版"环境变量优先，否则 dirname(dirname(__file__))/data"，
+# 还注释说"与 __init__.py 同一口径、不是第二个真相源" —— **它就是个第二真相源**。
+# 冻结（PyInstaller 6.x）后 `__file__` 落在 `_internal/backend/backup.py`，
+# 于是这里算出的 DATA_DIR 变成 `…\dist\MyNotepad\_internal\data`，而真正的数据在
+# `…\dist\MyNotepad\data`。结果 `check_integrity()` 去检查一个**不存在的文件** →
+# 返回 False → 启动自检弹"数据库完整性检查失败，可尝试从备份恢复"并退出。
+# 用户看到的就是"打不开"，而数据其实完好无损。
+#
+# 用**函数**而不是模块级常量：`__init__.py` 要先 import 本模块才轮到它自己算 DATA_DIR，
+# 模块级 `from . import DATA_DIR` 会循环导入；函数体内的延迟导入没有这个问题，
+# 也顺带保证"以后再改环境变量/数据目录推导"时这里跟着走。
+# 公开名保持成函数（`DB_PATH()` / `BACKUP_DIR()`），调用方少一层间接；测试可以用
+# `MYNOTEPAD_DATA_DIR` 或直接传 `db_path=` 覆盖。
+def _facade():
+    import sys as _sys
+    return _sys.modules['backend']
+
+
+def DATA_DIR():
+    """数据目录：以门面（backend/__init__.py）为准，那里是唯一真相源。"""
+    return _facade().DATA_DIR
+
+
+def DB_PATH():
+    """当前库的路径。"""
+    return _facade().DB_PATH
+
+
+def BACKUP_DIR():
+    """备份目录。"""
+    return _facade().BACKUP_DIR
 
 # `reclaim_space(lock=None)` 时用的空上下文（不传锁 = 自己保证没有并发调用）
 _NULL_LOCK = contextlib.nullcontext()
@@ -60,18 +88,18 @@ def backup_database():
     滚动裁剪时还会把最旧的一份**好**备份挤掉；恢复工具那边也会把它当候选（见 restore.py）。
     """
     try:
-        if not os.path.exists(DB_PATH):
+        if not os.path.exists(DB_PATH()):
             return None
-        os.makedirs(BACKUP_DIR, exist_ok=True)
+        os.makedirs(BACKUP_DIR(), exist_ok=True)
         existing = sorted(
-            f for f in os.listdir(BACKUP_DIR)
+            f for f in os.listdir(BACKUP_DIR())
             if f.startswith('notes-') and f.endswith('.db')
         )
         if existing:
-            latest = os.path.join(BACKUP_DIR, existing[-1])
+            latest = os.path.join(BACKUP_DIR(), existing[-1])
             if (datetime.now().timestamp() - os.path.getmtime(latest)) < 24 * 3600:
                 return None  # 24h 内已有备份
-        dest = os.path.join(BACKUP_DIR, datetime.now().strftime('notes-%Y%m%d-%H%M%S.db'))
+        dest = os.path.join(BACKUP_DIR(), datetime.now().strftime('notes-%Y%m%d-%H%M%S.db'))
         tmp = dest + '.part'
         try:
             if os.path.exists(tmp):
@@ -88,7 +116,7 @@ def backup_database():
                             os.remove(p + suffix)
                     except OSError:
                         pass
-            src = sqlite3.connect(DB_PATH)
+            src = sqlite3.connect(DB_PATH())
             dst = sqlite3.connect(tmp)
             try:
                 with dst:
@@ -119,12 +147,12 @@ def backup_database():
         # "保留 7 份"实际留下 9 个文件（实测踩到，WAL 切完立刻红了一条测试）。
         _shard = ('.part', '.part-wal', '.part-shm', '.db-wal', '.db-shm')
         all_backups = sorted(
-            f for f in os.listdir(BACKUP_DIR)
+            f for f in os.listdir(BACKUP_DIR())
             if f.startswith('notes-') and f.endswith('.db') and not f.endswith(_shard)
         )
         for old in all_backups[:-7]:
             try:
-                os.remove(os.path.join(BACKUP_DIR, old))
+                os.remove(os.path.join(BACKUP_DIR(), old))
             except OSError:
                 pass
         return dest
@@ -143,6 +171,7 @@ def _is_transient(exc):
     """这个异常像不像"等一会儿就好"？"""
     msg = str(exc).lower()
     return any(h in msg for h in _TRANSIENT_HINTS)
+
 
 
 def check_integrity(db_path=None):
@@ -168,7 +197,7 @@ def check_integrity(db_path=None):
     ⚠️ 上次退出留下的 `notes.db-wal` 不算异常：SQLite 打开时会自己回放它，
     这是 WAL 的正常工作方式（而"退出时归零"只是为了让用户手动拷 data 目录更安全）。
     """
-    path = db_path or DB_PATH
+    path = db_path or DB_PATH()
     # 用 isfile 而不是 exists：传进来一个**目录**时 exists 为真，然后 sqlite 抛
     # "unable to open database file" —— 那会被下面的瞬时判定当成"等会儿就好"而放行，
     # 实测就出现过"传目录却返回 True"。用 isfile 直接排除。
@@ -181,7 +210,21 @@ def check_integrity(db_path=None):
         try:
             c = sqlite3.connect(path, timeout=2)
             try:
-                return c.execute("PRAGMA integrity_check").fetchone()[0] == 'ok'
+                # ⚠️ 这里必须把**原始结果**记下来：只记"失败"会让排查无从下手 ——
+                # 实测踩过：自检返回 False 但日志里既没有异常也没有结果，
+                # 完全看不出是"抛异常"还是"结果不是 ok"。
+                try:
+                    row = c.execute("PRAGMA integrity_check").fetchone()
+                    result = row[0] if row else None
+                except Exception as inner:
+                    applog.get_logger().warning(
+                        '完整性检查的 PRAGMA 本身报错（第 %d 次）：%s: %s',
+                        attempt + 1, type(inner).__name__, inner)
+                    raise
+                if result != 'ok':
+                    applog.get_logger().warning(
+                        '完整性检查结果不是 ok（第 %d 次）：%r', attempt + 1, result)
+                return result == 'ok'
             finally:
                 c.close()
         except Exception as exc:
@@ -225,7 +268,7 @@ def space_stats(db_path=None):
       2) 历史版本快照反复写入再按 50 条上限删除。
     实测某库：文件 12.02 MB，其中空闲页 3046 页 = 11.90 MB（占 99%），有效数据仅 0.12 MB。
     """
-    path = db_path or DB_PATH
+    path = db_path or DB_PATH()
     if not os.path.exists(path):
         return None   # 必须先判断：sqlite3.connect 会顺手创建空文件，不能让它有副作用
     try:
@@ -254,7 +297,7 @@ def reclaim_space(threshold=0.30, db_path=None, lock=None):
     不传 = 不加锁（自己保证没有并发调用），传了就按 with 语义持有。
     返回 (是否执行, 执行前字节, 执行后字节)；无需回收或失败返回 (False, size, size)。
     """
-    path = db_path or DB_PATH
+    path = db_path or DB_PATH()
     if not os.path.exists(path):
         return False, 0, 0
     before = os.path.getsize(path)

@@ -104,12 +104,12 @@ def test_check_integrity_resolves_db_path_lazily(backend_mod):
     import os
     import shutil
 
-    original = backup.DB_PATH
+    original = backup.DB_PATH()
     probe = original + '.probe'
     try:
         # 先放一份**完好**的副本：应判 True
         shutil.copyfile(original, probe)
-        backup.DB_PATH = probe
+        backend_mod.DB_PATH = probe
         assert backend_mod.check_integrity() is True, \
             '换了 DB_PATH 之后 check_integrity() 应该检查新路径'
 
@@ -122,7 +122,7 @@ def test_check_integrity_resolves_db_path_lazily(backend_mod):
             ('把当前 DB_PATH 指向的库写坏之后仍返回 True —— 说明它检查的不是当前路径，\n'
              '而是导入时冻结的那个（默认值求值时机的问题）。')
     finally:
-        backup.DB_PATH = original
+        backend_mod.DB_PATH = original
         try:
             os.remove(probe)
         except OSError:

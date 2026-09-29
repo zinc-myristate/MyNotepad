@@ -299,7 +299,34 @@ from backend import api as backend_api
 import backend as _backend_mod
 
 # 启动自检：数据库完整性检查失败立即退出（窗口未创建，退出干净），提示从备份恢复
+#
+# ⚠️ 这段的**诊断信息必须落到 error.log**：它失败时窗口还没创建，用户只看到一个
+# 对话框、什么线索都没有，而"检查了哪个文件、为什么失败"正是排查的全部依据。
+# 实测踩过：用户反复报"完整性检查失败"，而日志里只有正常的启动告警 —— 因为那条
+# 对话框路径**什么都没记**。现在成功失败都记（带路径、文件大小、frozen 标志）。
+def _probe_line():
+    try:
+        db = _backend_mod.DB_PATH
+        return 'data_dir=%s db=%s 存在=%s 大小=%s frozen=%s' % (
+            _backend_mod.DATA_DIR, db, os.path.exists(db),
+            os.path.getsize(db) if os.path.exists(db) else -1,
+            getattr(sys, 'frozen', False))
+    except Exception as exc:
+        return '（探测自身失败：%r）' % (exc,)
+
+
+try:
+    import applog as _applog
+    _applog.get_logger().info('启动自检开始：%s', _probe_line())
+except Exception:
+    pass
+
 if not _backend_mod.check_integrity():
+    try:
+        import applog
+        applog.get_logger().error('启动自检失败，即将退出：%s', _probe_line())
+    except Exception:
+        pass
     show_error_dialog("数据库完整性检查失败，为避免数据损坏，程序将退出。\n可尝试从 data/backups/ 恢复最近备份。")
     sys.exit(1)
 
