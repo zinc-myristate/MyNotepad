@@ -24,6 +24,7 @@ import os
 import subprocess
 import sys
 
+import pytest
 from conftest import PROJECT_ROOT
 
 # 注意：这个文件里的断言要能在"包被拆得更多"之后继续成立，所以只依赖
@@ -143,3 +144,53 @@ def test_mutable_unlock_state_is_not_duplicated(backend_mod):
     finally:
         backend_mod._unlocked_deks.pop('__probe__', None)
     assert '__probe__' not in c.unlocked_deks
+
+
+PACKAGED_EXE = os.path.join(PROJECT_ROOT, 'dist', 'MyNotepad', 'MyNotepad.exe')
+
+_PROBE_PYZ = r'''
+import json, os, sys, tempfile, shutil
+from PyInstaller.archive.readers import CArchiveReader, ZlibArchiveReader
+arch = CArchiveReader(sys.argv[1])
+data = arch.extract('PYZ.pyz')
+d = tempfile.mkdtemp(prefix='mn_pyzprobe_')
+p = os.path.join(d, 'PYZ.pyz')
+open(p, 'wb').write(data)
+z = ZlibArchiveReader(p)
+toc = z.toc
+names = [str(k) for k in (toc.keys() if isinstance(toc, dict) else [i[0] for i in toc])]
+shutil.rmtree(d, ignore_errors=True)
+want = sys.argv[2].split(',')
+print(json.dumps([w for w in want if w not in names]))
+'''
+
+
+def test_packaged_exe_contains_the_backend_submodules():
+    """打包产物里必须真的收进了每个 backend 子模块。
+
+    **为什么补这一条**：PyInstaller 靠 `__init__.py` 里的 import 语句收集子模块，
+    而"能独立 import"与"被收进包里"是两回事 —— 漏收的现象是**运行时才炸**
+    （点某个功能没反应），本地测试全绿也发现不了。
+
+    这次就是靠它回答"桌面快捷方式指向的 exe 是不是最新的"：只比时间戳不可靠
+    （源码改了但没重新打包，时间戳一样是旧的），要**读进包里的模块清单**才算数。
+
+    ⚠️ 为什么不能"在 exe 字节里搜源码里的名字"：PYZ 是 zlib 压缩的，搜不到任何函数名，
+    会得出"包是旧的"这种**错误**结论（我第一版就这么误判过）。
+    正确做法是解出内嵌的 `PYZ.pyz` 再读它的 TOC。
+
+    没有 dist（干净检出 / 只在源码上跑）时跳过 —— 这不是代码正确性问题。
+    """
+    if not os.path.exists(PACKAGED_EXE):
+        pytest.skip('没有 dist 产物（干净检出），跳过打包内容检查')
+
+    mods = ['backend', 'backend.paths', 'backend.crypto', 'backend.text']
+    r = subprocess.run([sys.executable, '-c', _PROBE_PYZ, PACKAGED_EXE, ','.join(mods)],
+                       capture_output=True, text=True, encoding='utf-8', timeout=300)
+    if r.returncode != 0:
+        pytest.skip('读不了打包产物（PyInstaller 版本差异？）：%s' % (r.stderr or '')[-200:])
+    missing = json.loads(r.stdout.strip().splitlines()[-1])
+    assert missing == [], (
+        '打包产物里缺这些模块：%r\n'
+        '说明 dist 是**旧的**（源码改了但没重新打包），或者 PyInstaller 漏收了子模块。\n'
+        '重跑 `python build.py` 即可。' % missing)
