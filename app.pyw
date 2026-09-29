@@ -1051,8 +1051,19 @@ def make_closing_handler(target_window, backend, tray=None, is_quitting=None, sh
         # 真正退出（不是隐藏到托盘）时把 WAL 归零，让 data 目录回到单文件状态 ——
         # 用户手动拷贝/丢进同步盘时只拷 notes.db 不会丢最近的写入。
         # 必须放在这里而不是 _flush_and_close：隐藏到托盘时进程还活着，不该做全量回写。
+        #
+        # ⚠️ 必须走 `_backend_mod`（本文件顶部 `import backend as _backend_mod`）。
+        # 原来写的是裸 `backend.checkpoint_and_close()` —— 注意这里的 `backend` 不是模块，
+        # 而是 `make_closing_handler(target_window, backend, ...)` 的**参数**（传进来的是
+        # `backend_api`，一个 Api 实例），而 `checkpoint_and_close` 是**模块级**函数：
+        # Api 实例上没有它 → AttributeError → 被下面的 except 吞进日志
+        # （`退出前 WAL checkpoint 失败`），表现是 notes.db-wal 永远不归零。
+        # 这个 bug 从引入 WAL 那一版就在，而它只在"真正退出"这条路径上：
+        # 默认开着托盘驻留时关窗只是隐藏，日常根本走不到。
+        # 实测（隔离数据目录 + tray_enabled=0 + WM_CLOSE）：修复前 WAL 506792 字节，
+        # 修复后 0 字节。守卫见 tests/test_ui_layout.py::TestAppModuleAliases。
         try:
-            backend.checkpoint_and_close()
+            _backend_mod.checkpoint_and_close()
         except Exception:
             try:
                 import applog

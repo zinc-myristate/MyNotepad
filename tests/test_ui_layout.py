@@ -539,3 +539,144 @@ def test_sidebar_divider_gaps_are_symmetric(tmp_path, monkeypatch):
 
     # ④ 别把这一行本身压扁（padding 改成不对称的一个常见动机是"省高度"）
     assert res['barHeight'] >= 45, '笔记本栏总高只有 %dpx（8+35+8 = 51 才对）' % res['barHeight']
+
+
+# ---------- app.pyw 的模块别名（静态，无需浏览器） ----------
+
+APP_PYW = os.path.join(PROJECT_ROOT, 'app.pyw')
+
+
+class TestAppModuleAliases:
+    """`app.pyw` 里引用 backend 的方式必须是它真的绑定了的那些名字。
+
+    ## 为什么要有这一组
+
+    `app.pyw` 顶部只绑了两个名字：
+
+        from backend import api as backend_api      # Api 实例
+        import backend as _backend_mod              # 模块本身
+
+    **没有 `backend`**。而"关窗兜底"那条路径上曾经写着 `backend.checkpoint_and_close()` ——
+    那个 `backend` 是 `make_closing_handler(target_window, backend, ...)` 的**参数**
+    （传进来的是 `backend_api`，一个 Api 实例）。于是：
+
+    * `Api` 实例上没有 `checkpoint_and_close`（它是**模块级**函数）→ AttributeError；
+    * 它被 `except Exception` 吞进日志（`退出前 WAL checkpoint 失败`）；
+    * 表现是 **notes.db-wal 永远不归零** —— 而"退出后 data 目录是单文件状态"正是
+      引入 WAL 时期望的性质（用户手动拷 data 目录才安全）。
+
+    这个 bug 从 WAL 那一版就存在，一直没被发现：它只在"真正退出"这条路径上，
+    而默认开着托盘驻留时关窗只是隐藏，日常根本走不到。
+
+    实测复现过（隔离数据目录 + tray_enabled=0 + WM_CLOSE）：
+    修复前 `notes.db-wal` 是 506792 字节，修复后 0 字节。
+    """
+
+    def test_no_bare_backend_reference(self):
+        r"""`app.pyw` 里的裸 `backend.xxx` 必须真的是**词法作用域里的参数**。
+
+        为什么这么判：文件里有三种 `backend` 用法，只有一种是合法的 ——
+
+        1. `_load_saved_geometry(backend)` / `_save_window_geometry(backend, ...)` /
+           `make_closing_handler(..., backend, ...)` 里的属性访问 → **合法**，
+           那三个函数都把 Api 实例当参数收；
+        2. 同名的**嵌套闭包**里访问（如 `_flush_and_close` 里的 `backend.notes_update`）
+           → 也合法（Python 词法作用域，看得到外层参数）；
+        3. 在**没有这个参数**的函数里裸用 → 真 NameError。
+
+        历史上出事的正是 (2) 的**误用**：`_force_close()` 在 `make_closing_handler` 里，
+        它写 `backend.checkpoint_and_close()` —— 语法合法、`backend` 也确实解析到了，
+        但那是 **Api 实例**，而 `checkpoint_and_close` 是**模块级函数** → AttributeError
+        → 被外层 except 吞掉 → 退出时 WAL 永不归零（那条已由下面的
+        `test_no_bare_backend_inside_the_closing_handler` 精确挡住）。
+
+        所以这条只判"`backend` 是不是某个外层函数的参数"：不是就是真 bug。
+        用 AST 而不是正则扫文本 —— 正则会连注释里的反例一起算（第一版就误报了）。
+        """
+        import ast
+
+        tree = ast.parse(open(APP_PYW, encoding='utf-8').read())
+
+        # 收集每个属性的 lineno → 它所在函数的"可见参数集"
+        def walk(node, visible_params):
+            for child in ast.iter_child_nodes(node):
+                if isinstance(child, (ast.FunctionDef, ast.AsyncFunctionDef)):
+                    params = {a.arg for a in child.args.posonlyargs + child.args.args
+                              + child.args.kwonlyargs}
+                    if child.args.vararg:
+                        params.add(child.args.vararg.arg)
+                    if child.args.kwarg:
+                        params.add(child.args.kwarg.arg)
+                    walk(child, visible_params | params)
+                elif isinstance(child, ast.Attribute) and isinstance(child.value, ast.Name) \
+                        and child.value.id == 'backend':
+                    if 'backend' not in visible_params:
+                        offenders.append((child.lineno, child.attr, node.name
+                                          if hasattr(node, 'name') else '?'))
+                else:
+                    walk(child, visible_params)
+
+        offenders = []
+        walk(tree, set())
+        assert offenders == [], (
+            'app.pyw 里裸用了 `backend.xxx`，但它不在作用域里（既不是参数，也没有模块级绑定）'
+            '—— 这会是 NameError。\n'
+            '文件里只有 `backend_api`（Api 实例）与 `_backend_mod`（模块）两个别名。\n'
+            '命中的位置：\n  %s'
+            % '\n  '.join('行 %d: backend.%s（在 %s 里）' % o for o in offenders))
+
+    def test_no_bare_backend_inside_the_closing_handler(self):
+        """关窗那条路径上尤其不能出现裸 `backend.`。
+
+        为什么单独一条：`make_closing_handler(target_window, backend, ...)` 的**参数**
+        就叫 `backend`（传进来的是 Api 实例）。所以在它内部写 `backend.xxx` 语法完全合法、
+        不报 NameError，但**语义是 Api 实例** —— 调模块级函数就会 AttributeError，
+        而外层 `except Exception` 会把它咽掉（实测就是这么藏了整整一个版本）。
+        """
+        import ast
+
+        tree = ast.parse(open(APP_PYW, encoding='utf-8').read())
+        handler = None
+        for node in ast.walk(tree):
+            if isinstance(node, ast.FunctionDef) and node.name == 'make_closing_handler':
+                handler = node
+                break
+        assert handler is not None, '找不到 make_closing_handler'
+
+        params = {a.arg for a in handler.args.args}
+        assert 'backend' in params, \
+            'make_closing_handler 的第二个参数名变了，这条测试的前提要重看'
+
+        # 这个闭包里有没有调用 checkpoint_and_close（如果有，必须是 _backend_mod 的形式）
+        for sub in ast.walk(handler):
+            if isinstance(sub, ast.Call) and isinstance(sub.func, ast.Attribute) \
+                    and sub.func.attr == 'checkpoint_and_close':
+                base = sub.func.value
+                assert not (isinstance(base, ast.Name) and base.id == 'backend'), \
+                    ('第 %d 行在关窗闭包里调了 backend.checkpoint_and_close() —— '
+                     '那个 backend 是 Api 实例，没有这个方法（会被 except 吞掉，'
+                     '表现为退出时 WAL 不归零）。要用 _backend_mod.checkpoint_and_close()。'
+                     % sub.lineno)
+
+    def test_backend_module_alias_is_bound(self):
+        """确认那两个别名还在（改名字会让上面的判据失效，这条一起钉住）。"""
+        src = open(APP_PYW, encoding='utf-8').read()
+        assert 'from backend import api as backend_api' in src, \
+            'app.pyw 必须把 Api 实例绑成 backend_api'
+        assert 'import backend as _backend_mod' in src, \
+            'app.pyw 必须把模块绑成 _backend_mod（模块级函数走它）'
+
+    def test_exit_path_calls_checkpoint_on_the_module(self):
+        """退出路径必须调**模块级**的 checkpoint_and_close。
+
+          * `Api` 实例上没有它（实测 hasattr 为 False）；
+          * 所以只能走 `_backend_mod.checkpoint_and_close()`。
+
+        这条同时挡住"不小心改成 backend_api.checkpoint_and_close()"
+        —— 那会静默退回 AttributeError 被吞掉的老样子。
+        """
+        src = open(APP_PYW, encoding='utf-8').read()
+        assert '_backend_mod.checkpoint_and_close()' in src, \
+            '退出时的 WAL 归零必须调 _backend_mod.checkpoint_and_close()'
+        assert 'backend_api.checkpoint_and_close' not in src, \
+            'Api 实例上没有 checkpoint_and_close（它是模块级函数）'
