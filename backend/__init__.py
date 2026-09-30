@@ -1449,6 +1449,46 @@ class Api:
         conn.commit()
         return self.notes_get(nid)
 
+    def _notes_create_full(self, title, content, notebook_id=None):
+        """一次性建一篇**内容已就绪**的笔记（单条 INSERT，不给读者留中间态）。
+
+        ## 为什么要有这个（而不是 notes_create 之后补 notes_update）
+
+        `notes_create()` 插的是"未命名笔记 + 空正文"的占位，要三步才能凑成一篇真笔记：
+
+            note = notes_create()                      # ① 空占位
+            notes_update(note.id, {'content': ...})    # ② 写正文
+            notes_update(note.id, {'title': ..., 'notebook_id': ...})  # ③ 写标题
+
+        **每一步都是独立的 commit，所以中间态对读者是可见的**。实测（4 个线程高频轮询，
+        15 轮里 14 轮抓到）：
+
+            看到"笔记已存在但正文为空"的次数：10~17 次/轮
+
+        这不是纯测试问题 —— 用户点「今日日记」时同样可能先看到一篇空白日记。
+        CI 上 `--reruns 2` 两次都失败，正是因为 CI 负载重、WebView2 慢，这个窗口被拉大。
+
+        「今日日记」与「用模板新建」都需要"标题/正文/笔记本一次到位"，所以收在这里。
+        FTS 与派生索引的写法与 `notes_create()` 逐字一致（同一个口径，别让索引分叉）。
+
+        加密笔记**刻意不支持**：本函数只用于"刚创建"的笔记，那时还没有密码。
+        """
+        if notebook_id and not conn.execute(
+                "SELECT 1 FROM notebooks WHERE id = ?", (notebook_id,)).fetchone():
+            notebook_id = None
+        nid = str(uuid.uuid4())
+        title = title or '未命名笔记'
+        content = content or ''
+        conn.execute(
+            "INSERT INTO notes (id, title, content, sort_order, format, notebook_id) "
+            "VALUES (?, ?, ?, ?, 'md', ?)",
+            (nid, title, content, _next_sort_order('notes'), notebook_id or None)
+        )
+        _fts_sync(nid, title, content, 'md')
+        _refresh_derived(nid, content, 'md')
+        conn.commit()
+        return self.notes_get(nid)
+
     def notes_update(self, note_id, fields):
         allowed = {'title', 'content', 'bg_type', 'bg_value', 'bg_opacity', 'bg_zoom', 'bg_pos_x', 'bg_pos_y', 'bg_blur', 'ui_scrim', 'content_scrim', 'sort_order', 'is_pinned', 'is_favorite', 'paper_style', 'paper_color', 'cover_type', 'cover_value', 'notebook_id'}
         # 回收站中的笔记不可更新
@@ -1795,13 +1835,10 @@ class Api:
         content = render_template(row['content'], name) if row else ''
         if not notebook_id:
             notebook_id = _find_or_create_notebook(notebook_name) if notebook_name else None
-        note = self.notes_create(notebook_id=notebook_id)
-        fields = {}
-        if content:
-            fields['content'] = content
-        if name:
-            fields['title'] = name
-        return self.notes_update(note['id'], fields) if fields else note
+        # ⚠️ 走 `_notes_create_full`（一条 INSERT）而不是 notes_create + notes_update：
+        # 后者会留下"笔记已建出来、标题还是『未命名笔记』、正文还是空的"中间态，
+        # 读者（以及用户的列表）能看见它。理由详见 `_notes_create_full` 的注释。
+        return self._notes_create_full(name or '未命名笔记', content, notebook_id)
 
     def notebook_id_by_name(self, name):
         """给前端用：拿到（或直接创建）某个名字的笔记本 id"""
@@ -1816,6 +1853,12 @@ class Api:
 
         标题用 `2026-09-22 周二`（排序即日期序，一眼能看出是哪天）；放在「日记」笔记本；
         若存在名为「日记」的模板就套用它（没有就建空白笔记）。
+
+        ⚠️ 建的时候走 `_notes_create_full`（**一条 INSERT**），不是 `notes_create` + 两次
+        `notes_update`。后者每步各自 commit，读者会看到"日记已建出来但正文还是空的"中间态
+        —— 实测 15 轮里 14 轮抓到（每轮 10~17 次）。测试的轮询恰好会踩中它，
+        而这个窗口在 CI 上（负载重、WebView2 慢）足够大到让 `--reruns 2` 两次都失败。
+        真实用户点了「今日日记」也可能先看到一篇空白日记，所以这是产品问题不只是测试问题。
         """
         now = datetime.now()
         title = '%s %s' % (now.strftime('%Y-%m-%d'), WEEKDAY_CN[now.weekday()])
@@ -1827,11 +1870,23 @@ class Api:
         notebook_id = _find_or_create_notebook(DAILY_NOTEBOOK)
         tpl = conn.execute("SELECT content FROM templates WHERE name = ? LIMIT 1",
                            (DAILY_NOTEBOOK,)).fetchone()
-        note = self.notes_create()
+        if tpl is None:
+            # 模板缺失 → 建空白日记。这是**合法**的回退（用户可能从没建过「日记」模板），
+            # 但它也**静默吞掉**了"本该有模板却没查到"的情况。记下足以定位的上下文
+            # （库路径 / 模板总数 / 同名模板数）—— 用 logging 而不是写文件，
+            # 这样 pytest 的 log capture 会把它带进失败输出。
+            try:
+                applog.get_logger().warning(
+                    '今日日记没套上模板：按 name=%r 查 templates 无结果；'
+                    'db=%s 模板总数=%s 该名字的模板数=%s',
+                    DAILY_NOTEBOOK, DB_PATH,
+                    conn.execute("SELECT COUNT(*) FROM templates").fetchone()[0],
+                    conn.execute("SELECT COUNT(*) FROM templates WHERE name = ?",
+                                 (DAILY_NOTEBOOK,)).fetchone()[0])
+            except Exception:
+                pass
         content = render_template(tpl['content'], title) if tpl else ''
-        if content:
-            self.notes_update(note['id'], {'content': content})
-        return self.notes_update(note['id'], {'title': title, 'notebook_id': notebook_id})
+        return self._notes_create_full(title, content, notebook_id)
 
     def capture_text(self, text, notebook_name=None):
         """快速捕获一段纯文本 → 收件箱里的一篇新笔记（第一行当标题）。

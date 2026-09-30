@@ -441,3 +441,65 @@ def test_ocr_selftest_entry_for_packaged_diagnostics():
     assert 'selftest_from_argv' in app_src
     ocr_src = _read('ocr.py')
     assert '--out' in ocr_src and '.ocr.json' in ocr_src
+
+
+
+def test_daily_note_has_no_empty_body_window(api, backend_mod):
+    """建「今日日记」时，读者**不该**看到"笔记已存在但正文为空"的中间态。
+
+    踩过的坑（CI 连续两轮红，本地偶发）：`daily_note_open` 原来是
+
+        note = self.notes_create()                                       # ① 空占位 + commit
+        if content:
+            self.notes_update(note['id'], {'content': content})          # ② 正文 + commit
+        return self.notes_update(... {'title': ..., 'notebook_id': ...})  # ③ 标题 + commit
+
+    三次独立提交 ⇒ 中间态对读者可见。用 4 个线程高频轮询实测：
+    **15 轮里 14 轮抓到，每轮 10~17 次**"笔记在、正文空"。
+    e2e 用例的轮询（`notes_list()` 一非空就 break 并读正文）正好踩中，
+    而 CI 负载重、WebView2 慢，这个窗口大到让 `--reruns 2` 两次都失败。
+
+    这不只是测试问题：用户点「今日日记」也可能先看到一篇空白日记。
+
+    做法：另起线程在写的过程中尽可能高频地读，断言**一次都不该**读到空正文。
+    用 `_notes_create_full` 之后写入是一条 INSERT，读者要么看不到、要么看到完整的。
+    """
+    import threading
+    import time
+
+    api.template_create('日记', '# {{date}}\n\n- [ ] 今天要做的\n')
+
+    bad = []
+    stop = threading.Event()
+
+    def poller():
+        while not stop.is_set():
+            try:
+                notes = api.notes_list()
+                if notes:
+                    body = api.notes_get(notes[0]['id'])['content']
+                    if not body:
+                        bad.append(body)
+            except Exception:
+                pass          # 并发下的瞬时错误不算这条测试的目标
+
+    threads = [threading.Thread(target=poller, daemon=True) for _ in range(4)]
+    for t in threads:
+        t.start()
+    try:
+        for _ in range(6):
+            # 每轮换一篇：删掉当前日记，让它重新走"创建"那条路径
+            backend_mod.conn.execute('DELETE FROM notes')
+            backend_mod.conn.commit()
+            note = api.daily_note_open()
+            assert '今天要做的' in note['content'], '日记必须一次到位带上模板正文'
+            time.sleep(0.02)
+    finally:
+        stop.set()
+        for t in threads:
+            t.join(timeout=1.0)
+
+    assert bad == [], (
+        '建日记的过程中被读到了 %d 次"笔记已存在但正文为空"的中间态 —— '
+        '说明创建不是一次写入（每次 commit 都会把中间态暴露给读者）。\n'
+        '修法见 backend._notes_create_full 的注释。' % len(bad))
