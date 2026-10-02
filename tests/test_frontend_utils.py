@@ -32,7 +32,7 @@ def _run_js(body):
     module_url = pathlib.Path(UTILS).as_uri()
     script = """
 import { throttle, debounce, slugify, splitFrontMatter, serializeFrontMatter,
-         parsePropsBlock } from %s;
+         parsePropsBlock, normalizeMathDelims } from %s;
 const out = {};
 const check = (name, cond) => { out[name] = !!cond; };
 await (async () => {
@@ -154,3 +154,29 @@ const d = parsePropsBlock('# 注释行\\n键: 值');
 check('comment_skipped', Object.keys(d).length === 1);
 """)
         assert all(r.values()), r
+
+
+def test_math_delims_normalize_matches_backend():
+    r"""`normalizeMathDelims` 必须与后端 `normalize_line_math()` 同规则。
+
+    为什么这条重要：前端预览自己认一套、后端转换认另一套的话，就会出现
+    "预览渲染出公式、转成 delta 却当纯文本"（或反过来）。两边的规则由各自的测试钉住。
+
+    顺带钉住**代码保护**：围栏代码块与行内代码里的 `\(` 必须是字面量。
+    """
+    out = _run_js(r"""
+const N = normalizeMathDelims;
+check('inline', N('a \\(C_0\\) b') === 'a $C_0$ b');
+check('block', N('\\[E=mc^2\\]') === '$$E=mc^2$$');
+check('two_inline', N('\\(a\\) 与 \\(b\\)') === '$a$ 与 $b$');
+check('no_math', N('plain text') === 'plain text');
+check('empty', N('') === '');
+check('already_dollar', N('a $C_0$ b') === 'a $C_0$ b');
+check('fence_literal', N('```\n\\(x\\)\n```').includes('\\(x\\)'));
+check('inline_code_literal', N('用 `\\(y\\)` 表示').includes('\\(y\\)'));
+check('block_in_text', N('前\n\\[\\frac{a}{b}\\]\n后').includes('$$\\frac{a}{b}$$'));
+check('trim', N('\\(  x  \\)') === '$x$');
+check('null_safe', N(null) === '');
+""")
+    bad = [k for k, v in out.items() if not v]
+    assert not bad, '这些断言没过：%r' % (bad,)

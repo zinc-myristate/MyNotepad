@@ -9,7 +9,7 @@
 //   3) 链接只允许 http/https/mailto/attachments 相对路径，事件属性全部剥掉。
 
 import { state } from './01-core.js';
-import { slugify, splitFrontMatter } from '../shared/utils.js';
+import { slugify, splitFrontMatter, normalizeMathDelims } from '../shared/utils.js';
 
 const MATH_BLOCK = /\$\$([\s\S]+?)\$\$/g;
 const MATH_INLINE = /\$([^$\n]+?)\$/g;
@@ -207,9 +207,16 @@ function installSanitizer() {
   });
 }
 
-/** 把 `$…$` / `$$…$$` 抽成占位符（Markdown 解析完再插回 KaTeX 结果） */
+/**
+ * 把 LaTeX 标准定界符 `\(…\)` / `\[…\]` 归一成 `$…$` / `$$…$$`，再抽成占位符
+ * （Markdown 解析完再插回 KaTeX 结果）。
+ *
+ * `normalizeMathDelims` 来自 `shared/utils.js`（纯函数，有 node 单测），
+ * **规则必须与后端 `backend/text.py` 的 `normalize_line_math()` 一致** ——
+ * 否则会出现"预览渲染出公式、转成 delta 却当纯文本"这类前后端不一致。
+ */
 function extractMath(text, store) {
-  let out = text.replace(MATH_BLOCK, (_m, tex) => {
+  let out = normalizeMathDelims(text).replace(MATH_BLOCK, (_m, tex) => {
     store.push({ tex, display: true });
     return '\n\n' + MATH_TOKEN + (store.length - 1) + '@@\n\n';
   });

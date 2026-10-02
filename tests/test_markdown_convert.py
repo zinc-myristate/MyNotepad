@@ -180,6 +180,64 @@ class TestMarkdownToDelta:
                 if op.get('attributes', {}).get('table')}
         assert len(rows) == 2, '表头行 + 数据行应各成一行'
 
+    def test_latex_standard_delims_become_formulas(self, backend_mod):
+        r"""`\(…\)` / `\[…\]` 必须被认成公式 —— 而不是当成普通文本把反斜杠吃掉。
+
+        实测踩到：原实现里 `\(C_0\)` 会变成 `(C_0)`、`\(\alpha+\beta\)` 变成
+        `(alpha+beta)`，**公式被静默破坏**。用户那篇 33683 字的
+        《Lecture 2.2：相图与相变》里 `\(` 出现 165 次、`$` 出现 0 次 —— 整篇都是这么写的，
+        所以在预览里全是原始 LaTeX 文本、转成 delta 也全丢。
+        """
+        delta = json.loads(backend_mod.markdown_to_delta(
+            '相成分 \\(C_\\alpha\\) 与块级：\n\n\\[E=mc^2\\]\n'))
+        maths = [op['insert']['math-formula'] for op in delta['ops']
+                 if isinstance(op['insert'], dict) and 'math-formula' in op['insert']]
+        assert len(maths) == 2, '应识别 1 个行内 + 1 个块级，实际 %r' % (maths,)
+        inline, block = maths[0], maths[1]
+        assert inline['latex'] == 'C_\\alpha' and inline['display'] is False
+        assert block['latex'] == 'E=mc^2' and block['display'] is True
+        # 反斜杠不能被吃掉（这是"静默破坏"的核心症状）
+        texts = ''.join(op['insert'] for op in delta['ops']
+                        if isinstance(op['insert'], str))
+        assert '\\alpha' not in texts, '命令不该以裸文本形式残留'
+
+    def test_latex_delims_inside_table_cells(self, backend_mod):
+        r"""表格单元格里的 `\(…\)` 同样要变成公式（用户那篇笔记的公式大量在表格里）。"""
+        delta = json.loads(backend_mod.markdown_to_delta(
+            '| 中文 | English |\n| --- | --- |\n'
+            '| 如 \\(L\\)、\\(\\alpha\\) | e.g. \\(L\\) |\n'))
+        n = sum(1 for op in delta['ops']
+                if isinstance(op['insert'], dict) and 'math-formula' in op['insert'])
+        assert n == 3, '单元格内应有 3 个公式，实际 %d' % n
+
+    def test_code_fence_keeps_backslash_paren_literal(self, backend_mod):
+        r"""代码块里的 `\(` 是**字面量**，不能当公式改写。
+
+        （踩过：归一化只判"这行是不是围栏"，于是代码块**内部**的行照样被改写成 `$x$`。）
+        """
+        delta = json.loads(backend_mod.markdown_to_delta(
+            '```\n正则 \\(x\\) 的写法\n```\n'))
+        n = sum(1 for op in delta['ops']
+                if isinstance(op['insert'], dict) and 'math-formula' in op['insert'])
+        assert n == 0, '代码块里不该有公式'
+        code = ''.join(op['insert'] for op in delta['ops']
+                       if isinstance(op.get('insert'), str))
+        assert '\\(x\\)' in code, '代码块内容应逐字保留，实际 %r' % code
+
+    def test_escaped_pipe_stays_in_cell(self, backend_mod):
+        r"""表格单元格里的 `\|` 是**内容**（GFM 转义），不该被当成列分隔符。
+
+        原来直接 `split('|')`，于是单元格里含竖线的公式（`$|x|$` 那种）会把表格切坏、
+        公式整个失效（实测：`$|x|$` 所在表格的公式数为 0）。
+        现在 md→delta 认 `\|`、delta→md 写回 `\|`，往返闭合。
+        """
+        delta = json.loads(backend_mod.markdown_to_delta(
+            '| A | B |\n| --- | --- |\n| 含竖线 a \\| b | 2 |\n'))
+        cells = [op['insert'] for op in delta['ops']
+                 if isinstance(op.get('insert'), str) and op['insert'].strip() != '\n']
+        assert any('a | b' in c for c in cells), \
+            '转义竖线应还原成普通竖线留在单元格里，实际 %r' % (cells,)
+
 
 class TestRoundTrip:
     """能无损往返的必须稳定：delta → md → delta → md 两次 Markdown 必须逐字符相同"""

@@ -152,3 +152,52 @@ export function serializeFrontMatter(props) {
   lines.push('---', '');
   return lines.join('\n') + '\n';
 }
+
+/**
+ * LaTeX 的**标准**定界符：`\(…\)` 行内、`\[…\]` 块级。
+ *
+ * 放在 shared/utils.js 而不是 14-markdown-render.js：那个模块 import 了
+ * DOMPurify/markdown-it，在 node 里 import 会 `document is not defined`，
+ * 于是这个纯字符串函数就**测不到**。这里能被 `tests/test_frontend_utils.py`
+ * 直接用 node 跑（该文件的存在理由就是这个）。
+ */
+const MATH_PAREN_INLINE = /\\\(([\s\S]+?)\\\)/g;
+const MATH_BRACKET_BLOCK = /\\\[([\s\S]+?)\\\]/g;
+
+/**
+ * 把 `\(…\)` / `\[…\]` 归一成 `$…$` / `$$…$$`。
+ *
+ * 为什么必须归一（而不是下游各自支持一遍）：同一段内容只能有**一种**写法，
+ * 否则「预览」「md→delta」「delta→md 回转」「导出」四条路径各认一套，迟早对不上。
+ * 归一之后下游只认 `$`，一处解析、处处一致。
+ *
+ * ⚠️ **必须与后端 `backend/text.py` 的 `normalize_line_math()` 规则一致**：
+ * 前端独自认一套的话，会出现"预览渲染出公式、转成 delta 却当纯文本"（或反过来）。
+ * 两边的差异由测试钉住（tests/test_frontend_utils.py + tests/test_format_convert.py）。
+ *
+ * ⚠️ 代码里的 `\(` 是字面量，先挖走再改：围栏代码块 + 行内代码。
+ * 占位符里绝不能出现 `$` 或反斜杠，否则自己会被下面的替换误吃。
+ *
+ * @param {string} text
+ * @returns {string}
+ */
+export function normalizeMathDelims(text) {
+  const holes = [];
+  const stash = (s) => {
+    holes.push(s);
+    return '\u0000MDCODE' + (holes.length - 1) + '\u0000';
+  };
+  let out = String(text == null ? '' : text)
+    .replace(/```[\s\S]*?```|~~~[\s\S]*?~~~/g, stash);
+  out = out.replace(/`[^`\n]*`/g, stash);
+  // ① 跨行块：`\[` / `\]` 各自独占一行 —— 行级规则处理不了，先折成单行 `$$…$$`。
+  //    行间内容用**空格**连接（不是 \n）：既保持单行，又不会把两段数学粘成一个命令。
+  //    与后端 `collapse_multiline_blocks()` 同规则。
+  out = out.replace(/^[ \t]*\\\[[ \t]*\r?\n([\s\S]*?)\r?\n[ \t]*\\\][ \t]*$/gm,
+    (_m, body) => '$$' + body.split(/\r?\n/).map((s) => s.trim())
+      .filter(Boolean).join(' ') + '$$');
+  // ② 行内 / 同行块
+  out = out.replace(MATH_BRACKET_BLOCK, (_m, tex) => '$$' + tex.trim() + '$$');
+  out = out.replace(MATH_PAREN_INLINE, (_m, tex) => '$' + tex.trim() + '$');
+  return out.replace(/\u0000MDCODE(\d+)\u0000/g, (_m, i) => holes[Number(i)]);
+}

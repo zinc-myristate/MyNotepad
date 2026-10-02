@@ -52,6 +52,119 @@ _MD_ATX_IMAGE = re.compile(r'^!\[([^\]]*)\]\(([^)]+)\)$')
 _MD_MATH_BLOCK_RE = re.compile(r'^\$\$(.+?)\$\$$')
 _MD_MATH_INLINE_RE = re.compile(r'\$([^$\n]+?)\$')
 
+# LaTeX 的**标准**定界符：`\(…\)` 行内、`\[…\]` 块级。
+# 为什么必须支持（实测踩到）：这两者在原实现里既不是公式、也不是"普通文本"——
+# `_md_parse_inline` 的转义分支会把反斜杠吃掉，于是 `\(C_0\)` 变成 `(C_0)`、
+# `\(\alpha+\beta\)` 变成 `(alpha+beta)`：**公式被静默破坏**。
+# 用户那篇 33683 字的《Lecture 2.2：相图与相变》里 `\(` 出现 165 次、`$` 出现 **0** 次
+# —— 整篇的公式都是这么写的，所以在预览里全是原始 LaTeX 文本。
+_MD_PAREN_INLINE_RE = re.compile(r'\\\((.+?)\\\)')
+_MD_BRACKET_BLOCK_RE = re.compile(r'\\\[(.+?)\\\]')
+_MD_FENCE_RE = re.compile(r'^\s*(```|~~~)')
+
+
+def normalize_line_math(line):
+    r"""把**一行**里的 `\(…\)` / `\[…\]` 归一成 `$…$` / `$$…$$`。
+
+    ## 为什么要归一，而不是"各自支持一遍"
+
+    同一段内容只能有**一种**写法，否则「预览」「md→delta」「delta→md 回转」「导出」
+    四条路径各认一套，迟早对不上（本仓库对"第二真相源"的既有原则）。
+    归一之后下游只认 `$`，一处解析、处处一致。
+
+    ## 为什么是"行级"
+
+    块级公式（`\[…\]` / `$$…$$`）在 Markdown 里**必须独占一行**才成立，
+    所以归一化天然是逐行的事；行级还顺带让"跳过代码块"变得简单
+    （调用方按围栏状态决定要不要调它，不必搞占位符那一套）。
+
+    ⚠️ **跨行的 `\[` … `\]` 处理不了**，那是另一件事 —— 见 `collapse_multiline_blocks`。
+    实测踩到：用户笔记里有 2 处写成
+
+        \[
+        C_0=35\text{ wt\% Ni},\qquad
+        C_L=32\text{ wt\% Ni}
+        \]
+
+    这种写法在这条行级路径上会**剩下未转换**（迁移脚本的守恒校验当场抓到）。
+
+    ⚠️ 正则必须**惰性**（`.+?`）：否则 `\(a\) 和 \(b\)` 会被当成一个公式。
+    """
+    if not line or '\\' not in line:
+        return line
+    line = _MD_BRACKET_BLOCK_RE.sub(
+        lambda m: '$$%s$$' % m.group(1).strip(), line)
+    return _MD_PAREN_INLINE_RE.sub(
+        lambda m: '$%s$' % m.group(1).strip(), line)
+
+
+def collapse_multiline_blocks(md_text):
+    r"""把**跨行**的 `\[` … `\]` 折成单行 `$$…$$`。
+
+    ## 为什么要单独一趟
+
+    行级归一化（`normalize_line_math`）只能处理定界符在同一行的情况。
+    而 LaTeX 文档里很常见的写法是定界符各自独占一行：
+
+        \[
+        C_0=35\text{ wt\% Ni},\qquad
+        C_L=32\text{ wt\% Ni}
+        \]
+
+    这在本应用的解析链路上有**两个**必须满足的前提，所以只能折成单行：
+
+    1. `_MD_MATH_BLOCK_RE` 要求 `$$…$$` 独占一行（`.+?` 不跨行）；
+    2. 前端 `MATH_BLOCK`（`/\$\$([\s\S]+?)\$\$/`）虽然跨行，但把原来的换行直接塞进
+       KaTeX 会让 `\qquad` 之类的排版命令落在一个奇怪的位置。
+
+    折行时**行间内容用空格连接**（不是 `\n`）：既保持单行，又不会把两段数学粘成一个命令。
+    行数因此会减少（每个跨行块少一行），这是预期行为 —— 迁移脚本的守恒校验要按
+    "减少了几个块"来核对，不能要求行数不变。
+
+    ⚠️ 必须在**跳过代码块**的前提下调用（调用方保证），否则代码里的 `\[` 会被动到。
+    """
+    lines = (md_text or '').split('\n')
+    out, i = [], 0
+    while i < len(lines):
+        stripped = lines[i].strip()
+        if stripped == '\\[':
+            # 找配对的 \]
+            j = i + 1
+            body = []
+            while j < len(lines) and lines[j].strip() != '\\]':
+                body.append(lines[j].strip())
+                j += 1
+            if j < len(lines):
+                # 有配对：折成一行
+                out.append('$$%s$$' % ' '.join(p for p in body if p))
+                i = j + 1
+                continue
+        out.append(lines[i])
+        i += 1
+    return '\n'.join(out)
+
+
+def _collapse_blocks_outside_code(md_text):
+    r"""只对**围栏代码块之外**的段落做跨行块折叠。
+
+    为什么要单独拆出这一段：`collapse_multiline_blocks` 按行找 `\[` / `\]`，
+    代码块里恰好出现这两行的话会被它误当成公式。围栏状态只有调用方知道，
+    所以把"跳过代码块"和"折叠"组合在这里，两个入口（md→delta、迁移脚本）共用。
+    """
+    lines = (md_text or '').split('\n')
+    chunks, buf, in_fence = [], [], False
+    for ln in lines:
+        if _MD_FENCE_RE.match(ln):
+            if in_fence:
+                chunks.append('\n'.join(buf))            # 代码段：原样
+            else:
+                chunks.append(collapse_multiline_blocks('\n'.join(buf)))
+            buf = []
+            in_fence = not in_fence
+        buf.append(ln)
+    chunks.append('\n'.join(buf) if in_fence else collapse_multiline_blocks('\n'.join(buf)))
+    return '\n'.join(c for c in chunks if c != '')
+
 
 def _style_attrs(style_text):
     """白名单 style → Delta 属性（只认 color / font-size，其余一律忽略）"""
@@ -317,8 +430,18 @@ _MD_TABLE_SEP = re.compile(r'^\s*\|?\s*:?-{2,}:?\s*(\|\s*:?-{2,}:?\s*)+\|?\s*$')
 
 
 def _md_split_table_row(line):
-    cells = line.strip().strip('|').split('|')
-    return [c.strip() for c in cells]
+    r"""按 `|` 切一个 GFM 表格行；`\|` 是**转义**的竖线，属于单元格内容。
+
+    ⚠️ 原来直接 `split('|')` —— 于是单元格里含竖线的公式（`$|x|$`、`$\lvert x\rvert$`
+    写不出来的那种）会把表格结构切坏，那个公式整个失效（实测：`$|x|$` 所在表格的
+    公式数为 0）。GFM 的标准写法就是 `\|`，所以这里按标准来：
+    切分时忽略 `\|`，切完再把 `\|` 还原成 `|`（单元格内容里就是普通竖线）。
+    """
+    # 先把转义竖线换成不会出现的哨兵，切完再换回来
+    SENTINEL = '\x00PIPE\x00'
+    safe = line.replace('\\|', SENTINEL)
+    cells = safe.strip().strip('|').split('|')
+    return [c.strip().replace(SENTINEL, '|') for c in cells]
 
 
 def _md_merge(base, extra):
@@ -460,11 +583,28 @@ def _md_parse_inline(text, base=None, _depth=0):
 
 
 def markdown_to_delta(md_text):
-    """Markdown → Quill Delta JSON（标题/列表/待办/引用/代码块/表格/公式 + 行内格式）。
+    r"""Markdown → Quill Delta JSON（标题/列表/待办/引用/代码块/表格/公式 + 行内格式）。
 
     只做常用子集：解析不出来的行当普通段落，不会丢内容（宁可少格式，不可少字）。
+
+    LaTeX 标准定界符 `\(…\)` / `\[…\]` 会先归一成 `$…$` / `$$…$$`
+    （见 `normalize_line_math`）——**围栏代码块内一律不动**（那里 `\(` 是字面量）。
     """
-    lines = (md_text or '').replace('\r\n', '\n').replace('\r', '\n').split('\n')
+    lines = (md_text or '').replace('\r\n', '\n').replace('\r', '\n')
+    # ① 跨行块级公式先折成单行（`\[`…`\]` 各自独占一行的写法）
+    lines = _collapse_blocks_outside_code(lines)
+    lines = lines.split('\n')
+    # ② 再把每行的 `\(…\)` / `\[…\]` 归一成 `$…$` / `$$…$$`（`normalize_line_math`）。
+    # ⚠️ 两步都必须按围栏**状态**跳过代码块：只判"这一行是不是围栏"是不够的，
+    # 代码块**内部**的行既不匹配围栏、也不该被改写（实测漏过一次，`\(x\)` 被改成 `$x$`）。
+    normalized, _in_fence = [], False
+    for _ln in lines:
+        if _MD_FENCE_RE.match(_ln):
+            _in_fence = not _in_fence
+            normalized.append(_ln)          # 围栏行本身没有公式
+        else:
+            normalized.append(_ln if _in_fence else normalize_line_math(_ln))
+    lines = normalized
     ops, i = [], 0
     while i < len(lines):
         line = lines[i]
@@ -864,7 +1004,10 @@ def derive_metrics(content, fmt, note_id=None):
     todos = _todo_lines_md(content) if fmt == 'md' else _todo_lines_delta(content)
     open_todos = [t for t in todos if not t[3]]
     dues = sorted(t[2] for t in open_todos if t[2])
-    has_formula = ('$' in (content or '')) if fmt == 'md' else ('math-formula' in (content or ''))
+    # `\(` / `\[` 也算公式：用户那篇《Lecture 2.2》整篇用标准定界符、一个 `$` 都没有，
+    # 只认 `$` 的话 `has:formula` 搜索过滤会对它整个失效。
+    has_formula = (('$' in (content or '')) or ('\\(' in (content or ''))
+                   or ('\\[' in (content or ''))) if fmt == 'md' else ('math-formula' in (content or ''))
     has_code = ('```' in (content or '')) if fmt == 'md' else ('code-block' in (content or ''))
     return {
         'word_count': count_words(plain_for_count),
