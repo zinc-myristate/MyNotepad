@@ -33,6 +33,7 @@ let _lastRange = [0, -1];
 let _topSpacer = null;
 let _bottomSpacer = null;
 let _bound = false;
+let _buildItem = null;          // 由 renderWindow / initVirtualList 登记（见 initVirtualList 的注释）
 
 /** 当前要展示的笔记序列（虚拟列表的输入）。
  *
@@ -77,10 +78,18 @@ function scrollAnchor() {
 
 /**
  * 重算窗口并渲染。
+ *
  * @param {Function} buildItem  (note, index) => HTMLElement，由 03-notes 提供（它知道行长什么样）
  * @param {boolean}  force      数据本身变了（新建/删除/排序/刷新）时强制重建
+ *
+ * 注意：两个参数都**可以省略**（滚动/缩放那条路就不传）：`buildItem` 会登记到 `_buildItem`
+ * 供后续复用；`force` 省略时按"窗口没变就什么都不做"处理。
+ * 之所以支持省略 —— 见 `initVirtualList` 的注释：以前滚动/缩放把回调错当成 buildItem 传进来，
+ * 导致每次滚动都抛 `appendChild ... not of type 'Node'`。
  */
 export function renderWindow(buildItem, force = false) {
+  if (typeof buildItem === 'function') _buildItem = buildItem;
+  const builder = _buildItem;
   const items = listItems();
   ensureSpacers();
 
@@ -90,6 +99,7 @@ export function renderWindow(buildItem, force = false) {
     _built = 0;
     return;
   }
+  if (typeof builder !== 'function') return;   // 还没人登记 builder：什么都不做（不猜）
 
   const listTop = scrollAnchor();
   const scroll = dom.noteList.scrollTop;
@@ -101,7 +111,18 @@ export function renderWindow(buildItem, force = false) {
   _lastRange = [first, last];
 
   const frag = document.createDocumentFragment();
-  for (let i = first; i <= last; i++) frag.appendChild(buildItem(items[i], i));
+  for (let i = first; i <= last; i++) {
+    const node = builder(items[i], i);
+    if (!node) {
+      // 到这里说明 builder 对某一行没有返回元素。以前这会变成一句
+      // "appendChild: parameter 1 is not of type 'Node'"，栈顶指向本文件第 104 行，
+      // 完全看不出是**哪一行数据**、也看不出是 builder 的问题。现在报清楚。
+      console.error('[virtual-list] buildItem 没有返回元素，跳过这一行：',
+                    { index: i, note: items[i] && { id: items[i].id, title: items[i].title } });
+      continue;
+    }
+    frag.appendChild(node);
+  }
   _built = last - first + 1;
 
   dom.noteList.innerHTML = '';
@@ -119,17 +140,46 @@ export function renderWindow(buildItem, force = false) {
   }
 }
 
-/** 绑定滚动/尺寸监听（只绑一次） */
-export function initVirtualList(onWindowChange) {
+/** 绑定滚动/尺寸监听（只绑一次）。
+ *
+ *  `buildItem` 在这里**登记一次**，之后滚动/缩放都复用它 —— 不再每次调用都传进来。
+ *
+ * ## 为什么改成这样（修的是一个真 bug）
+ *
+ * 原签名是 `initVirtualList(onWindowChange)`，而 `09-boot.js` 传进来的是
+ * `() => renderNoteList()`。于是那两处监听器里写的是：
+ *
+ *     renderWindow(onWindowChange)          // 把"回调"当成了 buildItem
+ *     renderWindow(onWindowChange, true)
+ *
+ * `renderWindow` 的第 1 个参数是 builder，所以它会把那个回调当 builder 调：
+ * `() => renderNoteList()` **没有 return** → `buildItem(...)` 返回 `undefined`
+ * → `frag.appendChild(undefined)` → **每次滚动/缩放都抛**
+ * `TypeError: Failed to execute 'appendChild' on 'Node': parameter 1 is not of type 'Node'`
+ * （实测 error.log 从 2026-10-01 起反复出现，栈顶正是 `30-virtual-list.js:104`）。
+ *
+ * 更隐蔽的后果：滚动那条路整个是错的 —— 它绕回 `renderNoteList()`（那个内部会再调一次
+ * `renderWindow`），于是"窗口化滚动"实际上没生效，每次滚动都在全量重算。
+ * 单看界面只觉得"有点卡 + 偶发红条"，两者都指向这里。
+ *
+ * 改成登记式之后：**builder 有且只有一个来源**，滚动/缩放/重渲染走同一条路，
+ * 也不再有"参数位置传错"的余地。
+ */
+export function initVirtualList(buildItem) {
+  if (typeof buildItem === 'function') _buildItem = buildItem;
   if (_bound) return;
   _bound = true;
+  if (typeof _buildItem !== 'function') {
+    // 没登记 builder 就滚动会渲染不出东西 —— 明确报出来，别静默什么都不做
+    console.error('[virtual-list] initVirtualList 需要 buildItem，滚动/缩放才会渲染');
+  }
   dom.noteList.addEventListener('scroll', () => {
-    renderWindow(onWindowChange);
+    renderWindow();
   }, { passive: true });
   // 窗口拉宽/拉高会改变可见行数；侧栏本身也可能被折叠
   window.addEventListener('resize', () => {
     _lastRange = [0, -1];
-    renderWindow(onWindowChange, true);
+    renderWindow(true);
   });
 }
 

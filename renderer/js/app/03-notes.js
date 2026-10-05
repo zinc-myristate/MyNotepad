@@ -85,7 +85,14 @@ function highlightHtml(text, q) {
 }
 
 /** 建一行笔记 DOM（窗口化渲染会给每个可见行调一次）。 */
-function buildNoteItem(note) {
+/** 建一行笔记（虚拟列表的 builder）。
+ *
+ *  **导出**是为了让 `09-boot.js` 把它登记给 `initVirtualList` —— 滚动/缩放那条路
+ *  以前收到的是 `() => renderNoteList()`（没有 return），于是把回调当 builder 调、
+ *  返回 `undefined`，`appendChild` 当场抛错（详见 `30-virtual-list.js` 的
+ *  `initVirtualList` 注释）。builder 现在有且只有一个来源。
+ */
+export function buildNoteItem(note) {
   const item = document.createElement('div');
   item.className = `note-item${note.id === state.activeNoteId ? ' active' : ''}` +
     (state.selectedIds.has(note.id) ? ' selected' : '');
@@ -145,7 +152,7 @@ export function renderNoteList() {
   } else {
     dom.emptyHint.classList.add('hidden');
   }
-  renderWindow((note) => buildNoteItem(note), true);
+  renderWindow(buildNoteItem, true);
 }
 
 // 封面图加载失败 → 退回首字。走**委托 + 捕获阶段**：

@@ -1,7 +1,7 @@
 // ====== 笔记本管理 ======
 // ====== ESM 依赖（原先靠全局作用域与加载顺序隐式依赖，现显式声明）======
 import { $, closePanel, dom, hideEditorUI, openPanel, showConfirmAsync, showInputDialog, showToast, state } from './01-core.js';
-import { flushSave, loadNotes, previewHtmlFor, renderNoteList } from './03-notes.js';
+import { buildNoteItem, flushSave, loadNotes, previewHtmlFor, renderNoteList } from './03-notes.js';
 import { initQuill, syncFontSizeDisplay } from './02-editor.js';
 import { initMarkdownEditor } from './13-markdown-editor.js';
 import { initNoteFormatBadge } from './15-note-format.js';
@@ -371,7 +371,11 @@ async function initApp() {
   initCapture();          // 快速捕获菜单 + 跨窗口插入桥（第 10 轮）
   initOcr();              // 图片文字识别（第 11 轮）
   // 列表窗口化渲染（滚动时只重建窗口内的行，见 30-virtual-list.js）
-  initVirtualList(() => renderNoteList());
+  // 注意：这里必须把 **builder** 登记进去（不是回调）：以前传的是
+  // `() => renderNoteList()`，而 renderWindow 的第 1 个参数是 builder ——
+  // 滚动/缩放时会把那个回调当 builder 调，它没有 return ⇒ `appendChild(undefined)`
+  // ⇒ 每次滚动/缩放抛 "parameter 1 is not of type 'Node'"。
+  initVirtualList(buildNoteItem);
   _bootStep('virtual-list');
   // 字体/字号下拉同步
   syncFontSizeDisplay();

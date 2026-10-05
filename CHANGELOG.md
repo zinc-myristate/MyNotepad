@@ -12,6 +12,26 @@
 
 ### 修复
 
+- **每次滚动或缩放窗口都会弹一条红色错误条**，而且**笔记列表的滚动是坏的**
+  （滚下去之后列表变空）。错误内容：
+
+      Failed to execute 'appendChild' on 'Node': parameter 1 is not of type 'Node'
+
+  原因是一处**参数传错**：`30-virtual-list.js` 的 `renderWindow(buildItem, force)`
+  第 1 个参数是"怎么建一行"的构造函数，而滚动/缩放那两个监听器收到的是
+  `initVirtualList(onWindowChange)` 里的"窗口变化回调"（`() => renderNoteList()`）——
+  那个回调**没有返回值**，把它当构造函数调就得到 `undefined`，
+  `appendChild(undefined)` 当场抛错。
+
+  附带后果更隐蔽：滚动那条路整个是错的 —— 它绕回 `renderNoteList()` 重新全量渲染，
+  所以"窗口化滚动"实际没生效。实测 200 篇笔记：**滚动后列表只剩 0 行**（修复后 17 行）。
+
+  修法：让构造函数**登记一次**（`initVirtualList(buildNoteItem)`），
+  滚动/缩放都复用它；`renderWindow` 对"构造函数没返回元素"的情况也改成报清楚是
+  **哪一行数据**、而不是抛一句看不出原因的 appendChild 错误。
+
+### 修复
+
 - **LaTeX 标准定界符 `\(…\)` / `\[…\]` 的公式全部不工作，而且会被静默破坏。**
   应用只认 `$…$` / `$$…$$`，而 LaTeX 文档里更常见的写法是 `\(…\)`（行内）和
   `\[…\]`（块级）。原来的行为是：

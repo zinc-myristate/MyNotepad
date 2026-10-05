@@ -361,3 +361,82 @@ def test_references_to_other_modules_exports_are_imported():
 
 if __name__ == '__main__':
     raise SystemExit(pytest.main([__file__, '-v']))
+
+
+# ---------- 虚拟列表的 builder 契约 ----------
+
+VL = os.path.join(JS_DIR, 'app', '30-virtual-list.js')
+
+
+def test_virtual_list_handlers_do_not_pass_a_callback_as_builder():
+    r"""滚动/缩放监听器里调 `renderWindow(...)` 时，绝不能把"回调"当 builder 传。
+
+    ## 踩过的坑（实测：用户每次滚动/缩放都弹红条）
+
+    `30-virtual-list.js` 原来长这样：
+
+        export function renderWindow(buildItem, force = false) { ... }   // 第 1 个参数是 builder
+        export function initVirtualList(onWindowChange) {                // 收到的却是 ()=>renderNoteList()
+          dom.noteList.addEventListener('scroll', () => {
+            renderWindow(onWindowChange);        // ← 把"窗口变化回调"当成 builder 传进去
+          });
+          window.addEventListener('resize', () => {
+            renderWindow(onWindowChange, true);  // ← 同上
+          });
+        }
+
+    于是 `renderWindow` 把那个回调当 builder 调，而回调**没有 return** ⇒ `undefined`
+    ⇒ `frag.appendChild(undefined)` ⇒ 每次滚动/缩放抛
+    `Failed to execute 'appendChild' on 'Node': parameter 1 is not of type 'Node'`
+    （error.log 从 2026-10-01 起反复出现，栈顶正是 `30-virtual-list.js:104`）。
+
+    附带后果：滚动那条路整个是错的 —— 它绕回 `renderNoteList()` 再全量重算，
+    窗口化滚动实际没生效（实测 200 篇：滚动后 `.note-item` 变成 **0 行**，
+    而修复后是 17 行）。
+
+    修法是让 builder **登记一次**，监听器改调 `renderWindow()` / `renderWindow(true)`。
+    """
+    code = strip_code(open(VL, encoding='utf-8').read(), blank_strings=False)
+    # 只看**调用**，不看定义（`export function renderWindow(buildItem, ...)` 也是这个形状）
+    calls = [m.group(1) for m in re.finditer(r'(?<!function )renderWindow\(([^)]*)\)', code)]
+    bad = [c.strip() for c in calls if c.strip() not in ('', 'true')]
+    assert bad == [], (
+        'renderWindow(...) 被传了 %r —— 第 1 个参数是 **builder**（返回 HTMLElement 的函数），'
+        '不是"窗口变化回调"。滚动/缩放要用登记式调用 `renderWindow()` / `renderWindow(true)`，'
+        'builder 由 `initVirtualList(buildNoteItem)` 登记。' % (bad,))
+
+
+def test_init_virtual_list_registers_the_builder():
+    """`initVirtualList` 必须是"登记 builder"的形态，而不是"收窗口变化回调"。"""
+    code = strip_code(open(VL, encoding='utf-8').read(), blank_strings=False)
+    m = re.search(r'export function initVirtualList\(([^)]*)\)', code)
+    assert m, '找不到 initVirtualList 的定义'
+    param = m.group(1).strip()
+    assert param == 'buildItem', (
+        'initVirtualList 的第一个参数应当叫 buildItem（它就是 builder）；实际是 %r。'
+        '改回 onWindowChange 那种形态，调用方很容易又把回调传成 builder —— 那正是本次的坑。'
+        % param)
+    assert '_buildItem = buildItem' in code, \
+        'initVirtualList 应当把 builder 记到模块级变量，供滚动/缩放复用'
+
+
+def test_boot_registers_the_real_builder():
+    """`09-boot.js` 必须把**真正的 builder** 登记进去，不能是 `() => renderNoteList()`。
+
+    那个箭头函数没有 return —— 正是本次错误的直接来源。builder 的唯一定义处是
+    `03-notes.js` 的 `buildNoteItem`（它知道一行长什么样）。
+    """
+    boot = strip_code(open(os.path.join(JS_DIR, 'app', '09-boot.js'), encoding='utf-8').read(),
+                      blank_strings=False)
+    m = re.search(r'initVirtualList\(([^)]*)\)', boot)
+    assert m, '找不到 initVirtualList 的调用'
+    arg = m.group(1).strip()
+    assert arg == 'buildNoteItem', (
+        'initVirtualList 应当传 buildNoteItem，实际传的是 %r。'
+        '传回调（例如 `() => renderNoteList()`）会让它被当成 builder 调用、返回 undefined，'
+        '于是 appendChild 抛 "parameter 1 is not of type \'Node\'"。' % arg)
+
+    notes = strip_code(open(os.path.join(JS_DIR, 'app', '03-notes.js'), encoding='utf-8').read(),
+                       blank_strings=False)
+    assert re.search(r'export function buildNoteItem\(', notes), \
+        '03-notes.js 必须导出 buildNoteItem（builder 的唯一定义处）'
