@@ -121,7 +121,7 @@ export function buildNoteItem(note) {
         </div>
         <div class="note-item-meta">
           <span class="note-item-preview">${previewHtmlFor(note)}</span>
-          <span class="note-item-time">${(note.updated_at || '').substring(0, 16)}</span>
+          <span class="note-item-time" title="${escapeHtml(note.updated_at || '')}">${escapeHtml((note.updated_at || '').substring(5, 10).replace('-', '/'))}</span>
         </div>
       </div>
       <button class="note-item-password" title="设置密码" data-pwd-id="${note.id}">${svgKey}</button>
@@ -441,6 +441,8 @@ export function setSaveDot(s) {
   d.classList.toggle('dirty', s === 'dirty');
   d.classList.toggle('error', s === 'error');
   d.title = { saved: '已保存', dirty: '有未保存修改…', error: '保存失败（已记录日志）' }[s] || '';
+  const label = document.getElementById('save-label');
+  if (label) label.textContent = { saved: '已保存到本地', dirty: '正在保存…', error: '保存失败，请重试' }[s] || '';
 }
 
 export async function saveCurrentNote() {

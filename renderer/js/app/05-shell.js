@@ -54,7 +54,7 @@ document.addEventListener('keydown', async (e) => {
   }
   // Ctrl+F：焦点在编辑器里 → 让位给「笔记内查找」（第 8 轮接上）；否则聚焦侧栏搜索。
   // 必须放在默认行为之前判断，否则编辑器里按 Ctrl+F 永远只能搜列表。
-  if (e.ctrlKey && e.key === 'f') {
+  if (e.ctrlKey && !e.shiftKey && e.key === 'f') {
     const el = document.activeElement;
     const inEditor = el && (el.isContentEditable
       || (el.closest && el.closest('.CodeMirror, .ql-editor')));

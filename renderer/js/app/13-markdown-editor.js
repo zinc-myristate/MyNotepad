@@ -31,6 +31,11 @@ export function isMarkdownEditorReady() {
   return !!cm;
 }
 
+/** Refresh after the workspace changes pane size; never recreate the editor or its undo history. */
+export function refreshMarkdownLayout() {
+  if (cm) cm.refresh();
+}
+
 /** 初始化（启动时调用一次）。缺库时降级为普通 textarea，功能仍在，只是没有高亮。 */
 export function initMarkdownEditor() {
   if (cm) return;

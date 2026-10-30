@@ -301,6 +301,7 @@ export function showToast(msg, { type = 'info', duration = 2500 } = {}) {
 // ====== 编辑器 UI 显隐 ======
 export function showEditorUI() {
   const isMd = state.noteFormat === 'md';
+  document.body.dataset.editorFormat = state.noteFormat;
   // Quill 工具栏与字体/字号栏只对 Delta 笔记有意义；Markdown 笔记用源码 + 预览
   const tb = document.querySelector('.ql-toolbar');
   if (tb) tb.classList.toggle('hidden', isMd);
@@ -319,6 +320,7 @@ export function showEditorUI() {
   document.body.classList.remove('no-active-note');
 }
 export function hideEditorUI() {
+  delete document.body.dataset.editorFormat;
   const tb = document.querySelector('.ql-toolbar');
   if (tb) tb.classList.add('hidden');
   const mdtb = $('#md-toolbar');

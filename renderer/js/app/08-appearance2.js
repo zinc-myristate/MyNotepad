@@ -157,14 +157,17 @@ export function updateChromeVeil() {
   const inkArea = document.querySelector('#md-editor:not(.hidden)') || document.querySelector('.ql-container')
     || document.getElementById('md-editor') || document.querySelector('#quill-editor .ql-container');
   const status = document.getElementById('editor-status');
-  const cTop = container.getBoundingClientRect().top;
+  // Veils are positioned in editor-area; the workspace header sits above editor-container.
+  // Use their actual containing block so the fades still align with the text and status bar.
+  const veilHost = document.getElementById('editor-area') || container;
+  const cTop = veilHost.getBoundingClientRect().top;
   const contentTop = inkArea ? inkArea.getBoundingClientRect().top - cTop : 0;
   // 顶部薄纱：盖住界面层，再往正文里多留 48px 做渐隐
   const topH = Math.max(0, Math.round(contentTop)) + VEIL_FADE_TOP;
   if (top.style.height !== topH + 'px') top.style.height = topH + 'px';
   const statusTop = status && !status.classList.contains('hidden')
-    ? status.getBoundingClientRect().top - cTop : container.clientHeight;
-  const bottomH = Math.max(0, Math.round(container.clientHeight - statusTop)) + VEIL_FADE_BOTTOM;
+    ? status.getBoundingClientRect().top - cTop : veilHost.clientHeight;
+  const bottomH = Math.max(0, Math.round(veilHost.clientHeight - statusTop)) + VEIL_FADE_BOTTOM;
   if (bottom.style.height !== bottomH + 'px') bottom.style.height = bottomH + 'px';
 
   // 正文薄纱（第三片）：上下两片之外剩下的那块。**必须**让它的渐隐段与前两片的渐隐段完全重合——

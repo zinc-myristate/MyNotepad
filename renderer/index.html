@@ -36,8 +36,9 @@
   <link rel="stylesheet" href="katex/katex.min.css">
   <link rel="stylesheet" href="vendor/codemirror.css">
   <link rel="stylesheet" href="style.css">
+  <link rel="stylesheet" href="workspace.css">
 </head>
-<body data-theme="white">
+<body data-theme="white" class="no-active-note" data-md-view="split">
 
 <!-- ====== 主布局容器 ====== -->
 <div id="app" class="app-container">
@@ -46,13 +47,19 @@
   <aside id="sidebar" class="sidebar">
     <!-- Logo / 标题 -->
     <div class="sidebar-header">
+      <div class="workspace-brand">
       <h1 class="app-title">
       <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M4 19.5A2.5 2.5 0 016.5 17H20"/><path d="M6.5 2H20v20H6.5A2.5 2.5 0 014 19.5v-15A2.5 2.5 0 016.5 2z"/><line x1="8" y1="7" x2="16" y2="7"/><line x1="8" y1="11" x2="14" y2="11"/></svg>
       我的记事本
     </h1>
+      <button id="btn-command-palette" class="workspace-icon-btn" title="快速跳转与命令 (Ctrl+P)" aria-label="快速跳转与命令">
+        <svg width="17" height="17" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="m5 7 5 5-5 5M13 17h6"/></svg>
+      </button>
+      </div>
+      <p class="workspace-subtitle">留一点空间，给自己的想法</p>
       <div class="search-box">
         <svg class="search-icon" width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><circle cx="11" cy="11" r="8"/><line x1="21" y1="21" x2="16.65" y2="16.65"/></svg>
-        <input id="search-input" class="search-input" type="text" placeholder="搜索笔记…"
+        <input id="search-input" class="search-input" type="text" placeholder="搜索笔记…" aria-label="搜索笔记"
              title="支持范围语法：tag:标签名 · notebook:笔记本名 · in:trash（回收站），可与关键词组合">
         <button id="btn-search-clear" class="btn-search-clear" style="display:none;"><svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round"><line x1="18" y1="6" x2="6" y2="18"/><line x1="6" y1="6" x2="18" y2="18"/></svg></button>
       </div>
@@ -83,7 +90,7 @@
     <!-- 新建按钮 -->
     <button id="btn-new-note" class="btn-new-note" title="新建笔记">
       <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round"><line x1="12" y1="5" x2="12" y2="19"/><line x1="5" y1="12" x2="19" y2="12"/></svg>
-      新建笔记
+      <span>新建笔记</span><kbd>Ctrl N</kbd>
     </button>
 
     <!-- 批量操作条：只多选时出现（默认隐藏） -->
@@ -101,7 +108,8 @@
     </div>
 
     <!-- 笔记列表 -->
-    <nav id="note-list" class="note-list">
+    <div class="note-list-heading"><span>笔记</span><span>你的每一点灵感</span></div>
+    <nav id="note-list" class="note-list" aria-label="笔记列表">
       <!-- 加载骨架：模块图与首次取列表期间显示，renderNoteList() 会整体替换掉。
            写在静态 HTML 里（而不是等 JS 生成），这样第一帧就有内容，不会先闪一下空白 -->
       <div class="note-skeleton" aria-hidden="true">
@@ -167,6 +175,7 @@
       </button>
     </div>
 
+    <div class="sidebar-tools-heading">工作区工具</div>
     <div class="sidebar-footer">
       <button id="btn-capture" class="btn-sidebar-footer" title="快速捕获（剪贴板 / 截图 / 日记 / 模板）">
         <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M22 12h-6l-2 3h-4l-2-3H2"/><path d="M5.45 5.11L2 12v6a2 2 0 002 2h16a2 2 0 002-2v-6l-3.45-6.89A2 2 0 0016.76 4H7.24a2 2 0 00-1.79 1.11z"/></svg> 捕获
@@ -196,11 +205,32 @@
         <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><polyline points="3 6 5 6 21 6"/><path d="M19 6v14a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2V6m3 0V4a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v2"/></svg> 回收站
       </button>
     </div>
+    <div class="workspace-local"><span></span>本地存储 · 随时记录<kbd>Ctrl P 快速跳转</kbd></div>
     </div>
   </aside>
 
   <!-- ====== 右侧编辑区 ====== -->
   <main id="editor-area" class="editor-area">
+
+    <header class="workspace-bar">
+      <div class="workspace-breadcrumb">
+        <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M3 7a2 2 0 0 1 2-2h5l2 2h7a2 2 0 0 1 2 2v10H3z"/></svg>
+        <span id="workspace-scope">全部笔记</span>
+      </div>
+      <div id="workspace-save" class="workspace-save" role="status" aria-live="polite">
+        <span id="save-dot" class="save-dot" title="已保存"></span>
+        <span id="save-label">已保存到本地</span>
+      </div>
+      <div id="md-view-switch" class="md-view-switch" role="group" aria-label="Markdown 视图">
+        <button type="button" data-md-view="source" aria-pressed="false" title="只显示 Markdown 编辑器">编辑</button>
+        <button type="button" data-md-view="split" aria-pressed="true" title="编辑与预览并排显示">分栏</button>
+        <button type="button" data-md-view="preview" aria-pressed="false" title="只显示排版后的正文">阅读</button>
+      </div>
+      <button id="btn-focus-mode" class="workspace-icon-btn" aria-pressed="false" aria-label="进入专注模式" title="专注模式 (Ctrl+Shift+F)">
+        <svg width="17" height="17" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><rect x="3" y="4" width="18" height="16" rx="2"/><path d="M9 4v16"/></svg>
+        <span>专注</span>
+      </button>
+    </header>
 
     <!-- 全局背景层 -->
     <div id="global-bg-layer" class="bg-layer global-bg-layer"></div>
@@ -230,6 +260,8 @@
           maxlength="200"
           style="flex:1;"
         >
+        <details class="title-style-picker">
+          <summary title="标题样式" aria-label="标题样式">Aa <span aria-hidden="true">⌄</span></summary>
         <div class="title-style-btns">
           <button class="title-style-btn active" data-ts="none" title="默认">A</button>
           <button class="title-style-btn" data-ts="shadow" title="阴影" style="text-shadow:1px 1px 2px rgba(0,0,0,0.3);">S</button>
@@ -237,8 +269,8 @@
           <button class="title-style-btn" data-ts="outline" title="描边" style="-webkit-text-stroke:1px var(--accent-dark);color:transparent;">O</button>
           <button class="title-style-btn" data-ts="serif" title="衬线" style="font-family:var(--font-serif);">T</button>
         </div>
+        </details>
         <button id="btn-note-format" class="note-format-badge hidden" title="正文格式">MD</button>
-        <span id="save-dot" class="save-dot" title="已保存"></span>
       </div>
       <!-- 标签栏 -->
       <div id="tag-bar" class="tag-bar hidden">
@@ -389,9 +421,11 @@
       <!-- Markdown 编辑器：左源码 + 右实时预览（新建笔记默认走这里） -->
       <div id="md-editor" class="md-editor hidden">
         <div id="md-source-pane" class="md-pane md-source-pane">
+          <div class="md-pane-heading"><span>MARKDOWN</span><span>编辑</span></div>
           <textarea id="md-source" spellcheck="false" placeholder="开始写 Markdown…（支持 # 标题、- 列表、- [ ] 待办、$公式$、![](图片)）"></textarea>
         </div>
         <div id="md-preview-pane" class="md-pane md-preview-pane">
+          <div class="md-pane-heading"><span>PREVIEW</span><span>实时预览</span></div>
           <div id="md-preview" class="md-preview"></div>
         </div>
       </div>
@@ -512,8 +546,14 @@
 
       <div id="no-note-hint" class="no-note-hint">
         <div class="no-note-icon"><svg width="32" height="32" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5"><path d="M4 19.5A2.5 2.5 0 016.5 17H20"/><path d="M6.5 2H20v20H6.5A2.5 2.5 0 014 19.5v-15A2.5 2.5 0 016.5 2z"/></svg></div>
-        <p>选择左侧笔记开始编辑</p>
-        <p>或点击「新建笔记」创建一篇新笔记</p>
+        <span class="welcome-eyebrow">属于你的安静一页</span>
+        <h2>好想法，从这里开始。</h2>
+        <p>随手记下一点灵感，慢慢整理成自己的知识。<br>选择左侧笔记，或开始一篇新的记录。</p>
+        <div class="welcome-actions">
+          <button id="btn-welcome-new" class="btn-solid-secondary">写下第一笔 <kbd>Ctrl N</kbd></button>
+          <button id="btn-welcome-browse" class="btn-secondary">查找笔记 <kbd>Ctrl P</kbd></button>
+        </div>
+        <span class="welcome-footnote">自动保存 · 本地存储 · 随时继续</span>
       </div>
 
     </div>

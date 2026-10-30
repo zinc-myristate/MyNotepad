@@ -49,6 +49,7 @@ import './26-table-view.js';
 import './27-templates.js';
 import './28-capture.js';
 import './29-ocr.js';
+import './31-workspace.js';
 import '../quill/quill-deco.js';
 
 // ----- 对外接口 -----
