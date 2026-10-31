@@ -129,9 +129,11 @@ export async function loadTagFilter() {
   const tags = await window.pywebview.api.tags_list();
   _tags = tags;
   const container = $('#tag-filter-list');
+  // 矮窗口下这里是一条横向滚动的窄条：重建不能把用户滚到的位置冲回开头
+  const scrollLeft = container.scrollLeft;
   container.innerHTML = '';
   if (tags.length === 0) { $('#tag-filter').style.display = 'none'; return; }
-  $('#tag-filter').style.display = 'block';
+  $('#tag-filter').style.display = '';    // 显示方式交给样式表：矮窗口下是 flex，内联 block 会盖掉它
   tags.forEach(tag => {
     const chip = document.createElement('button');
     chip.className = 'tag-filter-chip';
@@ -143,6 +145,9 @@ export async function loadTagFilter() {
     });
     container.appendChild(chip);
   });
+  container.scrollLeft = scrollLeft;
+  // 「清除筛选」随选中出现，会把窄条挤窄：选中的标签要留在看得见的地方
+  container.querySelector('.active')?.scrollIntoView({ block: 'nearest', inline: 'nearest' });
 }
 
 $('#btn-clear-tag-filter').addEventListener('click', async () => {

@@ -4,7 +4,7 @@ import time
 
 import pytest
 from conftest import load_app_partial, make_delta_note, wait_for_js
-from test_ui_layout import _run
+from test_ui_layout import _fill_sidebar, _resize, _run, _sidebar_ready
 
 pytestmark = pytest.mark.e2e
 
@@ -351,3 +351,42 @@ def test_every_visible_control_is_reachable_and_named(tmp_path, monkeypatch):
     result = _run(ns, actions, wait_before=0, wait_after=0)
     assert 'error' not in result, result
     assert not any(result['bad'].values()), result['bad']
+
+
+def test_short_window_keeps_every_sidebar_control_reachable_and_named(tmp_path, monkeypatch):
+    """矮窗口只改变摆法：工具收成图标、标签和视图收成窄条，按钮、名字、键盘路径都不能少。"""
+    ns = load_app_partial(monkeypatch, tmp_path)
+    import backend
+    _fill_sidebar(backend, 12, 3)
+
+    def actions(window, result):
+        _sidebar_ready(window, 12, 3)
+        assert wait_for_js(window, 'Boolean(window.__app.state.activeNoteId)')
+        _resize(window, 900, 600)
+        window.evaluate_js(AUDIT + KEY)
+        result['bad'] = window.evaluate_js("audit(document.getElementById('app'))")
+        # 只有图标时，读屏名称全靠 aria-label；顺序还要和拖拽存下来的一致（都在 .sidebar-footer 下）
+        result['tools'] = window.evaluate_js("""JSON.stringify([...document.querySelectorAll('.btn-sidebar-footer')].map(
+          b => [b.tagName, b.tabIndex, b.parentElement.className, Boolean(b.getAttribute('aria-label'))]))""")
+        # 滚到窄条外面的标签也要能用 Tab 走到：聚焦后它得自己进入可视范围
+        result['chip'] = window.evaluate_js("""(() => {
+          const rail = document.getElementById('tag-filter-list');
+          const chip = rail.lastElementChild;
+          chip.focus();
+          const r = chip.getBoundingClientRect(), box = rail.getBoundingClientRect();
+          return document.activeElement === chip && r.left >= box.left - 0.5 && r.right <= box.right + 0.5;
+        })()""")
+        # 列表变高之后，虚拟列表的键盘浏览仍然落在视口内
+        window.evaluate_js("document.querySelector('.note-item').focus(); key('End')")
+        result['end'] = window.evaluate_js(ROW_IN_VIEW)
+        window.evaluate_js("key('Home')")
+        result['home'] = window.evaluate_js(ROW_IN_VIEW)
+
+    result = _run(ns, actions, wait_before=0, wait_after=0)
+    assert 'error' not in result, result
+    assert result['bad'] == [], result['bad']
+    tools = json.loads(result['tools'])
+    assert len(tools) == 9, tools
+    assert all(t == ['BUTTON', 0, 'sidebar-footer', True] for t in tools), tools
+    assert result['chip'], '聚焦窄条外的标签时，它要滚进可视范围'
+    assert result['end'] and result['home'], result

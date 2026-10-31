@@ -94,6 +94,20 @@ document.addEventListener('keydown', event => {
   }
 });
 
+// Short windows turn views and tags into one-line rails; a mouse wheel only moves vertically.
+document.querySelectorAll('.ss-list, .tag-filter-list').forEach(rail => {
+  rail.addEventListener('wheel', event => {
+    if (event.deltaX || rail.scrollWidth <= rail.clientWidth) return;
+    event.preventDefault();
+    rail.scrollLeft += event.deltaY;
+  }, { passive: false });
+  // Chromium stops revealing a focused element once 32px of it show, which clips the chip and its ring.
+  // Keyboard only: a chip that moved under a pressed mouse button would lose the click.
+  rail.addEventListener('focusin', event => {
+    if (event.target.matches(':focus-visible')) event.target.scrollIntoView({ block: 'nearest', inline: 'nearest' });
+  });
+});
+
 const notebookName = $('#notebook-name');
 function syncWorkspaceScope() {
   $('#workspace-scope').textContent = notebookName.textContent || '全部笔记';

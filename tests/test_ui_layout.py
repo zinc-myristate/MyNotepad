@@ -13,7 +13,7 @@ import threading
 import time
 
 import pytest
-from conftest import PROJECT_ROOT, load_app_partial, make_delta_note
+from conftest import PROJECT_ROOT, load_app_partial, make_delta_note, wait_for_js
 
 STYLE = os.path.join(PROJECT_ROOT, 'renderer', 'style.css')
 INDEX = os.path.join(PROJECT_ROOT, 'renderer', 'index.html')
@@ -539,6 +539,166 @@ def test_sidebar_divider_gaps_are_symmetric(tmp_path, monkeypatch):
 
     # ④ 别把这一行本身压扁（padding 改成不对称的一个常见动机是"省高度"）
     assert res['barHeight'] >= 45, '笔记本栏总高只有 %dpx（8+35+8 = 51 才对）' % res['barHeight']
+
+
+SIDEBAR_BUDGET = r"""JSON.stringify((() => {
+  const sidebar = document.getElementById('sidebar');
+  const list = document.getElementById('note-list');
+  const tools = [...document.querySelectorAll('.btn-sidebar-footer')];
+  const shown = sel => document.querySelector(sel).getClientRects().length > 0;
+  const onTop = el => { const r = el.getBoundingClientRect();
+    return el.contains(document.elementFromPoint(r.left + r.width / 2, r.top + r.height / 2)); };
+  return {
+    inner: innerHeight,
+    listH: list.clientHeight,
+    rowH: list.querySelector('.note-item').getBoundingClientRect().height,
+    overflow: sidebar.scrollHeight - sidebar.clientHeight,
+    toolRows: new Set(tools.map(b => Math.round(b.getBoundingClientRect().top))).size,
+    toolsOnTop: tools.filter(onTop).length,
+    labelsInline: tools.filter(b => getComputedStyle(b.querySelector('.tool-label')).position !== 'absolute').length,
+    heading: shown('.sidebar-tools-heading'), local: shown('.workspace-local'),
+    subtitle: shown('.workspace-subtitle'), listHeading: shown('.note-list-heading'),
+  };
+})())"""
+
+
+def _fill_sidebar(backend, tags=0, views=0):
+    """一屏放不下的笔记 + 指定数量的标签 / 视图（后两者决定侧栏还剩多少高度给列表）。"""
+    for i in range(20):
+        note = backend.api.notes_create()
+        backend.api.notes_update(note['id'], {'title': '列表高度 %02d' % i, 'content': '正文'})
+    for i in range(tags):
+        backend.api.tags_create('标签%02d' % i, '#888888')
+    for i in range(views):
+        backend.api.saved_search_create('视图%02d' % i, 'tag:标签%02d' % i)
+
+
+def _sidebar_ready(window, tags, views):
+    """等列表、标签、视图都到位，并去掉开发态提示条（它盖住窗口底部，打包版没有）。"""
+    assert wait_for_js(window, 'Boolean(window.__app && !document.querySelector(".note-skeleton"))')
+    assert wait_for_js(window, "Boolean(document.querySelector('.note-item'))")
+    if tags:
+        assert wait_for_js(window, "document.querySelectorAll('.tag-filter-chip').length", tags)
+    if views:
+        assert wait_for_js(window, "document.querySelectorAll('.ss-item').length", views)
+    wait_for_js(window, "Boolean(document.getElementById('startup-notice'))", timeout=3)
+    window.evaluate_js("document.getElementById('startup-notice')?.remove()")
+
+
+def _resize(window, width, height):
+    """改窗口尺寸并等视口跟上。CI 屏幕只有 1024×768，窗口可能被夹住不变，所以等不到变化也往下走。"""
+    before = window.evaluate_js('innerWidth + "x" + innerHeight')
+    window.resize(width, height)
+    wait_for_js(window, 'innerWidth + "x" + innerHeight !== %r' % before, timeout=2)
+
+
+@pytest.mark.e2e
+@pytest.mark.parametrize('tags, views', [(0, 0), (12, 3)], ids=['bare', 'tags-and-views'])
+def test_note_list_gets_three_rows_at_every_supported_height(tmp_path, monkeypatch, tags, views):
+    """列表优先：矮窗口下先让位的是工具、视图和标签，不是笔记。
+
+    修之前的实测（行高 76px，标签 12 个 + 视图 3 个）：
+
+        窗口        | 没有标签和视图     | 有标签和视图
+        1200×800    | 313px，4.1 行      | 72px，0.9 行
+        1000×700    | 213px，2.8 行      | 0px，底部被挤出窗口 28px
+        900×600     | 133px，1.8 行      | 0px，出界 108px，6 个工具点不到
+
+    1100×792 是最紧的一档：工具还是三行、标签和视图已经收成窄条。
+    1100×760 守工具收起的阈值：再调低，这个高度的列表就放不下 3 行。
+    """
+    ns = load_app_partial(monkeypatch, tmp_path)
+    import backend
+    _fill_sidebar(backend, tags, views)
+    out = {}
+
+    def actions(window, result):
+        _sidebar_ready(window, tags, views)
+        for w, h in ((1200, 800), (1100, 792), (1100, 760), (1000, 700), (900, 600)):
+            _resize(window, w, h)
+            out['%d×%d' % (w, h)] = json.loads(window.evaluate_js(SIDEBAR_BUDGET))
+
+    res = _run(ns, actions, wait_before=0, wait_after=0)
+    assert 'error' not in res, res
+    for size, m in out.items():
+        assert m['rowH'] == 76, '%s 行高变成 %s（虚拟列表只量一次行高，不能随窗口变）' % (size, m['rowH'])
+        assert m['listH'] >= 3 * m['rowH'], '%s 列表只有 %dpx，放不下 3 行：%s' % (size, m['listH'], m)
+        assert m['overflow'] == 0, '%s 侧栏被挤出窗口 %dpx' % (size, m['overflow'])
+        assert m['toolsOnTop'] == 9, '%s 只有 %d 个工具点得到' % (size, m['toolsOnTop'])
+        # 分档看真实视口，不看名义窗口：CI 屏幕小，1200×800 的窗口会被夹小。
+        # 默认窗口内高约 765，要留在最宽裕的一档：三行带字的工具、标题、状态行、副标题都在
+        icons = m['inner'] <= 755
+        assert m['toolRows'] == (1 if icons else 3), '%s 工具行数不对：%s' % (size, m)
+        assert m['labelsInline'] == (0 if icons else 9), '%s 文字应%s：%s' % (size, '收进气泡' if icons else '留在按钮里', m)
+        assert m['heading'] != icons and m['local'] != icons, m
+        assert m['subtitle'] == m['listHeading'] == (m['inner'] > 660), m
+
+
+RAIL_STATE = r"""JSON.stringify((() => {
+  const rail = document.getElementById('tag-filter-list');
+  const box = rail.getBoundingClientRect();
+  const active = document.querySelector('.tag-filter-chip.active');
+  const inside = el => { const r = el.getBoundingClientRect();
+    return r.left >= box.left - 0.5 && r.right <= box.right + 0.5; };
+  return {
+    lines: new Set([...rail.children].map(c => Math.round(c.getBoundingClientRect().top))).size,
+    hiddenWidth: rail.scrollWidth - rail.clientWidth,
+    scrollLeft: rail.scrollLeft,
+    activeVisible: active ? inside(active) : null,
+    clearShown: document.getElementById('btn-clear-tag-filter').getClientRects().length > 0,
+    viewLines: new Set([...document.querySelectorAll('.ss-item')]
+      .map(c => Math.round(c.getBoundingClientRect().top))).size,
+  };
+})())"""
+
+
+@pytest.mark.e2e
+def test_tag_and_view_rails_stay_usable_on_short_windows(tmp_path, monkeypatch):
+    """收成一行之后，滚轮要滚得动，选中的标签要看得见，「清除筛选」要在该出现时出现。"""
+    ns = load_app_partial(monkeypatch, tmp_path)
+    import backend
+    _fill_sidebar(backend, 12, 3)
+
+    def state(window):
+        return json.loads(window.evaluate_js(RAIL_STATE))
+
+    def actions(window, result):
+        _sidebar_ready(window, 12, 3)
+        _resize(window, 900, 600)
+        result['idle'] = state(window)
+        # 脚本派发的 wheel 不会触发原生滚动，动了就是横向映射在工作
+        window.evaluate_js("document.getElementById('tag-filter-list').dispatchEvent("
+                           "new WheelEvent('wheel', {deltaY: 120, bubbles: true, cancelable: true}))")
+        result['wheeled'] = state(window)
+        # 选中最后一个：列表重建 + 「清除筛选」出现把窄条挤窄，它都得留在视野里
+        window.evaluate_js("[...document.querySelectorAll('.tag-filter-chip')].at(-1).click()")
+        assert wait_for_js(window, "Boolean(document.querySelector('.tag-filter-chip.active'))")
+        result['picked'] = state(window)
+        window.evaluate_js("document.getElementById('btn-clear-tag-filter').click()")
+        assert wait_for_js(window, "!document.querySelector('.tag-filter-chip.active')")
+        result['cleared'] = state(window)
+
+    res = _run(ns, actions, wait_before=0, wait_after=0)
+    assert 'error' not in res, res
+    assert res['idle']['lines'] == 1 and res['idle']['viewLines'] == 1, res['idle']
+    assert res['idle']['hiddenWidth'] > 0, '12 个标签一行放不下，才谈得上滚动：%s' % res['idle']
+    assert not res['idle']['clearShown'], '没有筛选时「清除筛选」不占窄条的位置'
+    assert res['wheeled']['scrollLeft'] == 120, res['wheeled']
+    assert res['picked']['activeVisible'], '选中的标签被挤出了窄条：%s' % res['picked']
+    assert res['picked']['clearShown'], res['picked']
+    assert not res['cleared']['clearShown'], res['cleared']
+
+
+def test_short_window_rules_leave_rows_alone_and_label_the_icons():
+    """两条 e2e 抓不到的约束，钉在样式表上。
+
+    ① 虚拟列表的行高只量一次：媒体查询改 `.note-item`，滚动条位置就和第几行错开。
+    ② 脚本 `.focus()` 不算键盘操作，触发不了 `:focus-visible`，所以聚焦时冒文字这条只能静态守。
+    """
+    css = open(os.path.join(PROJECT_ROOT, 'renderer', 'workspace.css'), encoding='utf-8').read()
+    short = css[css.index('@media (max-height: 960px)'):css.index('@media (prefers-reduced-motion')]
+    assert '.note-item' not in short
+    assert '.btn-sidebar-footer:focus-visible .tool-label' in short
 
 
 # ---------- app.pyw 的模块别名（静态，无需浏览器） ----------

@@ -32,6 +32,7 @@ function render() {
     return;
   }
   wrap.classList.remove('hidden');
+  const scrollLeft = box.scrollLeft;   // 矮窗口下是横向滚动的窄条，重建要留在原位
   box.innerHTML = _items.map((it) => `
     <div class="ss-item${state.searchQuery === it.query ? ' active' : ''}" data-ss="${it.id}"
          title="${esc(it.query)}">
@@ -39,6 +40,7 @@ function render() {
       <span class="ss-count">${it.count == null ? '' : it.count}</span>
       <button class="ss-more" data-ss-menu="${it.id}" title="重命名 / 删除">…</button>
     </div>`).join('');
+  box.scrollLeft = scrollLeft;
 }
 
 async function apply(item) {
