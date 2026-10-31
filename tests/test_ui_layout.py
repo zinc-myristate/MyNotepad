@@ -424,6 +424,7 @@ SIDEBAR_PAIR = r"""JSON.stringify((() => {
     radius: c.borderTopLeftRadius, bg: c.backgroundColor,
     radiusPx: c.borderTopLeftRadius }; };
   const time = document.querySelector('#note-list .note-item-time');
+  time.style.display = 'block';   // 真实鼠标停在这一行时 :hover 会藏起时间戳，高度量出来是 0
   const tc = getComputedStyle(time);
   const lh = parseFloat(tc.lineHeight) || 15;
   const pinSvg = document.querySelector('#note-list .note-item-pin svg');
