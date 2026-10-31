@@ -48,12 +48,20 @@ function render() {
   if (focusedItem) box.querySelector(`[data-ss="${CSS.escape(focusedItem)}"] ${focusedPart}`)?.focus();
 }
 
+/** 高亮跟着已生效的搜索走。搜索有防抖和桥接往返，点视图那一刻 state.searchQuery 还是旧值，
+ *  所以由搜索落定的地方调用；改写或清空搜索时高亮也靠这里撤掉。 */
+export function markActiveView() {
+  document.querySelectorAll('#ss-list .ss-item').forEach((row) => {
+    const item = _items.find((x) => x.id === row.getAttribute('data-ss'));
+    row.classList.toggle('active', item?.query === state.searchQuery);
+  });
+}
+
 async function apply(item) {
   const input = $('#search-input');
   if (!input) return;
   input.value = item.query;
   input.dispatchEvent(new Event('input', { bubbles: true }));
-  render();
 }
 
 async function menu(item) {

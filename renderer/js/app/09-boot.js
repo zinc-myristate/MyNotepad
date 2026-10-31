@@ -7,7 +7,7 @@ import { initMarkdownEditor } from './13-markdown-editor.js';
 import { initNoteFormatBadge } from './15-note-format.js';
 import { initMarkdownToolbar } from './16-markdown-toolbar.js';
 import { initTodoPanel } from './18-todo-panel.js';
-import { initSavedSearches } from './20-saved-searches.js';
+import { initSavedSearches, markActiveView } from './20-saved-searches.js';
 import { initStatusBar } from './21-status-bar.js';
 import { initOutline } from './22-outline.js';
 import { initFindBar } from './23-find-bar.js';
@@ -287,6 +287,7 @@ async function filterNotesBySearch(query) {
     renderNoteList();          // 清掉搜索：列表要按"全部"重建窗口
     dom.btnSearchClear.style.display = 'none';
     updateScopeSearchHint(0);
+    markActiveView();
     return;
   }
   dom.btnSearchClear.style.display = 'flex';
@@ -309,6 +310,7 @@ async function filterNotesBySearch(query) {
   state.searchSnippets = snippets;
   state.searchMatched = matched;
   applySearchToDom();
+  markActiveView();
 }
 
 /** 「当前笔记本里没有匹配」提示条（范围筛选 + 搜索叠加时的解释）。
