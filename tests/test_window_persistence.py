@@ -5,10 +5,14 @@
   · 保存的几何必须经过与默认值同一条钳制路径（拔掉显示器后旧坐标可能在屏外）；
   · prefer 位置只在能**完整**落在工作区内时才采用，否则退回居中；
   · 没有保存过 / 存的是坏数据 → 行为必须与改造前完全一致（用默认尺寸居中）；
+  · 最小化 / 隐藏时读到的几何绝不能落库，已经写坏的用户库读取时必须自愈；
   · 关闭处理器在 tray=None 时行为不变（测试与未启用托盘时必须能真正关掉窗口）。
 """
+import json
+import os
 import threading as _threading
 import time
+from types import SimpleNamespace
 
 import pytest
 from conftest import load_app_partial
@@ -111,6 +115,121 @@ class TestSavedGeometryRoundtrip:
         assert geo['w'] > 0 and geo['h'] > 0
 
 
+MINIMIZED = {'w': 157, 'h': 25, 'x': -16000, 'y': -16000}   # 用户库实测（3072×1920 @ 200%）
+
+
+class TestImplausibleGeometryIsIgnored:
+    """读取端：写坏的值当没存过，已经中招的用户库启动时自愈"""
+
+    @pytest.mark.parametrize('bad', [
+        MINIMIZED,
+        {'w': 160, 'h': 28, 'x': -32000, 'y': -32000},   # 100% 缩放下的同一个状态
+        {'w': 500, 'h': 700, 'x': 10, 'y': 10},          # 只有宽度低于最小窗口
+        {'w': 1000, 'h': 300, 'x': 10, 'y': 10},         # 只有高度低于最小窗口
+        {'w': 1000, 'h': 700, 'x': -16000, 'y': 10},     # 尺寸正常，x 远在屏外
+        {'w': 1000, 'h': 700, 'x': 10, 'y': 20000},      # 尺寸正常，y 远在屏外
+    ])
+    def test_treated_as_unsaved(self, app_ns, api, bad):
+        api.settings_set('window_geometry', json.dumps(bad))
+        assert app_ns['_load_saved_geometry'](api) is None
+
+    def test_poisoned_library_opens_at_default_size(self, app_ns, api, monkeypatch):
+        """修复前这里开成 900×600：尺寸被钳到最小值，用户看到的就是"窗口大小记不住" """
+        monkeypatch.setitem(app_ns, '_get_work_area', lambda: WORK)
+        api.settings_set('window_geometry', json.dumps(MINIMIZED))
+        assert app_ns['_resolve_window_geometry'](api) == {'w': 1200, 'h': 800, 'x': 168, 'y': 56}
+
+    @pytest.mark.parametrize('x,y', [(-1920, 100), (3000, 200), (11000, 0)])
+    def test_other_monitor_coordinates_keep_the_size(self, app_ns, api, monkeypatch, x, y):
+        """副屏或拔掉显示器留下的坐标不是坏数据：尺寸要留下，只有位置退回居中"""
+        monkeypatch.setitem(app_ns, '_get_work_area', lambda: WORK)
+        api.settings_set('window_geometry', json.dumps({'w': 1000, 'h': 700, 'x': x, 'y': y}))
+        assert app_ns['_load_saved_geometry'](api) == (1000, 700, x, y)
+        assert app_ns['_resolve_window_geometry'](api) == {
+            'w': 1000, 'h': 700, 'x': (1536 - 1000) // 2, 'y': (912 - 700) // 2}
+
+    def test_position_is_optional(self, app_ns, api):
+        api.settings_set('window_geometry', '{"w": 1000, "h": 700}')
+        assert app_ns['_load_saved_geometry'](api) == (1000, 700, None, None)
+
+    @pytest.mark.parametrize('dpi', [96, 120, 125, 144, 168, 192, 216, 240, 288])
+    def test_smallest_real_window_is_valid_at_every_scale(self, app_ns, api, dpi):
+        """贴着最小尺寸的窗口不能被当成坏数据。
+
+        这里按 pywebview 的取整方式算：125 dpi（130%）下物理下限是 1171×781，读回来是 899×599。
+        """
+        scale = dpi / 96
+        w = int(int(app_ns['MIN_WIN_W'] * scale) / scale)
+        h = int(int(app_ns['MIN_WIN_H'] * scale) / scale)
+        api.settings_set('window_geometry', json.dumps({'w': w, 'h': h, 'x': 10, 'y': 10}))
+        assert app_ns['_load_saved_geometry'](api) == (w, h, 10, 10)
+
+
+class _FakeForm:
+    """pywebview 的 `window.native`：只用到 Handle.ToInt64()"""
+    Handle = SimpleNamespace(ToInt64=lambda: 4242)
+
+
+@pytest.fixture
+def win32(monkeypatch):
+    """假的 IsIconic / IsWindowVisible；真窗口那条路由本文件的 e2e 覆盖"""
+    import ctypes
+    state = SimpleNamespace(iconic=False, visible=True, asked=[])
+
+    def is_iconic(hwnd):
+        state.asked.append(hwnd)
+        return state.iconic
+
+    monkeypatch.setattr(ctypes.windll.user32, 'IsIconic', is_iconic)
+    monkeypatch.setattr(ctypes.windll.user32, 'IsWindowVisible', lambda hwnd: state.visible)
+    return state
+
+
+class TestSaveSkipsMinimizedAndHidden:
+    """保存端：最小化 / 隐藏时读到的不是用户的窗口，不能顶掉上一次的有效值"""
+
+    LAST_GOOD = '{"w": 1000, "h": 700, "x": 120, "y": 60}'
+
+    class Window:
+        native = _FakeForm()
+
+        def __init__(self, w=1100, h=750, x=50, y=40):
+            self.width, self.height, self.x, self.y = w, h, x, y
+
+    def test_normal_window_still_saves(self, app_ns, api, win32):
+        api.settings_set('window_geometry', self.LAST_GOOD)
+        app_ns['_save_window_geometry'](api, self.Window())
+        assert json.loads(api.settings_get('window_geometry')) == {
+            'w': 1100, 'h': 750, 'x': 50, 'y': 40}
+
+    def test_minimized_keeps_last_good_value(self, app_ns, api, win32):
+        """读数故意写成合法值：这条只验状态判断，不让 _geometry_is_plausible 替它挡"""
+        api.settings_set('window_geometry', self.LAST_GOOD)
+        win32.iconic = True
+        app_ns['_save_window_geometry'](api, self.Window())
+        assert api.settings_get('window_geometry') == self.LAST_GOOD
+        assert win32.asked == [4242], '必须问这个窗口自己的句柄，不能按标题找'
+
+    def test_hidden_keeps_last_good_value(self, app_ns, api, win32):
+        api.settings_set('window_geometry', self.LAST_GOOD)
+        win32.visible = False
+        app_ns['_save_window_geometry'](api, self.Window())
+        assert api.settings_get('window_geometry') == self.LAST_GOOD
+
+    def test_minimized_numbers_are_refused_without_a_win32_answer(self, app_ns, api):
+        """取不到句柄、判断不了窗口状态时，也不能把最小化的读数写进去"""
+        api.settings_set('window_geometry', self.LAST_GOOD)
+        win = SimpleNamespace(width=157, height=25, x=-16000, y=-16000)
+        app_ns['_save_window_geometry'](api, win)
+        assert api.settings_get('window_geometry') == self.LAST_GOOD
+
+    def test_minimizing_between_check_and_read_is_refused(self, app_ns, api, win32):
+        """状态判断说"显示着"、读数却已经是最小化的：用户恰好在这一刻点了最小化"""
+        api.settings_set('window_geometry', self.LAST_GOOD)
+        app_ns['_save_window_geometry'](api, self.Window(**MINIMIZED))
+        assert api.settings_get('window_geometry') == self.LAST_GOOD
+
+
 class TestClosingHandlerWithTray:
     """「关窗驻留托盘」的关闭语义——最不能出错的一处：绝不能变成"点了关闭关不掉" """
 
@@ -194,6 +313,102 @@ class TestClosingHandlerWithTray:
         while time.time() < deadline and win.calls.count('hide') < 2:
             time.sleep(0.05)
         assert win.calls.count('hide') == 2, '第二次关闭应同样隐藏（状态已回到 idle）'
+
+    @pytest.mark.parametrize('quitting,last_call', [(False, 'hide'), (True, 'destroy')])
+    def test_closing_while_minimized_keeps_saved_geometry(self, app_ns, api, win32,
+                                                          quitting, last_call):
+        """用户库就是这么写坏的：最小化后关窗，或最小化后从托盘退出"""
+        saved = '{"w": 1000, "h": 700, "x": 120, "y": 60}'
+        api.settings_set('window_geometry', saved)
+        win32.iconic = True
+        win, tray = self.FakeWindow(), self.FakeTray()
+        win.native = _FakeForm()
+        win.width, win.height, win.x, win.y = MINIMIZED.values()
+        calls = self._close(app_ns, api, win, tray=tray, quitting=quitting)
+        assert last_call in calls
+        assert api.settings_get('window_geometry') == saved
+
+
+def _until(predicate, timeout=5.0):
+    deadline = time.time() + timeout
+    while not predicate() and time.time() < deadline:
+        time.sleep(0.05)
+    return predicate()
+
+
+@pytest.mark.e2e
+def test_real_window_keeps_saved_geometry_while_minimized_or_hidden(tmp_path, monkeypatch):
+    """真窗口走一遍：最小化、隐藏、最小化后真的关掉，设置里始终是用户的窗口。
+
+    单测里的窗口状态是假的。这里钉住只有真窗口才能证明的三件事：Windows 确实报那组假几何
+    （否则上面都在防一个不存在的问题）、`win.native.Handle` 在非 UI 线程取得到、
+    WM_CLOSE 这条真实路径不会把坏值写回去。
+    """
+    import ctypes
+    import sqlite3
+
+    import webview
+    ns = load_app_partial(monkeypatch, tmp_path)
+    import backend
+    user32 = ctypes.windll.user32
+    last_good = '{"w": 1000, "h": 700, "x": 120, "y": 60}'
+    result = {}
+    window = webview.create_window(
+        '窗口几何回归', html='<p>geometry</p>', width=980, height=680, x=20, y=20,
+        min_size=(ns['MIN_WIN_W'], ns['MIN_WIN_H']))
+    window.events.closing += ns['make_closing_handler'](window, backend.api)
+
+    def save_and_read():
+        ns['_save_window_geometry'](backend.api, window)
+        return backend.api.settings_get('window_geometry')
+
+    def runner():
+        try:
+            assert window.events.shown.wait(15), '窗口没显示出来'
+            hwnd = window.native.Handle.ToInt64()
+            result['normal'] = json.loads(save_and_read())
+            result['reported'] = (window.width, window.height, window.x, window.y)
+
+            backend.api.settings_set('window_geometry', last_good)
+            window.minimize()
+            assert _until(lambda: user32.IsIconic(hwnd)), '窗口没进入最小化'
+            result['minimized_reading'] = (window.width, window.height, window.x, window.y)
+            result['after_minimize'] = save_and_read()
+
+            window.restore()
+            assert _until(lambda: not user32.IsIconic(hwnd)), '窗口没还原'
+            window.hide()
+            assert _until(lambda: not user32.IsWindowVisible(hwnd)), '窗口没隐藏'
+            result['after_hide'] = save_and_read()
+
+            window.show()
+            window.minimize()
+            assert _until(lambda: user32.IsIconic(hwnd)), '窗口没再次最小化'
+            user32.PostMessageW(hwnd, 0x0010, 0, 0)   # WM_CLOSE：走 make_closing_handler 真实路径
+        except Exception as exc:                      # noqa: BLE001
+            result['error'] = repr(exc)
+            try:
+                window.destroy()
+            except Exception:                         # noqa: BLE001
+                pass
+
+    _threading.Thread(target=runner, daemon=True).start()
+    webview.start()
+
+    assert 'error' not in result, result['error']
+    assert (result['normal']['w'], result['normal']['h']) == result['reported'][:2]
+    assert (result['normal']['x'], result['normal']['y']) == result['reported'][2:]
+    assert result['minimized_reading'][0] < ns['MIN_WIN_W'], \
+        'Windows 不再报最小化的假几何了，这条测试的前提要重看：%r' % (result['minimized_reading'],)
+    assert result['after_minimize'] == last_good
+    assert result['after_hide'] == last_good
+    # 关窗时 checkpoint_and_close 已经关了后端连接，只能直接读库文件
+    con = sqlite3.connect(os.path.join(str(tmp_path), 'notes.db'))
+    try:
+        row = con.execute("SELECT value FROM settings WHERE key = 'window_geometry'").fetchone()
+    finally:
+        con.close()
+    assert row[0] == last_good
 
 
 def test_loading_app_partial_leaves_threading_intact(app_ns):

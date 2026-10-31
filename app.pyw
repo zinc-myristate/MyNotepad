@@ -1319,6 +1319,10 @@ def _clamp_window_geometry(w, h, x=None, y=None):
 # 只认 window_geometry 这一个键：早期版本在 settings 里留下了 window_width/window_height/
 # window_x/window_y，但没有任何代码读它们（那些残留值可能是过期甚至屏外的），刻意不读。
 _WIN_GEOM_KEY = 'window_geometry'
+# 逻辑坐标的绝对值到这里就不是真实桌面了：三台 4K 横排（100% 缩放）最右也只到 11520。
+# Windows 把最小化窗口挪到物理 (-32000, -32000)，pywebview 按 DPI 折算后是 -32000 / 缩放，
+# 200% 时 -16000。缩放更高时这条可能拦不住，但最小化的尺寸一定过不了最小窗口那条。
+_WIN_COORD_LIMIT = 12000
 TRAY_KEY = 'tray_enabled'      # '1'（默认）= 关闭窗口时驻留托盘
 HOTKEY_KEY = 'quick_hotkey'    # '1' = 启用全局快速记录热键（默认关，避免抢占系统热键）
 CAPTURE_HOTKEY_KEY = 'capture_hotkey'   # '1' = 启用迷你捕获窗热键 Ctrl+Alt+S（同样默认关）
@@ -1329,8 +1333,44 @@ _HOTKEY_CTL = {'apply': None}
 _CAPTURE_HOTKEY_CTL = {'apply': None}
 
 
+def _geometry_is_plausible(w, h, x, y):
+    """这组逻辑像素几何是不是用户的窗口。保存和读取用同一个判断，x/y 允许是 None。
+
+    最小化时读到的是任务栏占位的尺寸和屏外坐标（200% 缩放实测 157×25 @ -16000），
+    当真的话启动时尺寸被钳到 900×600，用户的窗口大小就丢了。
+
+    只拦「远在屏外」：副屏的负坐标、拔掉显示器留下的旧坐标仍是有效的尺寸，
+    位置交给 clamp_window_geometry 退回居中。
+
+    尺寸留 1px 余量：pywebview 读尺寸是 int(物理 / 缩放)，物理下限又是 int(900 × 缩放)，
+    非整档缩放（如 130%）下贴着下限的窗口会读成 899×599，那是合法值。
+    """
+    if w < MIN_WIN_W - 1 or h < MIN_WIN_H - 1:
+        return False
+    return all(c is None or abs(c) < _WIN_COORD_LIMIT for c in (x, y))
+
+
+def _window_is_showing(win):
+    """win 此刻是否正常显示（没最小化、没隐藏）。判断不了就当作显示着，读数还要过
+    _geometry_is_plausible 这一关。
+
+    按窗口自己的句柄问 Win32，不用 FindWindowW 按标题找：隔离数据目录下没有单实例互斥，
+    开发版和打包版可以同时开着，按标题可能问到另一个进程的窗口。
+    """
+    try:
+        import ctypes
+        user32 = ctypes.windll.user32
+        hwnd = win.native.Handle.ToInt64()
+        return not user32.IsIconic(hwnd) and bool(user32.IsWindowVisible(hwnd))
+    except Exception:
+        return True
+
+
 def _load_saved_geometry(backend):
-    """读取上次保存的窗口几何，返回 (w, h, x, y) 或 None（无/损坏/非法一律当没存过）"""
+    """读取上次保存的窗口几何，返回 (w, h, x, y) 或 None（无/损坏/非法一律当没存过）
+
+    旧版本会把最小化时的几何写进来，这里当没存过，已经写坏的用户库启动时就回到默认尺寸。
+    """
     if backend is None:
         return None
     try:
@@ -1339,22 +1379,28 @@ def _load_saved_geometry(backend):
             return None
         data = json.loads(raw) if isinstance(raw, str) else raw
         w, h = int(data['w']), int(data['h'])
-        if w <= 0 or h <= 0:
-            return None
         x, y = data.get('x'), data.get('y')
-        return (w, h, int(x) if x is not None else None, int(y) if y is not None else None)
+        x, y = int(x) if x is not None else None, int(y) if y is not None else None
+        if not _geometry_is_plausible(w, h, x, y):
+            return None
+        return (w, h, x, y)
     except Exception:
         return None
 
 
 def _save_window_geometry(backend, win):
-    """关窗时把当前几何写回设置。任何失败都不能影响关闭流程。"""
+    """关窗时把当前几何写回设置。任何失败都不能影响关闭流程。
+
+    最小化或隐藏时不写，保留上一次的有效值。驻留托盘时这很常见：
+    最小化后从托盘退出，或隐藏后再退出，走的都是这里。
+    """
     try:
-        w, h = int(win.width), int(win.height)
-        if w <= 0 or h <= 0:
+        if not _window_is_showing(win):
             return
-        backend.settings_set(_WIN_GEOM_KEY,
-                             json.dumps({'w': w, 'h': h, 'x': int(win.x), 'y': int(win.y)}))
+        w, h, x, y = int(win.width), int(win.height), int(win.x), int(win.y)
+        if not _geometry_is_plausible(w, h, x, y):   # 判断状态之后窗口可能刚好被最小化
+            return
+        backend.settings_set(_WIN_GEOM_KEY, json.dumps({'w': w, 'h': h, 'x': x, 'y': y}))
     except Exception:
         try:
             import applog
