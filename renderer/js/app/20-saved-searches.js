@@ -33,6 +33,10 @@ function render() {
   }
   wrap.classList.remove('hidden');
   const scrollLeft = box.scrollLeft;   // 矮窗口下是横向滚动的窄条，重建要留在原位
+  // 焦点在视图上时重建会掉到 body，下一次 Tab 还会退回第一个视图
+  const focused = document.activeElement;
+  const focusedItem = focused?.closest('.ss-item')?.dataset.ss;
+  const focusedPart = focused?.classList.contains('ss-more') ? '.ss-more' : '.ss-name';
   box.innerHTML = _items.map((it) => `
     <div class="ss-item${state.searchQuery === it.query ? ' active' : ''}" data-ss="${it.id}"
          title="${esc(it.query)}">
@@ -41,6 +45,7 @@ function render() {
       <button class="ss-more" data-ss-menu="${it.id}" title="重命名 / 删除">…</button>
     </div>`).join('');
   box.scrollLeft = scrollLeft;
+  if (focusedItem) box.querySelector(`[data-ss="${CSS.escape(focusedItem)}"] ${focusedPart}`)?.focus();
 }
 
 async function apply(item) {

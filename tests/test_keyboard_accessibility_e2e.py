@@ -436,3 +436,43 @@ def test_short_window_keeps_every_sidebar_control_reachable_and_named(tmp_path, 
     assert all(t == ['BUTTON', 0, 'sidebar-footer', True] for t in tools), tools
     assert result['chip'], '聚焦窄条外的标签时，它要滚进可视范围'
     assert result['end'] and result['home'], result
+
+
+def test_rebuilt_tag_and_view_lists_keep_the_keyboard_focus(tmp_path, monkeypatch):
+    """回车选中标签或视图后整排控件重建：焦点掉到 body 的话，再按回车没有落点，Tab 还会退回开头。"""
+    ns = load_app_partial(monkeypatch, tmp_path)
+    import backend
+    _fill_sidebar(backend, 4, 3)
+
+    def actions(window, result):
+        _sidebar_ready(window, 4, 3)
+        window.evaluate_js(KEY)
+        # 选中再取消，用的是同一个控件：第二下能生效，焦点就一定还在它身上
+        window.evaluate_js("document.querySelectorAll('.tag-filter-chip')[2].focus(); document.activeElement.click()")
+        assert wait_for_js(window, "document.querySelector('.tag-filter-chip.active')?.textContent", '标签02')
+        result['picked'] = window.evaluate_js('document.activeElement.textContent')
+        window.evaluate_js('document.activeElement.click()')
+        assert wait_for_js(window, "!document.querySelector('.tag-filter-chip.active')")
+        result['toggled'] = window.evaluate_js('document.activeElement.textContent')
+        window.evaluate_js("document.querySelectorAll('.ss-name')[1].focus(); key('Enter')")
+        assert wait_for_js(window, "document.getElementById('search-input').value", 'tag:标签01')
+        result['view'] = window.evaluate_js('document.activeElement.textContent')
+        # 「…」重命名或删除之后也会重建，焦点要留在「…」上，不是视图名上
+        window.evaluate_js("window.before = document.querySelectorAll('.ss-more')[2]; before.focus();"
+                           "window.dispatchEvent(new CustomEvent('saved-searches-changed'))")
+        assert wait_for_js(window, '!window.before.isConnected')
+        result['more'] = window.evaluate_js(
+            "document.activeElement.matches('.ss-item:nth-child(3) .ss-more')")
+        # 焦点不在这两排控件上时，重建不能把它抢过来
+        window.evaluate_js("document.getElementById('search-input').focus();"
+                           "window.before = document.querySelector('.ss-more');"
+                           "window.dispatchEvent(new CustomEvent('saved-searches-changed'))")
+        assert wait_for_js(window, '!window.before.isConnected')
+        result['kept'] = window.evaluate_js('document.activeElement.id')
+
+    result = _run(ns, actions, wait_before=0, wait_after=0)
+    assert 'error' not in result, result
+    assert result['picked'] == result['toggled'] == '标签02', result
+    assert result['view'] == '视图01', result
+    assert result['more'], result
+    assert result['kept'] == 'search-input', result
