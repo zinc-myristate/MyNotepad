@@ -131,12 +131,15 @@ export async function loadTagFilter() {
   const container = $('#tag-filter-list');
   // 矮窗口下这里是一条横向滚动的窄条：重建不能把用户滚到的位置冲回开头
   const scrollLeft = container.scrollLeft;
+  // 焦点在标签上时重建会掉到 body：再按一次回车就没有落点，选中的标签取消不了
+  const focusedTag = document.activeElement?.closest('.tag-filter-chip')?.dataset.tagId;
   container.innerHTML = '';
   if (tags.length === 0) { $('#tag-filter').style.display = 'none'; return; }
   $('#tag-filter').style.display = '';    // 显示方式交给样式表：矮窗口下是 flex，内联 block 会盖掉它
   tags.forEach(tag => {
     const chip = document.createElement('button');
     chip.className = 'tag-filter-chip';
+    chip.dataset.tagId = tag.id;
     if (currentTagFilter === tag.id) chip.classList.add('active');
     chip.textContent = tag.name;
     chip.addEventListener('click', async () => {
@@ -148,6 +151,7 @@ export async function loadTagFilter() {
   container.scrollLeft = scrollLeft;
   // 「清除筛选」随选中出现，会把窄条挤窄：选中的标签要留在看得见的地方
   container.querySelector('.active')?.scrollIntoView({ block: 'nearest', inline: 'nearest' });
+  if (focusedTag) container.querySelector(`[data-tag-id="${CSS.escape(focusedTag)}"]`)?.focus();
 }
 
 $('#btn-clear-tag-filter').addEventListener('click', async () => {

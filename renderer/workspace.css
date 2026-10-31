@@ -99,15 +99,20 @@ kbd { font: 10px var(--font-sans); white-space: nowrap; letter-spacing: 0; }
 .note-item-row-cover > button {
   position: absolute; bottom: -1px; width: 23px; height: 23px;
   border-radius: 50%; background: var(--bg-primary); opacity: 1; color: var(--text-secondary);
+  transition: background var(--workspace-fast), color var(--workspace-fast);
 }
 .note-item-password { right: 104px; }
 .note-item-copy { right: 78px; }
 .note-item-pin { right: 52px; }
 .note-item-fav { right: 26px; }
 .note-item-delete { right: 0; }
+/* The row Tab stops on keeps its actions rendered but invisible: while focus moves from the row to
+   a button neither matches :focus-visible, and a display:none button would refuse the focus. */
+.note-item[tabindex="0"] .note-item-row-cover > button { display: flex; opacity: 0; pointer-events: none; }
 /* Rows are focusable, so a mouse click focuses them too; only keyboard focus may reveal the actions. */
+.note-item:hover .note-item-row-cover > button,
 .note-item:focus-visible .note-item-row-cover > button,
-.note-item:has(:focus-visible) .note-item-row-cover > button { display: flex; }
+.note-item:has(:focus-visible) .note-item-row-cover > button { display: flex; opacity: 1; pointer-events: auto; }
 .note-item:focus-visible .note-item-time,
 .note-item:has(:focus-visible) .note-item-time { display: none; }
 .note-item:focus-visible { outline: 2px solid var(--accent-solid); outline-offset: -2px; }

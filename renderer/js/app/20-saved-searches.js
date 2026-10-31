@@ -33,6 +33,10 @@ function render() {
   }
   wrap.classList.remove('hidden');
   const scrollLeft = box.scrollLeft;   // 矮窗口下是横向滚动的窄条，重建要留在原位
+  // 焦点在视图上时重建会掉到 body，下一次 Tab 还会退回第一个视图
+  const focused = document.activeElement;
+  const focusedItem = focused?.closest('.ss-item')?.dataset.ss;
+  const focusedPart = focused?.classList.contains('ss-more') ? '.ss-more' : '.ss-name';
   box.innerHTML = _items.map((it) => `
     <div class="ss-item${state.searchQuery === it.query ? ' active' : ''}" data-ss="${it.id}"
          title="${esc(it.query)}">
@@ -41,6 +45,16 @@ function render() {
       <button class="ss-more" data-ss-menu="${it.id}" title="重命名 / 删除">…</button>
     </div>`).join('');
   box.scrollLeft = scrollLeft;
+  if (focusedItem) box.querySelector(`[data-ss="${CSS.escape(focusedItem)}"] ${focusedPart}`)?.focus();
+}
+
+/** 高亮跟着已生效的搜索走。搜索有防抖和桥接往返，点视图那一刻 state.searchQuery 还是旧值，
+ *  所以由搜索落定的地方调用；改写或清空搜索时高亮也靠这里撤掉。 */
+export function markActiveView() {
+  document.querySelectorAll('#ss-list .ss-item').forEach((row) => {
+    const item = _items.find((x) => x.id === row.getAttribute('data-ss'));
+    row.classList.toggle('active', item?.query === state.searchQuery);
+  });
 }
 
 async function apply(item) {
@@ -48,7 +62,6 @@ async function apply(item) {
   if (!input) return;
   input.value = item.query;
   input.dispatchEvent(new Event('input', { bubbles: true }));
-  render();
 }
 
 async function menu(item) {
