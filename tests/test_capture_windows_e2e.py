@@ -16,7 +16,7 @@ import threading
 import time
 
 import pytest
-from conftest import PROJECT_ROOT
+from conftest import PROJECT_ROOT, wait_for_js
 from PIL import Image
 
 RENDERER = os.path.join(PROJECT_ROOT, 'renderer')
@@ -211,9 +211,11 @@ def test_overlay_magnifier_reads_the_pixel_under_cursor(tmp_path):
                 "shown:!m.classList.contains('hidden'),px:[d[0],d[1],d[2]]});})()" % (x, y))
 
     def actions(window, result):
-        time.sleep(2.0)
+        wait_for_js(window, 'window.innerWidth > 100')
         w = window.evaluate_js('window.innerWidth')
         h = window.evaluate_js('window.innerHeight')
+        # 冻屏图是异步解码的：等放大镜真的能取样再断言，固定等待在全量运行时不够
+        wait_for_js(window, '''(%s).includes('"shown":true')''' % probe(int(w * 0.15), int(h * 0.15)))
         # 左上红 / 右上绿 / 左下蓝（各取远离中线的点，避免踩到象限边界）
         result['topleft'] = json.loads(window.evaluate_js(probe(int(w * 0.15), int(h * 0.15))))
         result['topright'] = json.loads(window.evaluate_js(probe(int(w * 0.85), int(h * 0.2))))

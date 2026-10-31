@@ -1,5 +1,5 @@
 // ====== ESM 依赖（原先靠全局作用域与加载顺序隐式依赖，现显式声明）======
-import { $, closePanel, dom, openPanel, showConfirmAsync, showInputDialog, showToast, state } from './01-core.js';
+import { $, closePanel, dom, hasOpenPanel, openPanel, showConfirmAsync, showInputDialog, showToast, state } from './01-core.js';
 import { notesStore } from './01b-store.js';
 import { clearVoiceTemp, isVoiceRecording, stopVoiceRecording } from './02-editor.js';
 import { confirmDeleteNote, createNewNote, flushSave, renderNoteList, saveCurrentNote } from './03-notes.js';
@@ -42,6 +42,7 @@ function inTypingField() {
 }
 
 document.addEventListener('keydown', async (e) => {
+  if (hasOpenPanel()) return;
   // Ctrl+N 新建笔记
   if (e.ctrlKey && e.key === 'n') {
     e.preventDefault();
@@ -96,7 +97,7 @@ export async function loadTagBar() {
     const chip = document.createElement('span');
     chip.className = 'tag-chip';
     chip.setAttribute('data-tag-color', tag.color || '');
-    chip.innerHTML = `${escapeHtml(tag.name)}<span class="tag-remove" data-tag-id="${tag.id}">×</span>`;
+    chip.innerHTML = `${escapeHtml(tag.name)}<span class="tag-remove" role="button" tabindex="0" aria-label="移除标签 ${escapeHtml(tag.name)}" data-tag-id="${tag.id}">×</span>`;
     chip.querySelector('.tag-remove').addEventListener('click', async (e) => {
       e.stopPropagation();
       const current = await window.pywebview.api.note_tags_get(state.activeNoteId);

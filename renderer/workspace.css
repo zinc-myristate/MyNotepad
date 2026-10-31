@@ -105,9 +105,16 @@ kbd { font: 10px var(--font-sans); white-space: nowrap; letter-spacing: 0; }
 .note-item-pin { right: 52px; }
 .note-item-fav { right: 26px; }
 .note-item-delete { right: 0; }
-.note-item:focus-within .note-item-row-cover > button { display: flex; }
-.note-item:focus-within .note-item-time { display: none; }
-.note-item:hover .note-item-preview, .note-item:focus-within .note-item-preview { padding-right: 130px; }
+/* Rows are focusable, so a mouse click focuses them too; only keyboard focus may reveal the actions. */
+.note-item:focus-visible .note-item-row-cover > button,
+.note-item:has(:focus-visible) .note-item-row-cover > button { display: flex; }
+.note-item:focus-visible .note-item-time,
+.note-item:has(:focus-visible) .note-item-time { display: none; }
+.note-item:focus-visible { outline: 2px solid var(--accent-solid); outline-offset: -2px; }
+.ss-item:has(:focus-visible) .ss-more { opacity: 1; }
+.note-item:hover .note-item-preview,
+.note-item:focus-visible .note-item-preview,
+.note-item:has(:focus-visible) .note-item-preview { padding-right: 130px; }
 .sidebar-tools-heading { padding-top: 12px; border-top: 1px solid var(--border-light); }
 .sidebar-footer { border-top: 0; padding: 0 12px 8px; gap: 3px; }
 .btn-sidebar-footer {
@@ -263,6 +270,9 @@ body.focus-mode .ql-editor { padding-left: max(38px, calc((100% - 800px) / 2)) !
 :where(button, summary, a, select, input, textarea, [tabindex]):focus-visible {
   outline: 2px solid var(--accent-text); outline-offset: 3px;
 }
+/* These fields draw their own focus state, and :where() does not lower the :focus-visible part. */
+.search-input:focus-visible, .quick-switch-input:focus-visible, .find-input:focus-visible,
+.math-input:focus-visible, .note-title-input:focus-visible, .my-toolbar-select:focus-visible { outline: none; }
 
 @media (max-width: 1060px) {
   :root { --sidebar-width: 264px; }

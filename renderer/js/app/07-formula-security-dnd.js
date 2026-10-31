@@ -408,10 +408,11 @@ $('#btn-verify-password').addEventListener('click', async () => {
 
 $('#btn-cancel-verify').addEventListener('click', () => {
   closePanel($('#password-verify-panel'));
-  // 恢复之前的状态：如果之前有活跃笔记则切回去
-  const prevNoteId = state.activeNoteId;
-  state.activeNoteId = null;  // 重置，允许再次点击同一篇加密笔记
-  if (pendingSelectNoteId && prevNoteId === pendingSelectNoteId) {
+  // 【注意】只有"当前笔记就是待解锁的这篇"才需要收起（启动落在加密笔记 / 点了它的密码按钮）。
+  // 开着笔记 A 时点加密笔记 B 再取消，编辑区里一直是 A：清掉 activeNoteId 会让 A 的后续输入
+  // 再也存不进去，而界面毫无提示。
+  if (pendingSelectNoteId && state.activeNoteId === pendingSelectNoteId) {
+    state.activeNoteId = null;
     // 用户取消了加密笔记的解锁，回到无笔记状态或之前的笔记
     hideEditorUI();
     if (state.quill) state.quill.enable(true);

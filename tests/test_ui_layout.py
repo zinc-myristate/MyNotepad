@@ -680,3 +680,14 @@ class TestAppModuleAliases:
             '退出时的 WAL 归零必须调 _backend_mod.checkpoint_and_close()'
         assert 'backend_api.checkpoint_and_close' not in src, \
             'Api 实例上没有 checkpoint_and_close（它是模块级函数）'
+
+
+def test_note_row_actions_follow_keyboard_focus_only():
+    """行可聚焦之后，鼠标点一下也算焦点：`:focus-within` 会让点过的行一直露着操作按钮、日期也没了。
+
+    无头环境里的 `.click()` 不移动焦点，这条退步在 e2e 里看不出来，所以钉在样式表上。
+    """
+    css = open(os.path.join(PROJECT_ROOT, 'renderer', 'workspace.css'), encoding='utf-8').read()
+    assert '.note-item:focus-within' not in css
+    assert '.note-item:has(:focus-visible) .note-item-row-cover > button' in css
+    assert '.note-item:focus-visible .note-item-time' in css

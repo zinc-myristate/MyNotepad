@@ -139,6 +139,8 @@ export async function loadNotebookBar() {
   notebooks.forEach(nb => {
     const item = document.createElement('div');
     item.className = 'notebook-drop-item' + (nb.id === currentNotebookId ? ' active' : '');
+    item.tabIndex = 0;
+    item.setAttribute('role', 'button');
     const nbCount = (_counts.by_id && _counts.by_id[nb.id]) || 0;
     item.innerHTML = `<span class="notebook-dot" style="background:${nb.color||'#7D8A6E'}"></span>${escapeHtml(nb.name)}<span style="margin-left:auto;font-size:10px;color:var(--text-muted);">${nbCount}篇</span><button class="notebook-delete-btn" title="删除笔记本" style="margin-left:4px;color:var(--text-muted);background:none;border:none;cursor:pointer;font-size:14px;padding:0 4px;">×</button>`;
     // 删除按钮事件（阻止冒泡）
@@ -152,7 +154,7 @@ export async function loadNotebookBar() {
       });
     }, 0);
     item.addEventListener('click', async () => {
-      dropdown.style.display = 'none';
+      closeNotebookDropdown(true);
       await setNotebookScope(nb.id);
     });
     dropdown.appendChild(item);
@@ -160,24 +162,50 @@ export async function loadNotebookBar() {
   // 全部笔记选项
   const allItem = document.createElement('div');
   allItem.className = 'notebook-drop-item' + (currentNotebookId === null ? ' active' : '');
+  allItem.tabIndex = 0;
+  allItem.setAttribute('role', 'button');
   allItem.innerHTML = `<span class="notebook-dot" style="background:var(--accent)"></span>全部笔记<span style="margin-left:auto;font-size:10px;color:var(--text-muted);">${_counts.total}篇</span>`;
   allItem.addEventListener('click', async () => {
-    dropdown.style.display = 'none';
+    closeNotebookDropdown(true);
     await setNotebookScope(null);
   });
   dropdown.appendChild(allItem);
 }
 
-$('#btn-notebook-select').addEventListener('click', () => {
+function closeNotebookDropdown(returnFocus = false) {
+  $('#notebook-dropdown').style.display = 'none';
+  $('#btn-notebook-select').setAttribute('aria-expanded', 'false');
+  if (returnFocus) $('#btn-notebook-select').focus();
+}
+$('#btn-notebook-select').setAttribute('aria-expanded', 'false');
+$('#btn-notebook-select').setAttribute('aria-controls', 'notebook-dropdown');
+$('#btn-notebook-select').addEventListener('click', async () => {
   const dropdown = $('#notebook-dropdown');
-  dropdown.style.display = dropdown.style.display === 'block' ? 'none' : 'block';
-  loadNotebookBar();
+  if (dropdown.style.display === 'block') { closeNotebookDropdown(); return; }
+  await loadNotebookBar();
+  dropdown.style.display = 'block';
+  $('#btn-notebook-select').setAttribute('aria-expanded', 'true');
+  (dropdown.querySelector('.active') || dropdown.firstElementChild)?.focus();
+});
+$('#notebook-dropdown').addEventListener('keydown', e => {
+  if (e.isComposing) return;
+  if (e.key === 'Escape') {
+    e.preventDefault(); e.stopPropagation(); closeNotebookDropdown(true);
+  } else if (e.key === 'ArrowDown' || e.key === 'ArrowUp') {
+    e.preventDefault();
+    const items = [...$('#notebook-dropdown').children];
+    const index = items.indexOf(e.target.closest('.notebook-drop-item'));
+    items[(index + (e.key === 'ArrowDown' ? 1 : -1) + items.length) % items.length]?.focus();
+  }
+});
+$('#notebook-dropdown').addEventListener('focusout', e => {
+  if (e.relatedTarget && !$('#notebook-dropdown').contains(e.relatedTarget)) closeNotebookDropdown();
 });
 
 // 点击其他地方关闭下拉
 document.addEventListener('click', (e) => {
   if (!e.target.closest('.notebook-bar-wrapper')) {
-    $('#notebook-dropdown').style.display = 'none';
+    closeNotebookDropdown();
   }
 });
 

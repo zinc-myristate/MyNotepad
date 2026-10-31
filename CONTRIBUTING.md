@@ -57,6 +57,9 @@ CI（`.github/workflows/ci.yml`）会跑同样的三步，**e2e 失败会直接�
 4. 用了新的第三方库？**加进 `requirements.txt`（锁精确版本）、`THIRD_PARTY_NOTICES.md`，
    并在 `MyNotepad.spec` 里确认能被打包**（前端库要离线自带，不要 CDN）。
 5. 改了 `notes` 表结构？写进 `backend.py` 的 `ALTER TABLE` 迁移区（老库要能平滑升级）。
+6. 加了新面板？显隐只走 `openPanel` / `closePanel`（直接写 `style.display` 会让整个界面卡在 inert，
+   `tests/test_frontend_modules.py` 有静态守卫）；关闭时要清理或还原东西的，给取消按钮标
+   `data-panel-cancel`，这样 ×、`Esc`、点遮罩走的都是同一条路。
 
 ## 发版清单（维护者）
 

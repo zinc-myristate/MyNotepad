@@ -331,7 +331,7 @@
           <button id="btn-custom-color" class="ql-custom-btn" title="文字颜色">
             <span class="color-dot-inline" id="custom-color-dot"></span> 颜色
           </button>
-          <input type="color" id="custom-color-input" style="position:absolute;opacity:0;width:0;height:0;">
+          <input type="color" id="custom-color-input" aria-label="自定义文字颜色" style="position:absolute;opacity:0;width:0;height:0;">
         </span>
         <span class="ql-formats">
           <button class="ql-list" value="bullet" title="无序列表"></button>
@@ -924,7 +924,7 @@
       <label style="font-weight:600;display:block;margin-bottom:6px;">时间（支持自然语言）</label>
       <input id="reminder-nl-input" class="search-input" placeholder="例如：明天下午3点、每周五9:00、3天后…" style="width:100%;margin-bottom:6px;">
       <div id="reminder-parsed-hint" class="hint-text" style="margin-bottom:10px;"></div>
-      <input id="reminder-datetime" class="search-input" type="datetime-local" style="width:100%;margin-bottom:14px;">
+      <input id="reminder-datetime" aria-label="提醒时间" class="search-input" type="datetime-local" style="width:100%;margin-bottom:14px;">
 
       <label style="font-weight:600;display:block;margin-bottom:6px;">重复</label>
       <div class="repeat-options" id="reminder-repeat-options" style="display:flex;flex-wrap:wrap;gap:6px;margin-bottom:16px;">
@@ -1004,7 +1004,7 @@
         <button id="ocr-insert" class="btn-primary">插入当前笔记</button>
         <button id="ocr-copy" class="btn-secondary">复制</button>
         <button id="ocr-note" class="btn-secondary">存为新笔记</button>
-        <button id="ocr-cancel" class="btn-secondary">取消</button>
+        <button id="ocr-cancel" data-panel-cancel class="btn-secondary">取消</button>
       </div>
     </div>
   </div>
@@ -1012,7 +1012,7 @@
 
 <!-- ====== 快速跳转面板（Ctrl+P）====== -->
 <div id="quick-switch-panel" class="panel-overlay" style="display:none;">
-  <div class="panel-dialog quick-switch-dialog">
+  <div class="panel-dialog quick-switch-dialog" aria-label="搜索笔记与命令">
     <div class="panel-body">
       <input id="quick-switch-input" class="quick-switch-input" type="text"
              placeholder="输入标题的几个字跳转…（↑↓ 选择 · Enter 打开 · Esc 关闭）"
@@ -1097,7 +1097,7 @@
       <input id="password-verify-input" class="search-input" type="password" placeholder="输入密码" style="width:100%;margin-bottom:14px;">
       <div style="display:flex;gap:8px;">
         <button id="btn-verify-password" class="btn-new-note" style="flex:1;margin:0;">解锁</button>
-        <button id="btn-cancel-verify" class="btn-secondary" style="flex:1;">取消</button>
+        <button id="btn-cancel-verify" data-panel-cancel class="btn-secondary" style="flex:1;">取消</button>
       </div>
       <p id="password-error-msg" style="color:var(--danger);font-size:12px;margin-top:8px;display:none;">密码错误</p>
     </div>
@@ -1276,7 +1276,7 @@
     </div>
     <div class="panel-body">
       <p id="input-dialog-message" class="confirm-message"></p>
-      <input id="input-dialog-input" type="text" class="search-input" style="width:100%;margin-bottom:14px;">
+      <input id="input-dialog-input" aria-labelledby="input-dialog-title" type="text" class="search-input" style="width:100%;margin-bottom:14px;">
       <div class="confirm-buttons">
         <button id="btn-input-cancel" class="btn-secondary">取消</button>
         <button id="btn-input-ok" class="btn-new-note">确定</button>
@@ -1311,13 +1311,13 @@
       <p id="icon-preview-size" style="color:var(--text-muted);font-size:var(--font-size-xs);margin-top:8px;"></p>
       <div class="opacity-slider" style="margin-top:12px;">
         <span>圆角</span>
-        <input type="range" id="icon-radius" min="0" max="50" value="15" step="1">
+        <input type="range" id="icon-radius" aria-label="图标圆角" min="0" max="50" value="15" step="1">
         <span id="icon-radius-val" style="min-width:36px;text-align:right;">15%</span>
       </div>
       <p id="icon-result-msg" style="color:var(--accent);font-size:var(--font-size-sm);margin-top:8px;min-height:20px;"></p>
       <div style="display:flex;gap:10px;margin-top:16px;justify-content:center;">
         <button id="btn-icon-restore" class="btn-solid-secondary">恢复默认</button>
-        <button id="btn-icon-cancel" class="btn-solid-secondary">取消</button>
+        <button id="btn-icon-cancel" data-panel-cancel class="btn-solid-secondary">取消</button>
         <button id="btn-icon-confirm" class="btn-new-note">确认更换</button>
       </div>
     </div>

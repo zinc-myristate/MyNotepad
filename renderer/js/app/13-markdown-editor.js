@@ -63,6 +63,7 @@ export function initMarkdownEditor() {
       'Ctrl-`': () => applyMarkdownAction('code'),
     },
   });
+  cm.getInputField().setAttribute('aria-label', 'Markdown 源码');
   cm.on('change', () => {
     if (state.isLoading) return;                      // 切换笔记时的程序化写入不算用户输入
     setSaveDot('dirty');

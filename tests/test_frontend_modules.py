@@ -365,6 +365,35 @@ if __name__ == '__main__':
 
 # ---------- 虚拟列表的 builder 契约 ----------
 
+def test_panels_are_shown_and_hidden_only_through_the_panel_stack():
+    """面板显隐只能走 `openPanel` / `closePanel`，不能直接写 `style.display`。
+
+    弹窗打开时 `#app` 是 inert 的，解除它的唯一入口是面板栈。贴纸和分割线曾在点击时直接
+    `panel.style.display = 'none'`：面板看不见了，却还留在栈里 ⇒ **整个界面再也点不动**，
+    而所有测试都是绿的（它们只测 `js/app/` 里的路径，这两处在 `js/quill/`）。
+
+    扫的是 `renderer/js` 全部文件，查两种写法：直接对查询结果赋值，或先存进变量再赋值。
+    """
+    html = open(INDEX, encoding='utf-8').read()
+    ids = re.findall(r'<div id="([^"]+)" class="panel-overlay"', html)
+    assert len(ids) > 20, '没解析到面板列表，这条守卫等于没跑'
+    names = '|'.join(re.escape(i) for i in ids)
+    lookup = r"""(?:\$\('#(?:%s)'\)|document\.getElementById\('(?:%s)'\))""" % (names, names)
+    assign = r'\.style\.display\s*=(?!=)'
+    offenders = []
+    for folder, _dirs, files in os.walk(JS_DIR):
+        for name in files:
+            path = os.path.join(folder, name)
+            rel = os.path.relpath(path, JS_DIR).replace(os.sep, '/')
+            if not name.endswith('.js') or rel == 'app/01-core.js':
+                continue
+            code = strip_code(open(path, encoding='utf-8').read(), blank_strings=False)
+            variables = re.findall(r'(?:const|let|var)\s+(%s)\s*=\s*%s' % (IDENT, lookup), code)
+            targets = [lookup, r'dom\.\w*(?:Panel|Dialog)'] + [r'\b%s' % re.escape(v) for v in variables]
+            offenders += [rel for t in targets if re.search(t + assign, code)]
+    assert offenders == [], '这些文件绕过了面板栈：%r' % offenders
+
+
 VL = os.path.join(JS_DIR, 'app', '30-virtual-list.js')
 
 

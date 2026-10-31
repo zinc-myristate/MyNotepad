@@ -1,5 +1,5 @@
 // Workspace presentation only: editor buffers and save sequencing stay in their existing modules.
-import { $, dom, showToast } from './01-core.js';
+import { $, dom, hasOpenPanel, showToast } from './01-core.js';
 import { openQuickSwitch } from './11-quick-switch.js';
 import { refreshMarkdownLayout, renderPreviewNow } from './13-markdown-editor.js';
 
@@ -69,7 +69,7 @@ document.addEventListener('keydown', event => {
   if (event.ctrlKey && event.shiftKey && !event.altKey && event.key.toLowerCase() === 'f') {
     event.preventDefault();
     // A dialog keeps its keyboard context; do not change the workspace behind it.
-    if ([...document.querySelectorAll('.panel-overlay')].some(p => p.getClientRects().length)) return;
+    if (hasOpenPanel()) return;
     toggleFocusMode();
   }
 });
@@ -79,6 +79,20 @@ $('#btn-welcome-browse').addEventListener('click', openQuickSwitch);
 $('#btn-welcome-new').addEventListener('click', () => dom.btnNewNote.click());
 dom.btnSearchClear.setAttribute('aria-label', '清空搜索');
 $('#note-title-input').setAttribute('aria-label', '笔记标题');
+document.querySelectorAll('button[title]:not([aria-label])').forEach(button => {
+  button.setAttribute('aria-label', button.title);
+});
+document.querySelectorAll('.theme-option').forEach(option => {
+  option.tabIndex = 0;
+  option.setAttribute('role', 'button');
+});
+// Clickable elements that are not native buttons answer Enter/Space like one.
+document.addEventListener('keydown', event => {
+  if (event.isComposing || event.defaultPrevented || (event.key !== 'Enter' && event.key !== ' ')) return;
+  if (event.target.matches?.('[role="button"][tabindex]')) {
+    event.preventDefault(); event.target.click();
+  }
+});
 
 const notebookName = $('#notebook-name');
 function syncWorkspaceScope() {

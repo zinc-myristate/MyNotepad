@@ -6,7 +6,7 @@
 // 为什么单独一个模块：它与列表、编辑器、密码流程都只是"读"的关系，
 // 放在 05-shell（快捷键）里会让那个文件同时管标签栏和一堆面板逻辑。
 
-import { $, state, showToast } from './01-core.js';
+import { $, state, showToast, openPanel, closePanel, hasOpenPanel } from './01-core.js';
 import { revealAndSelectNote } from './09-boot.js';
 import { escapeHtml } from '../shared/utils.js';
 import { listCommands, runCommand } from './19-command-panel.js';
@@ -140,14 +140,14 @@ export async function openQuickSwitch() {
   await refreshQuickSwitchIndex();     // 候选 = 全库（跨笔记本跳转）
   matches = rank('');
   cursor = 0;
-  panel.style.display = 'flex';
+  openPanel(panel);
   renderList('');
-  setTimeout(() => input.focus(), 30);
+  input.focus();
 }
 
 export function closeQuickSwitch() {
   const panel = $('#quick-switch-panel');
-  if (panel) panel.style.display = 'none';
+  closePanel(panel);
 }
 
 function moveCursor(delta) {
@@ -187,9 +187,6 @@ if (qsInput) {
       e.preventDefault();
       if (mode === 'commands') runSelected();
       else if (matches[cursor]) choose(matches[cursor].id);
-    } else if (e.key === 'Escape') {
-      e.preventDefault();
-      closeQuickSwitch();
     }
   });
 }
@@ -221,6 +218,6 @@ document.addEventListener('keydown', (e) => {
     e.preventDefault();
     const panel = $('#quick-switch-panel');
     if (panel && panel.style.display === 'flex') closeQuickSwitch();
-    else openQuickSwitch();
+    else if (!hasOpenPanel()) openQuickSwitch();
   }
 });

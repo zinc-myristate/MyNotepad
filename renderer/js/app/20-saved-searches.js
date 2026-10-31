@@ -35,7 +35,7 @@ function render() {
   box.innerHTML = _items.map((it) => `
     <div class="ss-item${state.searchQuery === it.query ? ' active' : ''}" data-ss="${it.id}"
          title="${esc(it.query)}">
-      <span class="ss-name">${esc(it.name)}</span>
+      <span class="ss-name" role="button" tabindex="0">${esc(it.name)}</span>
       <span class="ss-count">${it.count == null ? '' : it.count}</span>
       <button class="ss-more" data-ss-menu="${it.id}" title="重命名 / 删除">…</button>
     </div>`).join('');
