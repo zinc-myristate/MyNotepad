@@ -122,9 +122,7 @@ def test_virtual_list_keyboard_navigation_and_notebook_dropdown(tmp_path, monkey
         window.evaluate_js("document.querySelector('.note-item').focus(); key('End')")
         assert window.evaluate_js('window.__app.state.searchMatched.has(document.activeElement.dataset.noteId)')
         # Row action buttons keep their own Enter behavior; the row never steals their key events.
-        # Synthetic keys are not keyboard modality, so :focus-visible cannot reveal the button here.
-        window.evaluate_js("const copy = document.activeElement.querySelector('.note-item-copy');"
-                           "copy.style.display = 'flex'; copy.focus()")
+        window.evaluate_js("document.activeElement.querySelector('.note-item-copy').focus()")
         assert window.evaluate_js("document.activeElement.getAttribute('aria-label')") == '复制这篇笔记'
         window.evaluate_js("document.getElementById('btn-notebook-select').click()")
         assert wait_for_js(window, "document.activeElement.classList.contains('notebook-drop-item')")
@@ -273,6 +271,54 @@ def test_shortcuts_stay_behind_a_modal_even_when_focus_fell_to_body(tmp_path, mo
 
     result = _run(ns, actions, wait_before=0, wait_after=0)
     assert 'error' not in result, result
+
+
+ROW_ACTIONS = r"""JSON.stringify((() => {
+  const current = document.querySelector('.note-item[tabindex="0"]');
+  const actions = row => [...row.querySelectorAll('.note-item-row-cover > button')];
+  const others = [...document.querySelectorAll('.note-item[tabindex="-1"]')].filter(row => !row.matches(':hover'));
+  return {
+    resting: current.matches(':hover') || actions(current).every(b => {
+      const s = getComputedStyle(b);
+      return s.opacity === '0' && s.pointerEvents === 'none';
+    }),
+    otherStops: others.flatMap(actions).filter(b => b.getClientRects().length).length,
+    focused: actions(current).map(b => {
+      b.focus();
+      return document.activeElement === b && b.getAttribute('aria-label');
+    }),
+  };
+})())"""
+
+
+def test_tab_reaches_the_actions_of_the_current_row_only(tmp_path, monkeypatch):
+    """行内按钮平时 display:none，只有行或按钮 :focus-visible 时才显示。
+
+    焦点从行移向按钮的那一刻两者都不匹配，按钮又变回 display:none，浏览器拒绝聚焦，焦点落到 body：
+    真实 Tab 一直走不到这 5 个按钮。所以 Tab 停靠的那一行要始终渲染按钮（透明、不接鼠标）。
+    脚本 focus() 对 display:none 的按钮同样无效，这里测得到；其余行不渲染，否则列表多出几十个 Tab 停靠点。
+    """
+    ns = load_app_partial(monkeypatch, tmp_path)
+    import backend
+    for i in range(6):
+        note = backend.api.notes_create()
+        backend.api.notes_update(note['id'], {'title': '行内按钮 %d' % i, 'content': '正文'})
+
+    def actions(window, result):
+        assert wait_for_js(window, 'Boolean(window.__app?.state.activeNoteId)')
+        assert wait_for_js(window, "Boolean(document.querySelector('.note-item[tabindex=\"0\"]'))")
+        result.update(json.loads(window.evaluate_js(ROW_ACTIONS)))
+        # 回车触发后整行重建：焦点要留在同一个动作上，名字跟着新状态走
+        window.evaluate_js("document.querySelector('.note-item[tabindex=\"0\"] .note-item-pin').focus();"
+                           "document.activeElement.click()")
+        result['pinLabel'] = wait_for_js(window, "document.activeElement.getAttribute('aria-label')", '取消置顶')
+
+    result = _run(ns, actions, wait_before=0, wait_after=0)
+    assert 'error' not in result, result
+    assert result['focused'] == ['设置密码', '复制这篇笔记', '置顶', '收藏', '删除笔记'], result
+    assert result['resting'], '没聚焦时按钮要隐形、不接鼠标：%s' % result
+    assert result['otherStops'] == 0, '其他行的按钮不能进 Tab 顺序：%s' % result
+    assert result['pinLabel'] == '取消置顶', result
 
 
 AUDIT = r"""
