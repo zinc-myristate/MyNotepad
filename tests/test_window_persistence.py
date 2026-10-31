@@ -5,7 +5,7 @@
   · 保存的几何必须经过与默认值同一条钳制路径（拔掉显示器后旧坐标可能在屏外）；
   · prefer 位置只在能**完整**落在工作区内时才采用，否则退回居中；
   · 没有保存过 / 存的是坏数据 → 行为必须与改造前完全一致（用默认尺寸居中）；
-  · 最小化 / 隐藏时读到的几何绝不能落库，已经写坏的用户库读取时必须自愈；
+  · 最小化 / 最大化 / 隐藏时读到的几何绝不能落库，已经写坏的用户库读取时必须自愈；
   · 关闭处理器在 tray=None 时行为不变（测试与未启用托盘时必须能真正关掉窗口）。
 """
 import json
@@ -172,21 +172,25 @@ class _FakeForm:
 
 @pytest.fixture
 def win32(monkeypatch):
-    """假的 IsIconic / IsWindowVisible；真窗口那条路由本文件的 e2e 覆盖"""
+    """假的 IsIconic / IsZoomed / IsWindowVisible；真窗口那条路由本文件的 e2e 覆盖"""
     import ctypes
-    state = SimpleNamespace(iconic=False, visible=True, asked=[])
+    state = SimpleNamespace(iconic=False, zoomed=False, visible=True, asked=[])
 
     def is_iconic(hwnd):
         state.asked.append(hwnd)
         return state.iconic
 
     monkeypatch.setattr(ctypes.windll.user32, 'IsIconic', is_iconic)
+    monkeypatch.setattr(ctypes.windll.user32, 'IsZoomed', lambda hwnd: state.zoomed)
     monkeypatch.setattr(ctypes.windll.user32, 'IsWindowVisible', lambda hwnd: state.visible)
     return state
 
 
-class TestSaveSkipsMinimizedAndHidden:
-    """保存端：最小化 / 隐藏时读到的不是用户的窗口，不能顶掉上一次的有效值"""
+MAXIMIZED = (1549, 925, -6, -6)      # 用户机器上实测（工作区 1536×912 @ 200%）
+
+
+class TestSaveOnlyFromNormalWindow:
+    """保存端：最小化 / 最大化 / 隐藏时读到的不是用户调出来的窗口，不能顶掉上一次的有效值"""
 
     LAST_GOOD = '{"w": 1000, "h": 700, "x": 120, "y": 60}'
 
@@ -209,6 +213,13 @@ class TestSaveSkipsMinimizedAndHidden:
         app_ns['_save_window_geometry'](api, self.Window())
         assert api.settings_get('window_geometry') == self.LAST_GOOD
         assert win32.asked == [4242], '必须问这个窗口自己的句柄，不能按标题找'
+
+    def test_maximized_keeps_last_good_value(self, app_ns, api, win32):
+        """最大化的读数完全合法，能挡住它的只有状态判断"""
+        api.settings_set('window_geometry', self.LAST_GOOD)
+        win32.zoomed = True
+        app_ns['_save_window_geometry'](api, self.Window(*MAXIMIZED))
+        assert api.settings_get('window_geometry') == self.LAST_GOOD
 
     def test_hidden_keeps_last_good_value(self, app_ns, api, win32):
         api.settings_set('window_geometry', self.LAST_GOOD)
@@ -314,16 +325,18 @@ class TestClosingHandlerWithTray:
             time.sleep(0.05)
         assert win.calls.count('hide') == 2, '第二次关闭应同样隐藏（状态已回到 idle）'
 
+    @pytest.mark.parametrize('state,reading', [('iconic', tuple(MINIMIZED.values())),
+                                               ('zoomed', MAXIMIZED)])
     @pytest.mark.parametrize('quitting,last_call', [(False, 'hide'), (True, 'destroy')])
-    def test_closing_while_minimized_keeps_saved_geometry(self, app_ns, api, win32,
-                                                          quitting, last_call):
-        """用户库就是这么写坏的：最小化后关窗，或最小化后从托盘退出"""
+    def test_closing_keeps_saved_geometry(self, app_ns, api, win32, state, reading,
+                                          quitting, last_call):
+        """用户库就是这么写坏的：最小化后关窗，或最小化后从托盘退出。最大化同理"""
         saved = '{"w": 1000, "h": 700, "x": 120, "y": 60}'
         api.settings_set('window_geometry', saved)
-        win32.iconic = True
+        setattr(win32, state, True)
         win, tray = self.FakeWindow(), self.FakeTray()
         win.native = _FakeForm()
-        win.width, win.height, win.x, win.y = MINIMIZED.values()
+        win.width, win.height, win.x, win.y = reading
         calls = self._close(app_ns, api, win, tray=tray, quitting=quitting)
         assert last_call in calls
         assert api.settings_get('window_geometry') == saved
@@ -337,10 +350,11 @@ def _until(predicate, timeout=5.0):
 
 
 @pytest.mark.e2e
-def test_real_window_keeps_saved_geometry_while_minimized_or_hidden(tmp_path, monkeypatch):
-    """真窗口走一遍：最小化、隐藏、最小化后真的关掉，设置里始终是用户的窗口。
+@pytest.mark.parametrize('closing_state', ['minimize', 'maximize'])
+def test_real_window_saves_geometry_only_when_normal(tmp_path, monkeypatch, closing_state):
+    """真窗口走一遍：最小化、隐藏、最大化，再带着 closing_state 真的关掉，设置里始终是用户的窗口。
 
-    单测里的窗口状态是假的。这里钉住只有真窗口才能证明的三件事：Windows 确实报那组假几何
+    单测里的窗口状态是假的。这里钉住只有真窗口才能证明的三件事：Windows 确实报那些几何
     （否则上面都在防一个不存在的问题）、`win.native.Handle` 在非 UI 线程取得到、
     WM_CLOSE 这条真实路径不会把坏值写回去。
     """
@@ -382,8 +396,16 @@ def test_real_window_keeps_saved_geometry_while_minimized_or_hidden(tmp_path, mo
             result['after_hide'] = save_and_read()
 
             window.show()
-            window.minimize()
-            assert _until(lambda: user32.IsIconic(hwnd)), '窗口没再次最小化'
+            window.maximize()
+            assert _until(lambda: user32.IsZoomed(hwnd)), '窗口没进入最大化'
+            result['maximized_reading'] = (window.width, window.height, window.x, window.y)
+            result['after_maximize'] = save_and_read()
+
+            window.restore()
+            assert _until(lambda: not user32.IsZoomed(hwnd)), '窗口没从最大化还原'
+            getattr(window, closing_state)()
+            assert _until(lambda: user32.IsIconic(hwnd) or user32.IsZoomed(hwnd)), \
+                '窗口没进入 %s 状态' % closing_state
             user32.PostMessageW(hwnd, 0x0010, 0, 0)   # WM_CLOSE：走 make_closing_handler 真实路径
         except Exception as exc:                      # noqa: BLE001
             result['error'] = repr(exc)
@@ -400,8 +422,11 @@ def test_real_window_keeps_saved_geometry_while_minimized_or_hidden(tmp_path, mo
     assert (result['normal']['x'], result['normal']['y']) == result['reported'][2:]
     assert result['minimized_reading'][0] < ns['MIN_WIN_W'], \
         'Windows 不再报最小化的假几何了，这条测试的前提要重看：%r' % (result['minimized_reading'],)
+    assert result['maximized_reading'][0] > ns['MIN_WIN_W'], \
+        '最大化的读数应当是合法尺寸，否则这条测试证明不了状态判断：%r' % (result['maximized_reading'],)
     assert result['after_minimize'] == last_good
     assert result['after_hide'] == last_good
+    assert result['after_maximize'] == last_good
     # 关窗时 checkpoint_and_close 已经关了后端连接，只能直接读库文件
     con = sqlite3.connect(os.path.join(str(tmp_path), 'notes.db'))
     try:

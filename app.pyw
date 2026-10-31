@@ -1350,8 +1350,8 @@ def _geometry_is_plausible(w, h, x, y):
     return all(c is None or abs(c) < _WIN_COORD_LIMIT for c in (x, y))
 
 
-def _window_is_showing(win):
-    """win 此刻是否正常显示（没最小化、没隐藏）。判断不了就当作显示着，读数还要过
+def _window_is_normal(win):
+    """win 此刻是否是普通窗口（没最小化、没最大化、没隐藏）。判断不了就当作是，读数还要过
     _geometry_is_plausible 这一关。
 
     按窗口自己的句柄问 Win32，不用 FindWindowW 按标题找：隔离数据目录下没有单实例互斥，
@@ -1361,7 +1361,9 @@ def _window_is_showing(win):
         import ctypes
         user32 = ctypes.windll.user32
         hwnd = win.native.Handle.ToInt64()
-        return not user32.IsIconic(hwnd) and bool(user32.IsWindowVisible(hwnd))
+        if user32.IsIconic(hwnd) or user32.IsZoomed(hwnd):
+            return False
+        return bool(user32.IsWindowVisible(hwnd))
     except Exception:
         return True
 
@@ -1391,11 +1393,13 @@ def _load_saved_geometry(backend):
 def _save_window_geometry(backend, win):
     """关窗时把当前几何写回设置。任何失败都不能影响关闭流程。
 
-    最小化或隐藏时不写，保留上一次的有效值。驻留托盘时这很常见：
+    最小化、最大化或隐藏时不写，保留上一次的有效值。驻留托盘时这很常见：
     最小化后从托盘退出，或隐藏后再退出，走的都是这里。
+    最大化的尺寸是屏幕给的：存下来后启动时被钳成铺满工作区的普通窗口，
+    用户原来的大小就丢了（200% 缩放实测 1000×700 → 1536×864）。
     """
     try:
-        if not _window_is_showing(win):
+        if not _window_is_normal(win):
             return
         w, h, x, y = int(win.width), int(win.height), int(win.x), int(win.y)
         if not _geometry_is_plausible(w, h, x, y):   # 判断状态之后窗口可能刚好被最小化
