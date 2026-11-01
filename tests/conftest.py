@@ -111,6 +111,19 @@ def load_app_partial(monkeypatch, tmp_path):
     return ns
 
 
+def load_capture_session(ns, window):
+    """把 app.pyw 的截图会话那一段加载进 `load_app_partial` 的命名空间，`window` 是主窗。
+
+    这一段在「创建窗口」标记之后，`load_app_partial` 不执行；里面都是定义，单独 exec 没有副作用。
+    按标题找窗口的两个函数要换掉：隔离数据目录下没有单实例互斥，开着别的实例时 `_window_visible`
+    会问到别的进程，`_on_loaded` 会把人家的窗口拉到前台。
+    """
+    src = open(APP_PYW, encoding='utf-8').read()
+    section = src[src.index('def _show_window'):src.index('def _mini_open')]
+    exec(compile(section, 'app.pyw', 'exec'), ns)
+    ns.update({'window': window, '_window_visible': lambda: True, '_on_loaded': lambda: None})
+
+
 @pytest.fixture
 def app_ns(tmp_path, monkeypatch):
     ns = load_app_partial(monkeypatch, tmp_path)
