@@ -12,14 +12,14 @@ import 里，第三方 UMD 库（Quill / KaTeX）仍是带重试的经典脚本�
   · 经典脚本拉取失败 → 逐个重试（最多 4 次）；
   · 模块图加载失败 → 浏览器会缓存「取不到的模块」，同一文档内重试无效，故整页 reload
     重试（上限 4 次，计数存 sessionStorage），超限后在顶部显示红色横幅并写 log_error。
-本文件锁死这四条。"""
+本文件锁死这四条，另外钉住一条：加载设置不能撞上 pywebview 注入的空档。"""
 import json
 import os
 import threading
 import time
 
 import pytest
-from conftest import PROJECT_ROOT, load_app_partial
+from conftest import PROJECT_ROOT, load_app_partial, wait_for_js
 
 pytestmark = pytest.mark.e2e
 
@@ -183,3 +183,24 @@ def test_module_failure_reloads_until_cap(tmp_path, monkeypatch):
         '应在 sessionStorage 累计重试次数到上限 %d：%r' % (cap, probe['retryCount'])
     assert probe['boot'].get('attempts') == cap, probe['boot']
     assert probe['banner'] is True, '达到上限后应显示横幅而不是无限重试'
+
+
+def test_settings_load_through_the_empty_api_gap(tmp_path, monkeypatch):
+    """pywebview 先放空的 api 再填函数，`loadSettings` 撞上这段空档也要继续等。
+
+    撞上时调用失败被它自己的 catch 吞掉，这次启动的主题和背景就都不恢复了，界面没有任何提示。
+    枚举 js_api 时睡 0.7 秒，空档就超过了它 500ms 的轮询间隔，一定会撞上。
+    """
+    ns = load_app_partial(monkeypatch, tmp_path)
+    import backend
+    backend.api.settings_set('theme', 'dark')
+    monkeypatch.setattr(type(ns['api']), 'slow_enumeration',
+                        property(lambda self: time.sleep(0.7)), raising=False)
+    out = {}
+
+    def actions(window):
+        out['theme'] = wait_for_js(window, "document.body.getAttribute('data-theme')",
+                                   expected='dark')
+
+    _launch(ns, INDEX, actions)
+    assert out['theme'] == 'dark', '用户的设置必须加载出来：%r' % (out,)

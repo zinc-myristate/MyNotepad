@@ -14,7 +14,7 @@ import threading
 import time
 
 import pytest
-from conftest import PROJECT_ROOT, load_app_partial
+from conftest import PROJECT_ROOT, load_app_partial, wait_for_js, wait_until
 
 RENDERER = PROJECT_ROOT + '/renderer'
 
@@ -522,22 +522,28 @@ def test_content_scrim_slider_and_storage(tmp_path, monkeypatch):
     backend.api.notes_update(nid, {'title': '正文薄纱', 'content': '正文\n',
                                    'bg_type': 'image', 'bg_value': img, 'bg_zoom': 200})
 
+    def stored():
+        return backend.api.notes_get(nid)['content_scrim']
+
     def actions(window, result):
-        time.sleep(2.5)
+        # 背景图是异步读取、异步分析的：薄纱显示出来，这篇笔记的背景才算应用完
+        result['display'] = wait_for_js(
+            window, "getComputedStyle(document.getElementById('content-veil')).display",
+            expected='block')
         result['default'] = window.evaluate_js(
             "getComputedStyle(document.documentElement).getPropertyValue('--ad-content-scrim').trim()")
-        result['display'] = window.evaluate_js(
-            "getComputedStyle(document.getElementById('content-veil')).display")
+        # 滑杆改样式是同步的，读的时候已经生效；要等的只有防抖写库，而且必须等到才关窗，
+        # 窗口一关，还没发出去的写入就没了
         _set_input(window, '#note-content-scrim', 70)
-        time.sleep(0.8)
         result['scrim'] = window.evaluate_js(
             "getComputedStyle(document.documentElement).getPropertyValue('--ad-content-scrim').trim()")
         result['veil_bg'] = window.evaluate_js(
             "getComputedStyle(document.getElementById('content-veil')).backgroundColor")
+        wait_until(lambda: stored() == 0.7)
         _set_input(window, '#note-content-scrim', 0)
-        time.sleep(0.8)
         result['off'] = window.evaluate_js(
             "getComputedStyle(document.getElementById('content-veil')).backgroundColor")
+        wait_until(lambda: stored() == 0)
 
     r = _run(ns, actions)
     assert 'error' not in r, r.get('error')

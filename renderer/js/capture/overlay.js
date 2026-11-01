@@ -43,13 +43,19 @@ let rect = null;         // 当前选区（CSS px）
 let drag = null;
 let busy = false;
 
+// 要判函数在不在，不能只判 api：pywebview 先放一个空的 api，几毫秒后才把函数填进去。
+// 轮询落在这段空档时，启动会调到不存在的函数，页面从此没有响应，窗口也显示不出来。
+function bridgeReady() {
+  return typeof window.pywebview?.api?.capture_overlay_info === 'function';
+}
+
 function whenBridgeReady() {
-  if (window.pywebview && window.pywebview.api) return Promise.resolve();
+  if (bridgeReady()) return Promise.resolve();
   return new Promise((resolve) => {
     window.addEventListener('pywebviewready', () => resolve(), { once: true });
     let n = 0;
     const timer = setInterval(() => {
-      if (window.pywebview && window.pywebview.api) { clearInterval(timer); resolve(); }
+      if (bridgeReady()) { clearInterval(timer); resolve(); }
       else if (++n > 200) { clearInterval(timer); resolve(); }
     }, 50);
   });

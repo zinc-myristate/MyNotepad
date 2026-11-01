@@ -23,13 +23,18 @@ function setStatus(text, ok) {
   statusEl.classList.toggle('ok', !!ok);
 }
 
+// 与 overlay.js 同一条约定：pywebview 的 api 先是空对象，要判函数在不在
+function bridgeReady() {
+  return typeof window.pywebview?.api?.capture_mini_submit === 'function';
+}
+
 function whenBridgeReady() {
-  if (window.pywebview && window.pywebview.api) return Promise.resolve();
+  if (bridgeReady()) return Promise.resolve();
   return new Promise((resolve) => {
     window.addEventListener('pywebviewready', () => resolve(), { once: true });
     let n = 0;
     const timer = setInterval(() => {
-      if (window.pywebview && window.pywebview.api) { clearInterval(timer); resolve(); }
+      if (bridgeReady()) { clearInterval(timer); resolve(); }
       else if (++n > 200) { clearInterval(timer); resolve(); }
     }, 50);
   });

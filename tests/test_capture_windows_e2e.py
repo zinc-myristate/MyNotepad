@@ -16,7 +16,7 @@ import threading
 import time
 
 import pytest
-from conftest import PROJECT_ROOT, wait_for_js
+from conftest import PROJECT_ROOT, wait_for_js, wait_until
 from PIL import Image
 
 RENDERER = os.path.join(PROJECT_ROOT, 'renderer')
@@ -110,6 +110,18 @@ class OverlayBridge:
         return {'ok': True, 'action': action}
 
 
+class SlowEnumerationBridge(OverlayBridge):
+    """让页面的轮询一定落在 pywebview 注入的空档里。
+
+    pywebview 先放 `window.pywebview = {api: {}}`，枚举完 js_api 的公开属性才把函数填进去。
+    这段空档本来只有几毫秒，枚举时睡一下，就远远超过页面 50ms 的轮询间隔了。
+    """
+
+    @property
+    def slow_enumeration(self):
+        time.sleep(0.3)
+
+
 class MiniBridge:
     def __init__(self):
         self.saves = []
@@ -148,6 +160,21 @@ def _overlay_factory(bridge, title='覆盖窗测试'):
         return webview.create_window(title, RENDERER + '/capture-overlay.html',
                                      js_api=bridge, width=420, height=320, frameless=True)
     return factory
+
+
+def _overlay_ready(window, bridge):
+    """等页面启动完，并开始数它收到的 capture_commit 回执（window.__commitsDone）。
+
+    页面画完冻屏图、绑好事件才报 ready，这之前的拖拽和按键都会落空。
+    回执要在页面这一侧数：提交后要等回执回来才清 busy，这期间的拖拽和按键都会被丢掉，
+    所以光看 bridge.commits 里有记录还不够。
+    """
+    wait_until(lambda: bridge.ready)
+    window.evaluate_js(
+        "(function(){var api=window.pywebview.api, real=api.capture_commit;"
+        "window.__commitsDone=0;"
+        "api.capture_commit=function(){return real.apply(api,arguments)"
+        ".finally(function(){window.__commitsDone++;});};})();")
 
 
 @pytest.mark.e2e
@@ -230,6 +257,24 @@ def test_overlay_magnifier_reads_the_pixel_under_cursor(tmp_path):
 
 
 @pytest.mark.e2e
+def test_overlay_boots_through_the_empty_api_gap(tmp_path):
+    """启动撞上空的 api 也要继续等：撞上了页面就死了，窗口永远显示不出来。
+
+    `window.pywebview.api` 在函数填进去之前就存在，只判它会让 `capture_overlay_info` 调用失败，
+    而失败后的 `capture_commit` 同样不存在。覆盖窗是隐藏创建的，主窗此时已经藏起来了。
+    真实空档只有几毫秒，所以平时是偶发：全量运行里覆盖窗那几条用例的随机失败就是它。
+    """
+    bridge = SlowEnumerationBridge(tmp_path)
+
+    def actions(window, result):
+        wait_until(lambda: bridge.ready)
+
+    r = _run(_overlay_factory(bridge), actions)
+    assert 'error' not in r, r.get('error')
+    assert bridge.ready == 1, '页面必须启动完并报 ready，否则窗口不会显示'
+
+
+@pytest.mark.e2e
 def test_overlay_keyboard_shortcuts(tmp_path):
     """Esc 取消；有正在编辑的笔记时 Enter = 插入，没有时 Enter = 存为新笔记。"""
     bridge = OverlayBridge(tmp_path)
@@ -240,17 +285,15 @@ def test_overlay_keyboard_shortcuts(tmp_path):
             % json.dumps(k))
 
     def actions(window, result):
-        time.sleep(2.0)
+        _overlay_ready(window, bridge)
         _drag(window, 20, 20, 120, 120)
-        time.sleep(0.3)
         key(window, 'Escape')
-        time.sleep(0.5)
+        wait_for_js(window, 'window.__commitsDone', expected=1)
         result['after_esc'] = list(bridge.commits)
         bridge.commits.clear()
         _drag(window, 20, 20, 120, 120)
-        time.sleep(0.3)
         key(window, 'Enter')
-        time.sleep(0.5)
+        wait_for_js(window, 'window.__commitsDone', expected=2)
         result['after_enter'] = list(bridge.commits)
 
     r = _run(_overlay_factory(bridge), actions)
@@ -262,13 +305,12 @@ def test_overlay_keyboard_shortcuts(tmp_path):
     bridge2 = OverlayBridge(tmp_path, note_id='')
 
     def actions2(window, result):
-        time.sleep(2.0)
+        _overlay_ready(window, bridge2)
         result['insert_disabled'] = window.evaluate_js(
             "document.querySelector('[data-act=\"insert\"]').disabled")
         _drag(window, 20, 20, 120, 120)
-        time.sleep(0.3)
         key(window, 'Enter')
-        time.sleep(0.5)
+        wait_for_js(window, 'window.__commitsDone', expected=1)
         result['commit'] = bridge2.commits[-1] if bridge2.commits else None
 
     r2 = _run(_overlay_factory(bridge2, '覆盖窗测试2'), actions2)
