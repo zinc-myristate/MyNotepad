@@ -1,0 +1,28 @@
+name: Dependency audit
+
+# 新漏洞不改代码也会冒出来，所以除了提交时查一次，每周一再定时查一次。
+# 依赖清单与查询逻辑在 build_resources/audit_deps.py（查 OSV，含自带的前端库）。
+on:
+  push:
+  pull_request:
+  schedule:
+    - cron: '17 2 * * 1'
+  workflow_dispatch:
+
+# 同 ci.yml：runner 的 stdout 是 cp1252，Python 输出统一成 UTF-8
+env:
+  PYTHONIOENCODING: utf-8
+  PYTHONUTF8: '1'
+
+jobs:
+  audit:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.14'
+      - name: Install dependencies
+        run: python -m pip install -r requirements.txt
+      - name: Query OSV
+        run: python build_resources/audit_deps.py

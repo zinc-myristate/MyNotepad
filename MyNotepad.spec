@@ -1,5 +1,6 @@
 # -*- mode: python ; coding: utf-8 -*-
 import os
+import shutil
 import sys
 
 from PyInstaller.utils.hooks import collect_dynamic_libs, collect_submodules
@@ -69,6 +70,21 @@ if _missing_tcl_tk:
 
 _all_datas = [('renderer', 'renderer'), ('resources', 'resources')] + _license_datas + _tcl_tk_extra
 
+# 开发机 site-packages 里的无关包不进产物：PyInstaller 顺着可选 import 能把它们全带进来
+# （winocr 的 serve() 带出 fastapi/uvicorn，一路带出 pydantic、rich、tornado……），
+# 而它们不在 requirements.txt 的依赖树里，许可证也就收不到。CI 环境干净，这里让本机打包与它一致。
+# 不能排除 wheel：PyInstaller 把它当 setuptools 内置模块的别名处理，排除后构建直接报错。
+_UNRELATED_PACKAGES = [
+    'annotated_doc', 'annotated_types', 'anyio', 'attr', 'attrs', 'bs4', 'charset_normalizer',
+    'click', 'defusedxml', 'fastapi', 'h11', 'html5lib', 'idna', 'itsdangerous', 'jinja2',
+    'markdown_it', 'markupsafe', 'mdurl', 'psutil', 'pydantic', 'pydantic_core', 'rich',
+    'sniffio', 'soupsieve', 'starlette', 'threadpoolctl', 'tornado', 'typing_inspection',
+    'tzdata', 'uvicorn', 'webencodings', 'websockets', 'werkzeug', 'yaml',
+    # pywin32：本应用走 ctypes，这几个模块只是 logging、numpy.testing 的可选 import 带进来的
+    'pythoncom', 'pywintypes', 'win32api', 'win32com', 'win32con', 'win32evtlog',
+    'win32evtlogutil', 'win32pdh', 'winerror',
+]
+
 
 a = Analysis(
     ['app.pyw'],
@@ -86,10 +102,24 @@ a = Analysis(
     hookspath=[],
     hooksconfig={},
     runtime_hooks=['pyi_rth_hideconsole.py'],
-    excludes=[],
+    excludes=_UNRELATED_PACKAGES,
     noarchive=False,
     optimize=0,
+    # pystray 是 LGPL-3.0：按源码放在 _internal/pystray/，用户才能换成自己的兼容版本。
+    # 默认会进 exe 内的 PYZ 归档，那样就替换不了。
+    module_collection_mode={'pystray': 'py'},
 )
+
+
+def _is_ffmpeg(entry):
+    name = entry[0].replace('\\', '/').rsplit('/', 1)[-1].lower()
+    return name.startswith('opencv_videoio_ffmpeg')
+
+
+# FFmpeg 不进产物：opencv 的轮子自带 opencv_videoio_ffmpeg*.dll（LGPL-2.1，含 H.264/HEVC/AAC
+# 解码器，商用还有专利问题），而本应用只用 OpenCV 做图标裁切，不处理视频。
+# 显著性、人脸检测、积分图这几个调用不依赖它（已实测）；它只是 VideoCapture 才加载的插件。
+a.binaries = [item for item in a.binaries if not _is_ffmpeg(item)]
 pyz = PYZ(a.pure)
 
 exe = EXE(
@@ -121,3 +151,8 @@ coll = COLLECT(
     upx_exclude=[],
     name='MyNotepad',
 )
+
+# 本项目许可与第三方清单放在产物根目录。写在 spec 里，build.py 与 CI 两条路都覆盖
+# （以前只有 release.yml 复制，本机打的包缺这两个文件）。
+for _name in ('LICENSE', 'THIRD_PARTY_NOTICES.md'):
+    shutil.copy2(os.path.join(SPECPATH, _name), os.path.join(DISTPATH, 'MyNotepad', _name))

@@ -49,12 +49,6 @@ jobs:
             exit 1
           }
 
-      # 许可与归属必须随二进制一起分发：LICENSE 是项目自身的，THIRD_PARTY_NOTICES 列出全部第三方组件；
-      # 各依赖的许可证副本由 MyNotepad.spec 里的 collect_licenses 收进 dist/MyNotepad/licenses/。
-      - name: Bundle license notices
-        shell: pwsh
-        run: Copy-Item LICENSE, THIRD_PARTY_NOTICES.md -Destination dist\MyNotepad\
-
       # Tcl/Tk 数据闸门：缺一个，运行时的 pyi_rth__tkinter 就直接抛异常，打包版**根本起不来**。
       # 2026-09-27 真发过这样一版：CI 的 Python 3.14 用 Tcl 9，PyInstaller 的发现逻辑（隔离子进程里
       # `tkinter.Tcl()` 抛错就 return None）静默不收数据，而当时的冒烟只判"进程活着"没拦住。
@@ -102,13 +96,16 @@ jobs:
           Stop-Process -Id $p2.Id
           Write-Host "界面冒烟通过：应用运行 8 秒无崩溃"
 
+      # 许可与归属必须随二进制一起分发：LICENSE 与 THIRD_PARTY_NOTICES.md 由 MyNotepad.spec 放到产物根目录，
+      # 各依赖的许可证副本收进 _internal/licenses/。--verify 还核对 pystray 可替换、FFmpeg 没混回来。
       - name: Verify license files landed in the package
         shell: pwsh
         run: |
           $lic = Get-ChildItem dist\MyNotepad\_internal\licenses -Directory -ErrorAction SilentlyContinue
           if (-not $lic -or $lic.Count -lt 10) { Write-Error "产物里没有收集到依赖许可证（$($lic.Count) 个包）"; exit 1 }
           Write-Host "产物内含 $($lic.Count) 个依赖的许可证副本"
-          if (-not (Test-Path dist\MyNotepad\THIRD_PARTY_NOTICES.md)) { Write-Error "缺少 THIRD_PARTY_NOTICES.md"; exit 1 }
+          python build_resources/collect_licenses.py --verify dist/MyNotepad
+          if ($LASTEXITCODE -ne 0) { exit 1 }
 
       # 隐私闸门：dist 里如果混进了真实笔记库（本地手工 build.py 打包时会把 data/ 还原进去，
       # 那是用户自己的笔记），绝不允许打成 zip 发出去。CI 构建天然没有 data/，这条只是保险。
@@ -157,4 +154,4 @@ jobs:
             - 需要 **Windows 10 1809+ / Windows 11**（依赖系统自带的 WebView2 运行时；
               老机器若缺少，装一次 [WebView2 Runtime](https://developer.microsoft.com/microsoft-edge/webview2/) 即可）
             - 本程序**不联网、不写注册表**（除非你主动开启「开机自启」）、不采集任何数据
-            - 许可：[MIT](LICENSE)；第三方组件见 `THIRD_PARTY_NOTICES.md` 与包内 `licenses/`
+            - 许可：[MIT](LICENSE)；第三方组件见 `THIRD_PARTY_NOTICES.md` 与包内 `_internal/licenses/`

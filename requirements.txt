@@ -4,8 +4,8 @@
 pywebview==6.2.1
 pythonnet==3.1.0          # pywebview 的 Windows 后端（winforms）必需
 clr_loader==0.3.1         # pythonnet 的运行时加载器
-cryptography==49.0.0
-Pillow==12.3.0
+cryptography==50.0.2
+Pillow==13.0.0
 python-docx==1.2.0
 openpyxl==3.1.5
 opencv-contrib-python==5.0.0.93   # 仅供「自定义图标」智能裁切；缺失会降级居中裁切
@@ -31,3 +31,4 @@ ruff==0.16.7              # 代码检查（CI 里是阻断步骤，本地：pyth
 
 # 打包依赖（pyinstaller 不在运行时依赖里，故单独列出）
 pyinstaller==6.21.0
+setuptools==84.2.1        # pyinstaller 的依赖，会随产物分发；不锁的话已装的旧版不会被升级

@@ -52,7 +52,7 @@
 | Markdown 栈 | markdown-it（渲染）+ CodeMirror 5（源码编辑）+ DOMPurify（消毒）+ highlight.js（代码高亮），全部离线自带、无 CDN |
 | 加密 | `cryptography`（AES-256-GCM） |
 | 打包 | PyInstaller（`MyNotepad.spec`） |
-| 测试 | pytest（740 单测 + 115 无头 E2E）、ruff |
+| 测试 | pytest（774 单测 + 115 无头 E2E）、ruff |
 
 ## 快速开始
 
@@ -96,7 +96,7 @@ python build.py                     # 推荐：关实例 → 备份 data → PyI
 ## 测试
 
 ```bash
-py -3.14 -m pytest                 # 740 单测（自动隔离临时数据目录）
+py -3.14 -m pytest                 # 774 单测（自动隔离临时数据目录）
 py -3.14 -m pytest -m e2e          # 115 无头 pywebview 端到端（真开窗口，约 10 分钟）
 python -m ruff check .             # 代码检查（配置见 pyproject.toml）
 ```
@@ -104,6 +104,8 @@ python -m ruff check .             # 代码检查（配置见 pyproject.toml）
 CI（[`.github/workflows/ci.yml`](.github/workflows/ci.yml)）在 windows-latest 上跑同样三步：
 ruff + 单测 → 无头 E2E → master 分支额外做一次打包冒烟；打 tag 时由
 [`release.yml`](.github/workflows/release.yml) 出 Windows 包并自动附到 Release。
+[`audit.yml`](.github/workflows/audit.yml) 在提交时和每周一查依赖的已知漏洞（含自带的前端库），
+本地可以运行 `python build_resources/audit_deps.py`。
 
 ## 打包
 
@@ -136,7 +138,7 @@ SQLite 删除或改写大字段后**不会**把空间还给文件系统——图
 ├── renderer/                # 前端（ES 模块图 + Quill/KaTeX + 4 主题样式）
 ├── data/                    # 运行时数据（gitignore）
 ├── resources/               # 图标 + 人脸检测模型
-├── build_resources/         # 版本信息 + 打包时收集第三方许可证的脚本
+├── build_resources/         # 版本信息 + 打包时收集第三方许可证的脚本 + 依赖漏洞扫描
 ├── tests/                   # pytest 单测 + 无头 E2E
 ├── .github/                 # CI / Release 工作流 + Issue 模板
 ├── CONTRIBUTING.md          # 参与开发须知（含代码约定与踩坑清单）
@@ -334,8 +336,8 @@ python restore.py --from notes-20260920-235857.db
 
 自带的第三方组件（Quill / KaTeX / markdown-it / DOMPurify / CodeMirror / highlight.js、
 OpenCV 人脸检测数据、以及打包进 exe 的 Python 依赖）各自的许可与出处见
-[THIRD_PARTY_NOTICES.md](THIRD_PARTY_NOTICES.md)；`python build.py` 会把每个依赖自带的许可证副本
-一并收进产物的 `licenses/` 目录。
+[THIRD_PARTY_NOTICES.md](THIRD_PARTY_NOTICES.md)；打包时会把每个依赖自带的许可证副本
+一并收进产物的 `_internal/licenses/` 目录，`LICENSE` 与这份清单放在产物根目录。
 
 > 想在文档/截图里用这个项目？欢迎，但请**不要**使用他人享有著作权的图片（游戏/动漫角色图等）作为素材。
 
