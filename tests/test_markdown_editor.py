@@ -16,7 +16,7 @@ import threading
 import time
 
 import pytest
-from conftest import PROJECT_ROOT, load_app_partial
+from conftest import PROJECT_ROOT, load_app_partial, wait_for_js
 from test_frontend_modules import strip_code
 
 RENDERER = os.path.join(PROJECT_ROOT, 'renderer')
@@ -250,3 +250,367 @@ def test_preview_resolves_attachment_image(tmp_path, monkeypatch):
     assert 'error' not in r, r.get('error')
     assert not r['relative_src_left'], '预览里还留着相对路径 src（会 404）'
     assert r['src_kind'] == 'data:', '应换成 data URI，实际 src 前缀=%r' % r['src_kind']
+
+
+# ---------------- e2e：公式排版与消毒边界 ----------------
+#
+# KaTeX 的输出绕开了 class/style 过滤（14-markdown-render.js 的 sanitizeKatex）。这一组钉住两件事：
+# 公式的几何必须和 KaTeX 原始输出一致；放宽的只有 KaTeX 自己的输出，用户内容一条都没松。
+
+# 必须与 renderMath 传给 KaTeX 的选项一致，否则比的不是同一个东西
+_RAW_KATEX = ("katex.renderToString(%s, {displayMode: %s, "
+              "throwOnError: false, trust: false, strict: 'ignore'})")
+
+_GEOMETRY_CASES = [
+    r'\frac{a}{b}',
+    r'\sqrt{x}',
+    r'x_i^2',
+    r'\frac{a^2+b}{\sqrt{c}} = \sum_{i=1}^{n} x_i',
+]
+
+# 把 KaTeX 原始输出放进同一个预览容器再量：字号、行高、全局样式都相同，差别只可能来自消毒。
+# 不用 iframe 做对照（CSP 的 frame-src 'none'），也不用 .base 这类类名（KaTeX 0.18 起改了前缀）；
+# 尺寸取 .katex-html 子元素的并集，因为块级公式的 .katex-html 本身撑满容器，量不出公式多大。
+_GEOMETRY_JS = r"""
+(function (cases) {
+  var preview = document.getElementById('md-preview');
+  var rendered = preview.querySelectorAll('.katex');
+  function rect(el) { return el.getBoundingClientRect(); }
+  function size(html) {
+    var rects = Array.prototype.map.call(html.children, rect);
+    return [Math.max.apply(null, rects.map(function (b) { return b.right; }))
+              - Math.min.apply(null, rects.map(function (b) { return b.left; })),
+            Math.max.apply(null, rects.map(function (b) { return b.bottom; }))
+              - Math.min.apply(null, rects.map(function (b) { return b.top; }))];
+  }
+  function boxes(html) {
+    var o = rect(html);
+    return Array.prototype.map.call(html.querySelectorAll('*'), function (el) {
+      var r = rect(el);
+      return [r.left - o.left, r.top - o.top, r.width, r.height];
+    });
+  }
+  var out = cases.map(function (c, i) {
+    var probe = document.createElement('p');
+    probe.innerHTML = c.raw;
+    preview.appendChild(probe);
+    var html = rendered[i].querySelector('.katex-html'), raw = probe.querySelector('.katex-html');
+    var a = boxes(html), b = boxes(raw), worst = 0;
+    if (a.length === b.length) {
+      a.forEach(function (box, n) {
+        box.forEach(function (v, k) { worst = Math.max(worst, Math.abs(v - b[n][k])); });
+      });
+    }
+    var item = {tex: c.tex, display: c.display, size: size(html), rawSize: size(raw),
+                nodes: a.length, rawNodes: b.length, worst: worst};
+    probe.remove();
+    return item;
+  });
+  return JSON.stringify({count: rendered.length, formulas: out});
+})(%s)
+"""
+
+# 不靠对照的绝对判断：分子在分母上方、上标比底字高且小、根号真的画出来了。
+# 对照只能证明"和原始输出一样"，全局样式把两边一起弄坏时它是发现不了的
+_ANATOMY_JS = r"""
+(function (texts) {
+  function find(html, text) {
+    return Array.prototype.filter.call(html.querySelectorAll('span'), function (el) {
+      return !el.children.length && el.textContent === text;
+    })[0];
+  }
+  function cy(el) { var r = el.getBoundingClientRect(); return (r.top + r.bottom) / 2; }
+  function hh(el) { return el.getBoundingClientRect().height; }
+  var all = document.querySelectorAll('#md-preview .katex-html');
+  return JSON.stringify(Array.prototype.map.call(all, function (html, i) {
+    var res = {tex: texts[i]};
+    if (texts[i] === '\\frac{a}{b}') {
+      var a = find(html, 'a'), b = find(html, 'b');
+      res.ok = !!(a && b) && cy(b) - cy(a) > hh(a) * 0.8;
+    } else if (texts[i] === '\\sqrt{x}') {
+      var x = find(html, 'x'), svg = html.querySelector('svg');
+      var clip = svg && svg.parentElement.getBoundingClientRect();
+      res.ok = !!(x && svg && svg.querySelector('path') && clip.height > 0)
+        && clip.width >= x.getBoundingClientRect().width
+        && clip.right <= html.getBoundingClientRect().right + 1;   // 400em 的 SVG 要被裁住
+    } else if (texts[i] === 'x_i^2') {
+      var base = find(html, 'x'), sub = find(html, 'i'), sup = find(html, '2');
+      res.ok = !!(base && sub && sup) && cy(sup) < cy(base) && cy(sub) > cy(base)
+        && hh(sup) < hh(base) && hh(sub) < hh(base);
+    } else {
+      res.skip = true;
+    }
+    return res;
+  }));
+})(%s)
+"""
+
+
+def _wait_editor_ready(window):
+    """等应用选中笔记、Markdown 编辑器就绪（选中之前写的源码会被切换笔记的写入盖掉）"""
+    wait_for_js(window, "!!(window.__app && window.__app.state.activeNoteId"
+                        " && !window.__app.state.isLoading"
+                        " && window.__app.state.noteFormat === 'md'"
+                        " && window.katex && window.DOMPurify"
+                        " && (document.querySelector('.CodeMirror') || {}).CodeMirror)", timeout=40)
+
+
+@pytest.mark.e2e
+def test_math_geometry_matches_raw_katex(tmp_path, monkeypatch):
+    """分式、根号、上下标的几何必须与 KaTeX 原始输出一致。
+
+    `'katex' in html` 抓不到这个问题：曾经的消毒把 mord、vlist-t 这些 class 和 height、top
+    这些内联样式全滤掉、把根号的 SVG 删掉，公式散成一行，而 HTML 里 katex 字样一个不少。
+    所以这里逐元素比位置和大小，行内与块级都比。
+    """
+    ns = load_app_partial(monkeypatch, tmp_path)
+    import backend
+    backend.api.notes_create()
+    cases = [(tex, display) for tex in _GEOMETRY_CASES for display in (False, True)]
+    source = ''.join(('$$%s$$\n\n' if display else '$%s$\n\n') % tex for tex, display in cases)
+
+    def actions(window, result):
+        _wait_editor_ready(window)
+        _set_source(window, source)
+        wait_for_js(window, "document.querySelectorAll('#md-preview .katex').length", len(cases))
+        payload = [{'tex': tex, 'display': display,
+                    'raw': window.evaluate_js(_RAW_KATEX % (json.dumps(tex), json.dumps(display)))}
+                   for tex, display in cases]
+        result['geometry'] = json.loads(window.evaluate_js(_GEOMETRY_JS % json.dumps(payload)))
+        texts = [tex for tex, _ in cases]
+        result['anatomy'] = json.loads(window.evaluate_js(_ANATOMY_JS % json.dumps(texts)))
+
+    r = _run(ns, actions, wait_before=0)
+    assert 'error' not in r, r.get('error')
+    assert r['geometry']['count'] == len(cases), '预览里的公式数量不对'
+    for f in r['geometry']['formulas']:
+        name = '%s（%s）' % (f['tex'], '块级' if f['display'] else '行内')
+        assert f['size'] == pytest.approx(f['rawSize'], abs=0.5), \
+            '%s 消毒后尺寸 %s，KaTeX 原始输出 %s' % (name, f['size'], f['rawSize'])
+        assert f['nodes'] == f['rawNodes'], '%s 消毒吃掉了元素' % name
+        assert f['worst'] <= 0.5, '%s 内部元素错位 %.2fpx' % (name, f['worst'])
+    for item in r['anatomy']:
+        assert item.get('skip') or item['ok'], '%s 的结构不对：%r' % (item['tex'], item)
+
+
+@pytest.mark.e2e
+def test_math_markup_survives_sanitizer_intact(tmp_path, monkeypatch):
+    """KaTeX 的白名单要够用：各类命令消毒后的 DOM 必须与原始输出逐节点相同。
+
+    白名单是手写的，少一个标签或属性不会报错，只会让某一类公式悄悄坏掉。
+    SVG（可伸缩符号、高括号）、<line>（\\cancel）、内联颜色与尺寸、MathML、语法错误都要过一遍。
+    """
+    ns = load_app_partial(monkeypatch, tmp_path)
+    import backend
+    backend.api.notes_create()
+    samples = [
+        r'\sqrt[3]{x}', r'\sum_{i=1}^{n} x_i', r'\int_0^1 f', r'\lim_{x\to 0} y',
+        r'\left(\frac{\frac{a}{b}}{c}\right)', r'\begin{pmatrix}a&b\\c&d\end{pmatrix}',
+        r'\begin{array}{c|c}a&b\\\hline c&d\end{array}', r'\begin{cases}a&b\\c&d\end{cases}',
+        r'\overbrace{a+b}^{n}', r'\widehat{abc}', r'\overrightarrow{AB}', r'\xrightarrow[b]{a}',
+        r'\cancel{a}', r'\xcancel{a}', r'\sout{abc}', r'\boxed{a}', r'\fcolorbox{red}{yellow}{a}',
+        r'\colorbox{yellow}{a}', r'\textcolor{#ff0000}{a}', r'\rule{2em}{1em}',
+        r'\raisebox{0.5em}{a}', r'\kern1em a', r'\mathllap{a}b', r'\phantom{a}b', r'\pmb{x}',
+        r'\mathbb{R}\mathcal{L}\mathfrak{g}', r'\text{中文 text}', r'\Huge a', r'a<b',
+        r'\frac{',                                   # 语法错误走 katex-error 分支
+    ]
+    source = ''.join('$%s$\n\n' % tex for tex in samples)
+
+    def actions(window, result):
+        _wait_editor_ready(window)
+        _set_source(window, source)
+        selector = "document.querySelectorAll('#md-preview .katex, #md-preview .katex-error')"
+        wait_for_js(window, selector + ".length", len(samples))
+        raw = [window.evaluate_js(_RAW_KATEX % (json.dumps(tex), 'false')) for tex in samples]
+        result['diff'] = json.loads(window.evaluate_js(
+            "(function (raw) {"
+            "  var nodes = %s, holder = document.createElement('div'), bad = [];"
+            "  raw.forEach(function (html, i) {"
+            "    holder.innerHTML = html;"
+            "    if (!nodes[i] || !nodes[i].isEqualNode(holder.firstElementChild)) bad.push(i);"
+            "  });"
+            "  return JSON.stringify({count: nodes.length, bad: bad});"
+            "})(%s)" % (selector, json.dumps(raw))))
+
+    r = _run(ns, actions, wait_before=0)
+    assert 'error' not in r, r.get('error')
+    assert r['diff']['count'] == len(samples)
+    assert not r['diff']['bad'], '消毒改动了这些公式的 DOM：%r' % [
+        samples[i] for i in r['diff']['bad']]
+
+
+@pytest.mark.e2e
+def test_math_commands_and_user_html_stay_blocked(tmp_path, monkeypatch):
+    """放宽的只有 KaTeX 自己的输出：公式里写不进 class/style/链接，公式外的内嵌 HTML 照旧被挡。
+
+    断言看 DOM 不看字符串：被拒绝的 `\\href{javascript:...}` 会作为文字留在预览和
+    <annotation> 里，这是对的，有害的是它变成真的链接。
+    """
+    ns = load_app_partial(monkeypatch, tmp_path)
+    import backend
+    backend.api.notes_create()
+    # 公式里不能写 window.__pwned：`__` 在数学模式是语法错误，走不到 KaTeX 的正常输出
+    payload = '\n\n'.join([
+        r'$\href{javascript:window.pwned=1}{点我}$',
+        r'$\url{javascript:window.pwned=2}$',
+        r'$\htmlClass{panel-overlay}{借样式}$',
+        r'$\htmlStyle{position:fixed;top:0}{盖住界面}$',
+        r'$\htmlId{editor-status}{顶掉状态栏}$',
+        r'$\htmlData{foo=bar}{带数据}$',
+        r'$\includegraphics{attachments/x.png}$',
+        r'$\textcolor{red;position:fixed}{借颜色写样式}$',
+        r'$<img src=x onerror=window.pwned=3>$',
+        r'$\text{<img src=x onerror=window.pwned=4>}$',
+        # 公式外的内嵌 HTML。冒充公式的两条：放宽要是按"在 .katex 里就跳过"来判断就会中招
+        '<div class="panel-overlay">借样式</div>',
+        '<span class="katex panel-overlay" style="position:fixed;top:0">冒充公式</span>',
+        '<span class="katex"><span class="katex-html"><span class="panel-overlay vlist-t"'
+        ' style="position:fixed;height:9em">套在公式壳子里</span></span></span>',
+        '<svg onload="window.pwned=5"><path d="M0 0"></path></svg>',
+        '<script>window.pwned=6</script>',
+        '<img src="data:," onerror="window.pwned=7">',
+        # 占位符落在属性值里：公式是消毒之后才拼回去的，不能借这一步逃出属性
+        '<span title="$x$ onmouseover=window.pwned=8 $y$">属性里的公式</span>',
+        '<span title="$\\frac{ onmouseover=window.pwned=9 $">属性里的语法错误</span>',
+    ]) + '\n'
+
+    def actions(window, result):
+        _wait_editor_ready(window)
+        _set_source(window, payload)
+        wait_for_js(window, "!!document.querySelector('#md-preview .katex')")
+        result.update(json.loads(window.evaluate_js(
+            "(function () {"
+            "  var p = document.getElementById('md-preview');"
+            "  var all = Array.prototype.slice.call(p.querySelectorAll('*'));"
+            "  function attrs(pattern) {"
+            "    return all.filter(function (el) {"
+            "      return el.getAttributeNames().some(function (n) { return pattern.test(n); });"
+            "    }).length;"
+            "  }"
+            "  function kept(text) {"                  # 用户写的那个元素还留着什么 class 和 style
+            "    var el = all.filter(function (e) {"
+            "      return !e.children.length && e.textContent === text; })[0];"
+            "    return el ? [el.className, el.getAttribute('style')] : null;"
+            "  }"
+            "  return JSON.stringify({"
+            "    links: p.querySelectorAll('a').length,"
+            "    borrowed: p.querySelectorAll('.panel-overlay').length,"
+            "    lookalike: [kept('冒充公式'), kept('套在公式壳子里')],"
+            "    fixed: all.filter(function (el) {"
+            "      return getComputedStyle(el).position === 'fixed'; }).length,"
+            "    ids: attrs(/^id$/), events: attrs(/^on/i), data: attrs(/^data-foo/),"
+            "    svg: p.querySelectorAll('svg').length, script: p.querySelectorAll('script').length,"
+            "    formulaImg: p.querySelectorAll('.katex img').length,"
+            "    refused: p.textContent.indexOf('\\\\href{javascript:') >= 0,"
+            "    pwned: window.pwned === undefined ? 'clean' : 'PWNED'"
+            "  });"
+            "})()")))
+
+    r = _run(ns, actions, wait_before=0)
+    assert 'error' not in r, r.get('error')
+    assert r['pwned'] == 'clean', '注入的脚本被执行了'
+    assert r['refused'], '\\href 应当被 KaTeX 拒绝并原样显示成文字'
+    assert r['links'] == 0, '公式里的 \\href / \\url 变成了真链接'
+    assert r['borrowed'] == 0, '用户内容借到了应用自己的样式类'
+    assert r['lookalike'] == [['katex', None], ['', None]], \
+        '冒充公式的用户内容逃过了 class/style 过滤：%r' % r['lookalike']
+    assert r['fixed'] == 0, '用户写的内联样式没被过滤'
+    assert r['ids'] == 0, '\\htmlId 写进了 id（能顶掉 getElementById 的查找）'
+    assert r['data'] == 0, '\\htmlData 写进了 data 属性'
+    assert r['events'] == 0 and r['script'] == 0
+    assert r['formulaImg'] == 0, '公式里的 \\includegraphics 或 HTML 变成了真图片'
+    assert r['svg'] == 0, '用户写的 <svg> 不能进预览：放行 SVG 的只有 KaTeX 那条路'
+
+
+@pytest.mark.e2e
+def test_katex_output_still_goes_through_dompurify(tmp_path, monkeypatch):
+    """绕开的只是 class/style 过滤，不是消毒：KaTeX 吐出什么都要再过一遍白名单。
+
+    trust: false 时 KaTeX 正常不会输出这些，所以这里把它换成一个恶意的输出，
+    模拟库本身的漏洞或者 trust 被改掉。
+    """
+    ns = load_app_partial(monkeypatch, tmp_path)
+    import backend
+    backend.api.notes_create()
+    hostile = ('<span class="katex mord" style="height:1em" onmouseover="window.__pwned=1">'
+               '<script>window.__pwned=2</script>'
+               '<img src="data:," onerror="window.__pwned=3">'
+               '<a href="javascript:window.__pwned=4">链接文字</a>'
+               '<span id="editor-status" data-foo="1">留下的文字</span>'
+               '<svg onload="window.__pwned=5"><use href="#x"></use>'
+               '<path d="M0 0" onclick="window.__pwned=6"></path>'
+               '<foreignObject><iframe src="javascript:window.__pwned=7"></iframe></foreignObject>'
+               '</svg></span>')
+
+    def actions(window, result):
+        _wait_editor_ready(window)
+        window.evaluate_js("window.katex.renderToString = function () { return %s; };"
+                           % json.dumps(hostile))
+        _set_source(window, '$x$\n')
+        wait_for_js(window, "!!document.querySelector('#md-preview .katex')")
+        result.update(json.loads(window.evaluate_js(
+            "(function () {"
+            "  var k = document.querySelector('#md-preview .katex');"
+            "  var all = [k].concat(Array.prototype.slice.call(k.querySelectorAll('*')));"
+            "  return JSON.stringify({"
+            "    className: k.className, style: k.getAttribute('style'),"
+            "    text: k.textContent, path: k.querySelectorAll('path').length,"
+            "    bad: k.querySelectorAll('script, img, a, use, foreignObject, iframe').length,"
+            "    attrs: all.reduce(function (acc, el) {"
+            "      return acc.concat(el.getAttributeNames()); }, [])"
+            "  });"
+            "})()")))
+
+    r = _run(ns, actions, wait_before=0)
+    assert 'error' not in r, r.get('error')
+    assert r['className'] == 'katex mord' and r['style'] == 'height:1em', \
+        'KaTeX 这条路应当保留 class 和 style'
+    assert '留下的文字' in r['text'] and r['path'] == 1
+    assert r['bad'] == 0, 'KaTeX 这条路放过了白名单外的标签'
+    leaked = [a for a in r['attrs'] if a.startswith(('on', 'data-')) or a in ('id', 'href', 'src')]
+    assert not leaked, 'KaTeX 这条路放过了白名单外的属性：%r' % leaked
+
+
+@pytest.mark.e2e
+def test_exported_formulas_do_not_carry_katex_svg(tmp_path, monkeypatch):
+    """导出和预览共用渲染入口，但导出文件没带 KaTeX 的样式表，所以 SVG 不能跟过去。
+
+    根号的 `<svg width="400em">` 没了裁切，HTML 导出会被撑到 6400px 宽；
+    DOCX 的分块正则还会把 `<path` 当成 `<p` 切开，吞掉根号后面的文字。
+    """
+    ns = load_app_partial(monkeypatch, tmp_path)
+    import backend
+    backend.api.notes_create()
+    source = '段尾公式 $\\sqrt{c}+d$\n\n$$\\frac{a}{\\sqrt{b}}$$\n'
+    html_path = str(tmp_path / 'formula.html')
+    docx_path = str(tmp_path / 'formula.docx')
+
+    def actions(window, result):
+        _wait_editor_ready(window)
+        # 动态 import 拿到的是应用正在用的同一个模块实例
+        window.evaluate_js(
+            "(function () {"
+            "  import('./js/app/14-markdown-render.js')"
+            "    .then(function (m) { return m.markdownExportHtml(%s, null); })"
+            "    .then(function (html) { window.__exported = html; },"
+            "          function (e) { window.__exported = 'ERROR ' + e; });"
+            "  return 1;"
+            "})()" % json.dumps(source))
+        wait_for_js(window, "typeof window.__exported === 'string'")
+        html = window.evaluate_js("window.__exported")
+        result['html'] = html
+        backend.api.export_note('公式', html, 'html', html_path)
+        backend.api.export_note('公式', html, 'docx', docx_path)
+        window.load_url('file:///' + html_path.replace('\\', '/'))
+        wait_for_js(window, "location.protocol === 'file:' && !!document.querySelector('math')")
+        result['page_width'] = window.evaluate_js("document.documentElement.scrollWidth")
+        result['view_width'] = window.evaluate_js("window.innerWidth")
+
+    r = _run(ns, actions, wait_before=0)
+    assert 'error' not in r, r.get('error')
+    assert '<math' in r['html'], '导出里的公式靠 MathML 显示，不能一起丢掉'
+    assert '<svg' not in r['html'], 'KaTeX 的 SVG 跟进了导出'
+    assert r['page_width'] <= r['view_width'], '导出的 HTML 被撑宽了：%r' % r['page_width']
+    from docx import Document
+    text = '\n'.join(p.text for p in Document(docx_path).paragraphs)
+    assert '段尾公式' in text and '+d' in text, 'DOCX 丢了公式后半段的文字：%r' % text

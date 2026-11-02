@@ -16,7 +16,8 @@
 - **写注册表只有一处**：开启「开机自启」时写 `HKCU\Software\Microsoft\Windows\CurrentVersion\Run`。
   其余任何操作都不碰注册表。
 - **导入内容会消毒**：Markdown 预览与导出走 DOMPurify 白名单（标签/属性/style/class 前缀/链接协议
-  五重限制），笔记里的内嵌 HTML 不会带出脚本执行。
+  五重限制），笔记里的内嵌 HTML 不会带出脚本执行。KaTeX 的输出走单独的白名单，只放行它自己
+  生成的 class、内联样式和 SVG；公式里的 `\href`、`\htmlClass` 这类命令一律拒绝。
 
 ## 报告漏洞
 

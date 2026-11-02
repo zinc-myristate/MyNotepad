@@ -7,6 +7,9 @@
 //   2) style 属性只放行排版相关的少量属性，且 class 必须以白名单前缀开头
 //      （否则用户可以写 class="panel-overlay" 之类去借应用自己的样式）；
 //   3) 链接只允许 http/https/mailto/attachments 相对路径，事件属性全部剥掉。
+//
+// KaTeX 的输出是另一条路（见 sanitizeKatex）：它的排版全靠内部 class、内联样式和 SVG，
+// 过上面的 class/style 过滤公式就散了。这条路只放行 KaTeX 自己生成的东西，用户内容进不来。
 
 import { state } from './01-core.js';
 import { slugify, splitFrontMatter, normalizeMathDelims } from '../shared/utils.js';
@@ -21,7 +24,7 @@ const ALLOWED_TAGS = [
   'blockquote', 'ul', 'ol', 'li', 'span', 'div',
   'table', 'thead', 'tbody', 'tr', 'th', 'td',
   'a', 'img', 'details', 'summary',
-  // KaTeX 输出（MathML + 排版用的 span）
+  // MathML：只管用户直接写的。KaTeX 的输出走 KATEX_TAGS，不走这份
   'math', 'semantics', 'annotation', 'mrow', 'mi', 'mo', 'mn', 'msup', 'msub',
   'mfrac', 'msqrt', 'mroot', 'mover', 'munder', 'mtable', 'mtr', 'mtd', 'mtext',
   'mspace', 'mpadded', 'mphantom', 'mstyle', 'menclose',
@@ -39,6 +42,27 @@ const ALLOWED_STYLE = new Set([
 ]);
 // class 白名单前缀：应用自己的样式类绝不能被用户内容借走
 const ALLOWED_CLASS_PREFIX = ['md-', 'divider-', 'sticker', 'katex', 'math', 'hljs'];
+
+// KaTeX 输出的白名单，只给 sanitizeKatex 用，**不要**并进上面几份：svg/path 一旦进了
+// ALLOWED_TAGS，用户内容也能写。这里刻意没有 a、img、href、src、id——trust: false 时
+// KaTeX 不会生成它们，真出现了（比如有人改了 trust）也要被挡掉。
+const KATEX_TAGS = [
+  'span', 'svg', 'path', 'line',
+  'math', 'semantics', 'annotation', 'mrow', 'mi', 'mo', 'mn', 'mtext', 'mspace',
+  'msup', 'msub', 'msubsup', 'mfrac', 'msqrt', 'mroot', 'mover', 'munder', 'munderover',
+  'mtable', 'mtr', 'mtd', 'mpadded', 'mphantom', 'mstyle', 'menclose',
+];
+const KATEX_ATTR = [
+  'class', 'style', 'title', 'aria-hidden',
+  // SVG：根号、长箭头、花括号、\cancel 的斜线
+  'xmlns', 'viewBox', 'preserveAspectRatio', 'width', 'height', 'd',
+  'x1', 'y1', 'x2', 'y2', 'stroke-width',
+  // MathML：给读屏软件的那一份，屏幕上不显示
+  'encoding', 'display', 'displaystyle', 'scriptlevel', 'mathvariant', 'mathcolor',
+  'mathbackground', 'mathsize', 'fence', 'stretchy', 'separator', 'largeop', 'lspace', 'rspace',
+  'minsize', 'maxsize', 'accent', 'accentunder', 'notation', 'linethickness', 'linebreak',
+  'voffset', 'depth', 'columnalign', 'columnlines', 'columnspacing', 'rowlines', 'rowspacing',
+];
 
 let _md = null;
 
@@ -228,18 +252,34 @@ function extractMath(text, store) {
   return out;
 }
 
+/**
+ * KaTeX 自己的输出再过一遍消毒（唯一目的是不给自己开后门）。
+ *
+ * 钩子是挂在 DOMPurify 实例上的，所以这里用 `DOMPurify(window)` 造一个**独立实例**：
+ * installSanitizer 的 class/style 过滤碰不到它，用户内容那条路也没有任何开关可以被绕过。
+ * 不靠"节点在 .katex 里就跳过"这类判断：用户自己也能写 `<span class="katex">`。
+ *
+ * 放行 class 和 style 的依据是 renderMath 的 `trust: false`：\htmlClass、\htmlStyle、\href
+ * 这些都被 KaTeX 拒绝，\color 只收颜色值，尺寸只收数字加单位，用户写不进任意的值。
+ * 所以 **trust 不能改**；白名单之外的标签和属性（脚本、事件属性）仍由 DOMPurify 清掉。
+ */
+let _katexPurify = null;
+function sanitizeKatex(html) {
+  if (!window.DOMPurify) return html;
+  if (!_katexPurify) _katexPurify = window.DOMPurify(window);
+  return _katexPurify.sanitize(html, {
+    ALLOWED_TAGS: KATEX_TAGS, ALLOWED_ATTR: KATEX_ATTR, ALLOW_DATA_ATTR: false,
+  });
+}
+
 function renderMath(store) {
   const katex = window.katex;
   return store.map((item) => {
     if (!katex) return '<code>' + escapeAttr(item.tex) + '</code>';
     try {
-      const html = katex.renderToString(item.tex, {
+      return sanitizeKatex(katex.renderToString(item.tex, {
         displayMode: item.display, throwOnError: false, trust: false, strict: 'ignore',
-      });
-      // KaTeX 自己的输出再过一遍消毒（唯一目的是不给自己开后门）
-      return window.DOMPurify ? window.DOMPurify.sanitize(html, {
-        ALLOWED_TAGS, ALLOWED_ATTR, ALLOW_DATA_ATTR: false,
-      }) : html;
+      }));
     } catch (e) {
       return '<code>' + escapeAttr(item.tex) + '</code>';
     }
@@ -346,6 +386,9 @@ export async function markdownExportHtml(text, noteId) {
   const html = propsTableHtml(split.props) + renderMarkdown(text, { noteId });
   const tmp = document.createElement('div');
   tmp.innerHTML = html;
+  // 导出文件没带 KaTeX 的样式表，SVG 的裁切全没了：根号那个 width="400em" 的 SVG 会把页面
+  // 撑到 6400px 宽。公式在导出里靠 MathML 显示（浏览器原生支持），用不到这些 SVG
+  tmp.querySelectorAll('.katex svg').forEach((svg) => svg.remove());
   for (const img of Array.from(tmp.querySelectorAll('img[data-md-src]'))) {
     try {
       const abs = await resolveAssetPath(img.getAttribute('data-md-src'), noteId);
