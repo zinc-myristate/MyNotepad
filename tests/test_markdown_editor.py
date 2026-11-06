@@ -866,3 +866,86 @@ def test_exported_formulas_do_not_carry_katex_svg(tmp_path, monkeypatch):
     from docx import Document
     text = '\n'.join(p.text for p in Document(docx_path).paragraphs)
     assert '段尾公式' in text and '+d' in text, 'DOCX 丢了公式后半段的文字：%r' % text
+
+
+# ---------------- e2e：块级公式落在容器里 ----------------
+#
+# `$$` 换成占位符时曾经前后都垫空行，好让它自成一段。可空行在 Markdown 里是"这一块到此为止"，
+# 落在列表、引用、表格、缩进代码里就把它们拦腰截断。现在只有从行首开始的 `$$` 才垫。
+
+# 预览的骨架，一个顶层块一项：元素写成 `标签(内容)`，块级公式写成 `{{tex}}`，行内公式写成 `{tex}`。
+# 代码里的 `$$x$$` 是文字，原样出现，所以和渲染出来的公式分得开
+_SKELETON_JS = r"""
+(function () {
+  function tex(el) { return (el.querySelector('annotation') || el).textContent.trim(); }
+  function sk(node) {
+    if (node.nodeType === 3) return node.nodeValue.trim();
+    if (node.nodeType !== 1) return '';
+    if (node.classList.contains('katex-display')) return '{{' + tex(node) + '}}';
+    if (node.classList.contains('katex')) return '{' + tex(node) + '}';
+    var inner = Array.prototype.map.call(node.childNodes, sk).filter(Boolean).join(' ');
+    return node.tagName.toLowerCase() + '(' + inner + ')';
+  }
+  var p = document.getElementById('md-preview');
+  return JSON.stringify(Array.prototype.map.call(p.childNodes, sk).filter(Boolean));
+})()
+"""
+
+
+def _preview_skeleton(tmp_path, monkeypatch, cases):
+    """cases 是 (源码, [顶层块的骨架…])。用 HTML 注释隔开：同种列表之间只隔空行会并成一个列表"""
+    ns = load_app_partial(monkeypatch, tmp_path)
+    import backend
+    backend.api.notes_create()
+    source = '\n\n<!-- -->\n\n'.join(c[0] for c in cases) + '\n'
+    count = sum(block.count('{{') for c in cases for block in c[1])    # 这里的公式都是块级的
+
+    def actions(window, result):
+        _wait_editor_ready(window)
+        _set_source(window, source)
+        wait_for_js(window, "document.querySelectorAll('#md-preview .katex').length", count)
+        result['skeleton'] = json.loads(window.evaluate_js(_SKELETON_JS))
+
+    r = _run(ns, actions, wait_before=0)
+    assert 'error' not in r, r.get('error')
+    return r['skeleton']
+
+
+@pytest.mark.e2e
+def test_block_math_stays_inside_containers(tmp_path, monkeypatch):
+    """不从行首开始的 `$$` 留在原地：列表、引用、表格、缩进代码都不能被拆开。
+
+    缩进代码里的 `$$` 是文字。原来垫的空行把那一行变成了空行，代码块没了，公式露在外面。
+    """
+    cases = [
+        ('- 列表 $$a$$\n- $$b$$\n- 第三项',
+         ['ul(li(列表 {{a}}) li({{b}}) li(第三项))']),
+        ('- 跨行\n  $$\n  c\n  $$\n- 下一项',                    # 缩进是列表项的，不是公式的
+         ['ul(li(跨行 {{c}}) li(下一项))']),
+        ('- 第一段\n\n  $$d$$',                                  # 列表项的第二段从缩进开始
+         ['ul(li(p(第一段) p({{d}})))']),
+        ('> 引用 $$e$$\n> 下一行',
+         ['blockquote(p(引用 {{e}} 下一行))']),
+        ('| 表头 |\n|---|\n| $$f$$ |\n| 下一行 |',
+         ['table(thead(tr(th(表头))) tbody(tr(td({{f}})) tr(td(下一行))))']),
+        ('    $$g$$\n    缩进代码 $$h$$',
+         ['pre(code($$g$$\n缩进代码 $$h$$))']),
+    ]
+    want = [block for c in cases for block in c[1]]
+    assert _preview_skeleton(tmp_path, monkeypatch, cases) == want
+
+
+@pytest.mark.e2e
+def test_block_math_at_line_start_still_stands_alone(tmp_path, monkeypatch):
+    """从行首开始的 `$$` 照旧自成一段，没有空行也一样。
+
+    不垫空行的话，表格下一行的公式会变成表格的一行，段落下一行的会并进那一段。
+    """
+    cases = [
+        ('| 表头 |\n|---|\n| 格子 |\n$$x$$',
+         ['table(thead(tr(th(表头))) tbody(tr(td(格子))))', 'p({{x}})']),
+        ('段落\n$$y$$\n段落',
+         ['p(段落)', 'p({{y}})', 'p(段落)']),
+    ]
+    want = [block for c in cases for block in c[1]]
+    assert _preview_skeleton(tmp_path, monkeypatch, cases) == want

@@ -268,7 +268,7 @@ function installSanitizer() {
  *
  * 字面量（NOT_MATH）先挖走再做这两步，和 normalizeMathDelims 挖代码是同一个做法：
  * 只靠事后还原不够，`$HOME` 和 `$PATH` 这样的两段代码，中间的两个 `$` 会配成一个"公式"，
- * 把反引号也吞进去；`$$` 垫的空行也会把行内代码、属性和链接拦腰截断。
+ * 把反引号也吞进去；行首的 `$$` 垫的空行也会把跨行的属性拦腰截断。
  */
 function extractMath(text, store) {
   const holes = [];
@@ -282,7 +282,14 @@ function extractMath(text, store) {
     return MATH_TOKEN + (store.length - 1) + '@@';
   };
   let out = normalizeMathDelims(text.replace(NOT_MATH, stash));
-  out = out.replace(MATH_BLOCK, (m, tex) => '\n\n' + addMath(m, tex, true) + '\n\n');
+  // 只有从行首开始的 `$$` 才前后垫空行、自成一段：紧跟在表格或段落下一行时，不垫就成了表格的一行，
+  // 或者并进那一段。别处只放占位符，空行会把所在的列表、引用、表格、缩进代码拦腰截断；
+  // 公式留在原地也照样单独占一行，.katex-display 本身是块级的。
+  // 行首只认第 0 列：前面有空格的是列表项的续行或缩进代码，垫了空行，占位符就掉出容器了
+  out = out.replace(MATH_BLOCK, (m, tex, at, all) => {
+    const token = addMath(m, tex, true);
+    return at === 0 || all[at - 1] === '\n' ? '\n\n' + token + '\n\n' : token;
+  });
   out = out.replace(MATH_INLINE, (m, tex) => (tex.trim() ? addMath(m, tex, false) : m));
   return refill(out);
 }
