@@ -10,6 +10,9 @@
 //
 // KaTeX 的输出是另一条路（见 sanitizeKatex）：它的排版全靠内部 class、内联样式和 SVG，
 // 过上面的 class/style 过滤公式就散了。这条路只放行 KaTeX 自己生成的东西，用户内容进不来。
+//
+// 公式是消毒之后才放进文档的，所以只能插进文本节点（见 insertMath）：不和任何 HTML 拼字符串，
+// 它的输出也就到不了属性里。
 
 import { state } from './01-core.js';
 import { slugify, splitFrontMatter, normalizeMathDelims } from '../shared/utils.js';
@@ -17,6 +20,18 @@ import { slugify, splitFrontMatter, normalizeMathDelims } from '../shared/utils.
 const MATH_BLOCK = /\$\$([\s\S]+?)\$\$/g;
 const MATH_INLINE = /\$([^$\n]+?)\$/g;
 const MATH_TOKEN = '@@MDMATH';
+const MATH_TOKEN_RE = new RegExp(MATH_TOKEN + '(\\d+)@@', 'g');
+// 这些地方的 `$` 是字面量：围栏代码、行内代码、HTML 开始标签、自动链接、链接和图片的地址。
+// 都要认得严，认宽了公式就不渲染了：围栏不从行首开始的话，公式里当空格用的 `~~~` 会配成一对，
+// 吞掉中间所有公式；标签不按 markdown-it 的规则认的话，`$a<b$ 和 $c>d$` 中间那段就成了标签。
+const NOT_MATH = new RegExp([
+  /^[ \t>*+\-\d.)]*(`{3,}|~{3,})[\s\S]*?\n[ \t>]*\1[`~]*[ \t]*$/,
+  /(?<![\\`])(`+)(?!`)[^\n]*?(?<!`)\2(?!`)/,
+  /<[a-zA-Z][a-zA-Z0-9-]*(?:\s+[a-zA-Z_:][\w:.-]*(?:\s*=\s*(?:[^\s"'=<>`]+|'[^']*'|"[^"]*"))?)*\s*\/?>/,
+  /<[a-zA-Z][a-zA-Z0-9+.-]{1,31}:[^<>\s]*>/,
+  /(?<!\\)\]\([^()\s]*\)/,
+].map((re) => re.source).join('|'), 'gm');
+const MATH_HOLE_RE = /\u0000MDHOLE(\d+)\u0000/g;
 
 const ALLOWED_TAGS = [
   'p', 'br', 'hr', 'h1', 'h2', 'h3', 'h4', 'h5', 'h6',
@@ -65,6 +80,9 @@ const KATEX_ATTR = [
 ];
 
 let _md = null;
+// 正在渲染的这一篇的公式表，只在 renderMarkdown 运行期间有值。
+// 消毒钩子和 markdown-it 的回调拿不到它的局部变量
+let _mathStore = null;
 
 function md() {
   if (_md || !window.markdownit) return _md;
@@ -88,7 +106,8 @@ function installHeadingIds(instance) {
     state2.tokens.forEach((tok, i) => {
       if (tok.type !== 'heading_open') return;
       const inline = state2.tokens[i + 1];
-      let slug = slugify((inline && inline.content) || '') || 'section';
+      // 按原文算：`[[标题#小节]]` 那一头拿到的是原文，不是占位符
+      let slug = slugify(restoreMath((inline && inline.content) || '', _mathStore)) || 'section';
       if (used[slug] !== undefined) { used[slug] += 1; slug = slug + '-' + used[slug]; } else used[slug] = 0;
       tok.attrSet('id', 'md-h-' + slug);
     });
@@ -183,6 +202,14 @@ let _purifyReady = false;
 function installSanitizer() {
   if (_purifyReady || !window.DOMPurify) return;
   _purifyReady = true;
+  // 属性里的占位符要在所有检查之前换回原文，过滤器看到的才是最终的值。消毒之后再换的话，
+  // 公式原文能带着分号和空格绕开下面的 style 白名单和 class 前缀，也绕开 DOMPurify 自己的属性检查
+  window.DOMPurify.addHook('beforeSanitizeAttributes', (node) => {
+    if (!_mathStore || !node.attributes) return;
+    for (const attr of Array.from(node.attributes)) {
+      if (attr.value.includes(MATH_TOKEN)) attr.value = restoreMath(attr.value, _mathStore);
+    }
+  });
   window.DOMPurify.addHook('afterSanitizeAttributes', (node) => {
     if (node.hasAttribute && node.hasAttribute('style')) {
       const keep = [];
@@ -238,18 +265,31 @@ function installSanitizer() {
  * `normalizeMathDelims` 来自 `shared/utils.js`（纯函数，有 node 单测），
  * **规则必须与后端 `backend/text.py` 的 `normalize_line_math()` 一致** ——
  * 否则会出现"预览渲染出公式、转成 delta 却当纯文本"这类前后端不一致。
+ *
+ * 字面量（NOT_MATH）先挖走再做这两步，和 normalizeMathDelims 挖代码是同一个做法：
+ * 只靠事后还原不够，`$HOME` 和 `$PATH` 这样的两段代码，中间的两个 `$` 会配成一个"公式"，
+ * 把反引号也吞进去；`$$` 垫的空行也会把行内代码、属性和链接拦腰截断。
  */
 function extractMath(text, store) {
-  let out = normalizeMathDelims(text).replace(MATH_BLOCK, (_m, tex) => {
-    store.push({ tex, display: true });
-    return '\n\n' + MATH_TOKEN + (store.length - 1) + '@@\n\n';
-  });
-  out = out.replace(MATH_INLINE, (m, tex) => {
-    if (!tex.trim()) return m;
-    store.push({ tex, display: false });
+  const holes = [];
+  const stash = (s) => {
+    holes.push(s);
+    return '\u0000MDHOLE' + (holes.length - 1) + '\u0000';
+  };
+  const refill = (s) => s.replace(MATH_HOLE_RE, (_m, i) => holes[Number(i)]);
+  const addMath = (source, tex, display) => {
+    store.push({ tex: refill(tex), display, source: refill(source) });
     return MATH_TOKEN + (store.length - 1) + '@@';
-  });
-  return out;
+  };
+  let out = normalizeMathDelims(text.replace(NOT_MATH, stash));
+  out = out.replace(MATH_BLOCK, (m, tex) => '\n\n' + addMath(m, tex, true) + '\n\n');
+  out = out.replace(MATH_INLINE, (m, tex) => (tex.trim() ? addMath(m, tex, false) : m));
+  return refill(out);
+}
+
+/** 占位符 → 用户写的原文。序号不存在说明是用户自己打的字，原样留着 */
+function restoreMath(text, store) {
+  return text.replace(MATH_TOKEN_RE, (m, i) => (store[Number(i)] ? store[Number(i)].source : m));
 }
 
 /**
@@ -286,6 +326,42 @@ function renderMath(store) {
   });
 }
 
+/** 一段 HTML → 节点。每次新建：同一个文本节点里的几个公式是一起插进去的，不能共用一个容器 */
+function htmlNodes(html) {
+  const box = document.createElement('template');
+  box.innerHTML = html;
+  return box.content;
+}
+
+/**
+ * 把占位符换成公式。走到这里的占位符只可能在文本节点里：属性里的在消毒时就换回了原文
+ * （installSanitizer）。
+ *
+ * 代码和 MathML 里的不算公式：挖洞挖不到的代码（跨行的行内代码、缩进代码、用户写的 <code>）
+ * 在这里换回原文，MathML 里也放不了 KaTeX 的 HTML。
+ */
+function insertMath(root, store) {
+  if (!store.length) return;
+  const rendered = renderMath(store);
+  const walker = document.createTreeWalker(root, NodeFilter.SHOW_TEXT);
+  const hits = [];
+  while (walker.nextNode()) {
+    if (walker.currentNode.nodeValue.includes(MATH_TOKEN)) hits.push(walker.currentNode);
+  }
+  for (const node of hits) {
+    if (node.parentElement && node.parentElement.closest('code, pre, math')) {
+      node.nodeValue = restoreMath(node.nodeValue, store);
+      continue;
+    }
+    // split 的捕获组：奇数位是公式序号
+    node.replaceWith(...node.nodeValue.split(MATH_TOKEN_RE).map((part, i) => {
+      if (i % 2 === 0) return part;
+      const html = rendered[Number(part)];
+      return html === undefined ? MATH_TOKEN + part + '@@' : htmlNodes(html);
+    }));
+  }
+}
+
 /** 代码块高亮：markdown-it 的 highlight 钩子要返回**完整**的 <pre><code>，
  *  否则它自己再包一层。语言未知时返回空串 → markdown-it 走默认转义（安全）。 */
 function highlightCode(code, lang) {
@@ -293,6 +369,8 @@ function highlightCode(code, lang) {
   if (!hljs || !lang) return '';
   try {
     if (!hljs.getLanguage(lang)) return '';
+    // 没闭合的围栏挖不走，占位符会走到这里。hljs 可能把它拆进几个 span，insertMath 就认不出了
+    code = restoreMath(code, _mathStore);
     const html = hljs.highlight(code, { language: lang, ignoreIllegals: true }).value;
     return '<pre class="hljs"><code class="language-' + escapeAttr(lang) + '">' + html + '</code></pre>';
   } catch (e) {
@@ -319,16 +397,26 @@ export function renderMarkdown(text, opts = {}) {
   // 混进正文只会看起来像一堆乱码（`key: value` 紧跟 `---` 还会被当成 setext 标题）
   const mathStore = [];
   const prepared = extractMath(splitFrontMatter(text || '').body, mathStore);
-  let html = instance.render(prepared);
-  if (window.DOMPurify) {
-    html = window.DOMPurify.sanitize(html, {
-      ALLOWED_TAGS, ALLOWED_ATTR, ALLOW_DATA_ATTR: false,
-      FORBID_TAGS: ['script', 'style', 'iframe', 'object', 'embed', 'link', 'meta', 'form', 'input'],
-    });
+  const box = document.createElement('template');
+  _mathStore = mathStore;
+  try {
+    const html = instance.render(prepared);
+    if (window.DOMPurify) {
+      // 要 DOM 不要字符串：公式直接插进消毒后的这棵树。把消毒结果再解析、再序列化一轮的话，
+      // 调用方拿到的就不是 DOMPurify 保证过的那种"序列化一次、解析一次"了
+      box.content.append(window.DOMPurify.sanitize(html, {
+        ALLOWED_TAGS, ALLOWED_ATTR, ALLOW_DATA_ATTR: false,
+        FORBID_TAGS: ['script', 'style', 'iframe', 'object', 'embed', 'link', 'meta', 'form', 'input'],
+        RETURN_DOM_FRAGMENT: true,
+      }));
+    } else {
+      box.innerHTML = html;
+    }
+  } finally {
+    _mathStore = null;
   }
-  const rendered = renderMath(mathStore);
-  html = html.replace(new RegExp(MATH_TOKEN + '(\\d+)@@', 'g'), (m, i) => rendered[Number(i)] || '');
-  return html;
+  insertMath(box.content, mathStore);
+  return box.innerHTML;
 }
 
 /** 相对附件路径 → 后端可读的绝对路径（后端还有一层目录白名单） */

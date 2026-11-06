@@ -469,7 +469,7 @@ def test_math_commands_and_user_html_stay_blocked(tmp_path, monkeypatch):
         '<svg onload="window.pwned=5"><path d="M0 0"></path></svg>',
         '<script>window.pwned=6</script>',
         '<img src="data:," onerror="window.pwned=7">',
-        # 占位符落在属性值里：公式是消毒之后才拼回去的，不能借这一步逃出属性
+        # `$` 落在属性值里：不能借公式逃出属性（占位符的落点见下一组）
         '<span title="$x$ onmouseover=window.pwned=8 $y$">属性里的公式</span>',
         '<span title="$\\frac{ onmouseover=window.pwned=9 $">属性里的语法错误</span>',
     ]) + '\n'
@@ -520,6 +520,258 @@ def test_math_commands_and_user_html_stay_blocked(tmp_path, monkeypatch):
     assert r['events'] == 0 and r['script'] == 0
     assert r['formulaImg'] == 0, '公式里的 \\includegraphics 或 HTML 变成了真图片'
     assert r['svg'] == 0, '用户写的 <svg> 不能进预览：放行 SVG 的只有 KaTeX 那条路'
+
+
+# ---------------- e2e：`$` 落在正文以外的地方 ----------------
+#
+# 公式在 Markdown 解析之前就换成占位符，解析完才知道它落在哪：落在正文里才是公式，
+# 属性和代码里的 `$` 是文字。这一组钉住"落点"，消毒规则本身见上一组。
+
+@pytest.mark.e2e
+def test_math_in_attributes_stays_source_text(tmp_path, monkeypatch):
+    """属性和链接里的 `$…$` 是文字。
+
+    占位符曾在消毒之后按字符串替换：KaTeX 的 HTML 拼进属性值，DOM 乱掉，
+    多出名为 `katex"` 的属性，页面上露出 `">`。
+    """
+    ns = load_app_partial(monkeypatch, tmp_path)
+    import backend
+    backend.api.notes_create()
+    cases = [   # (源码, 选择器, 属性, 期望值)
+        ('<span class="md-a" title="$x$">内嵌 HTML</span>', '.md-a', 'title', '$x$'),
+        ('<span class="md-b" title="$$y$$">块级定界符</span>', '.md-b', 'title', '$$y$$'),
+        ('<span class="md-c" title="\\(x\\)">别的定界符</span>', '.md-c', 'title', '\\(x\\)'),
+        ('<span class="md-d" title="$a &amp; b$">实体</span>', '.md-d', 'title', '$a & b$'),
+        ('<span class="md-e" title="单价 $5">配不成对</span>，原价 $6', '.md-e', 'title', '单价 $5'),
+        ('<div class="md-f" title="$x$" bad$>markdown-it 不认的标签</div>', '.md-f', 'title', '$x$'),
+        ('<a href="https://a.b/$x$">内嵌链接</a>', 'a[href*="a.b"]', 'href', 'https://a.b/$x$'),
+        ('[链接](https://c.d/$x$)', 'a[href*="c.d"]', 'href', 'https://c.d/$x$'),
+        ('[块级](https://e.f/$$x$$)', 'a[href*="e.f"]', 'href', 'https://e.f/$$x$$'),
+        ('[单价](https://g.h/?p=$1)，原价 $6', 'a[href*="g.h"]', 'href', 'https://g.h/?p=$1'),
+        ('[标题](https://i.j "提示 $y$")', 'a[href*="i.j"]', 'title', '提示 $y$'),
+        ('<https://k.l/$x$>', 'a[href*="k.l"]', 'href', 'https://k.l/$x$'),
+        ('[引用][r]\n\n[r]: https://m.n/$x$', 'a[href*="m.n"]', 'href', 'https://m.n/$x$'),
+        ('![图 $x$](https://o.p/$y$.png)', 'img', 'alt', '图 $x$'),
+        ('![图](https://q.r/$y$.png)', 'img[src*="q.r"]', 'src', 'https://q.r/$y$.png'),
+        ('![图 $a<b>c$](https://u.v/p.png)', 'img[src*="u.v"]', 'alt', '图 $a<b>c$'),
+        ('[[$x$]]', 'a[data-wikilink]', 'data-wikilink', '$x$'),
+        ('## 小节 $x$', 'h2', 'id', 'md-h-小节-x'),       # 锚点要和 [[标题#小节 $x$]] 算出来的一样
+    ]
+    source = '\n\n'.join([c[0] for c in cases] + [
+        '<span class="md-ok">$c^2$</span>',               # 对照：正文里的公式照常渲染
+        '[$k$](https://s.t/)',                            # 链接文字是正文，地址才是属性
+    ]) + '\n'
+
+    def actions(window, result):
+        _wait_editor_ready(window)
+        _set_source(window, source)
+        wait_for_js(window, "!!document.querySelector('#md-preview .md-ok .katex')")
+        result.update(json.loads(window.evaluate_js(
+            "(function (cases) {"
+            "  var p = document.getElementById('md-preview'), names = {};"
+            "  p.querySelectorAll('*').forEach(function (el) {"
+            "    el.getAttributeNames().forEach(function (n) { names[n] = 1; });"
+            "  });"
+            "  return JSON.stringify({"
+            "    values: cases.map(function (c) {"
+            "      var el = p.querySelector(c[0]);"
+            "      return el ? el.getAttribute(c[1]) : 'MISSING';"
+            "    }),"
+            "    names: Object.keys(names), html: p.innerHTML, text: p.textContent,"
+            "    linked: p.querySelectorAll('a[href*=\"s.t\"] .katex').length,"
+            "    autolink: p.querySelector('a[href*=\"k.l\"]').textContent"
+            "  });"
+            "})(%s)" % json.dumps([[c[1], c[2]] for c in cases]))))
+
+    r = _run(ns, actions, wait_before=0)
+    assert 'error' not in r, r.get('error')
+    for (src, _selector, attr, want), got in zip(cases, r['values'], strict=True):
+        assert got == want, '%s 的 %s 应是 %r，实际 %r' % (src, attr, want, got)
+    assert not [n for n in r['names'] if '"' in n], 'KaTeX 的 HTML 拼进了属性：%r' % r['names']
+    assert '">' not in r['text'], '属性的结尾露到了页面上：%r' % r['text']
+    assert 'mdmath' not in r['html'].lower(), '占位符漏进了预览：%r' % r['html']
+    assert r['linked'] == 1, '链接文字里的公式应当照常渲染'
+    assert r['autolink'] == 'https://k.l/$x$', '自动链接的文字就是地址本身，不是公式'
+
+
+@pytest.mark.e2e
+def test_math_in_code_stays_source_text(tmp_path, monkeypatch):
+    """代码里的 `$` 是字面量。shell 脚本和 `$HOME`、`$PATH` 这样的说明文字都要逐字保留。"""
+    ns = load_app_partial(monkeypatch, tmp_path)
+    import backend
+    backend.api.notes_create()
+    source = '\n\n'.join([
+        '行内 `$x$`，块级 `$$y$$`，双反引号 ``$$z$$``，两段配对的 `$HOME` 和 `$PATH`',
+        '多行的行内代码 `$a$\n和 $b$` 也是代码',
+        '```\n围栏 $a$ 和 $$b$$\n\n空行之后 $c$\n```',
+        '````\n四个反引号 $a$\n```\n$b$ 不是结束\n```\n````',
+        '```\n```后面有字 $$a$$ 也不是结束\n```',
+        '```java\n@Test $a$ 和 $$b$$\n```',            # hljs 按 `@` 切 token，占位符进去就被拆开了
+        '```sh\necho $HOME $PATH\n```',
+        '~~~\n波浪线围栏 $a$\n~~~',
+        '> ```\n> 引用里的围栏 $a$\n>\n> $$b$$\n> ```',
+        '    缩进代码 $a$ 和 $b$',                       # 放在列表前面：列表后面的缩进是列表内容
+        '- ```\n  列表里的围栏 $a$\n  ```',
+        '<code>内嵌 code $x$</code>',
+        '<pre>内嵌 pre $y$</pre>',
+        '<math><mi>$x$</mi></math>',                    # MathML 里放不了 KaTeX 的 HTML
+        '```sh\necho $$\n```',
+        '两段代码中间的公式 $c^2$',                     # 上下两个 `$$` 不能跨过它配成一对
+        '```sh\nkill $$\n```',
+        '```java\n@Test 没闭合的围栏 $a$ 和 $b$',        # 正在输入时的样子
+    ])
+    want = [
+        '$x$', '$$y$$', '$$z$$', '$HOME', '$PATH',
+        '$a$ 和 $b$',
+        '围栏 $a$ 和 $$b$$\n\n空行之后 $c$',
+        '四个反引号 $a$\n```\n$b$ 不是结束\n```',
+        '```后面有字 $$a$$ 也不是结束',
+        '@Test $a$ 和 $$b$$',
+        'echo $HOME $PATH',
+        '波浪线围栏 $a$',
+        '引用里的围栏 $a$\n\n$$b$$',
+        '缩进代码 $a$ 和 $b$',
+        '列表里的围栏 $a$',
+        '内嵌 code $x$',
+        '内嵌 pre $y$',
+        'echo $$',
+        'kill $$',
+        '@Test 没闭合的围栏 $a$ 和 $b$',
+    ]
+
+    def actions(window, result):
+        _wait_editor_ready(window)
+        _set_source(window, source)
+        wait_for_js(window, "!!document.querySelector('#md-preview .katex')")
+        result.update(json.loads(window.evaluate_js(
+            "(function () {"
+            "  var p = document.getElementById('md-preview');"
+            "  var code = p.querySelectorAll('pre, :not(pre) > code');"
+            "  return JSON.stringify({"
+            "    code: Array.prototype.map.call(code, function (el) { return el.textContent; }),"
+            "    inCode: p.querySelectorAll('pre .katex, code .katex').length,"
+            "    mathml: p.querySelector('math mi').textContent,"
+            "    formulas: p.querySelectorAll('.katex').length"
+            "  });"
+            "})()")))
+
+    r = _run(ns, actions, wait_before=0)
+    assert 'error' not in r, r.get('error')
+    assert [t.rstrip('\n') for t in r['code']] == want
+    assert r['inCode'] == 0, '代码里出现了公式'
+    assert r['mathml'] == '$x$', '用户写的 MathML 里出现了占位符或公式'
+    assert r['formulas'] == 1, '代码之外的公式应当照常渲染，且只有这一个'
+
+
+@pytest.mark.e2e
+def test_math_source_cannot_smuggle_values_past_sanitizer(tmp_path, monkeypatch):
+    """属性里的占位符必须在消毒**之前**换回原文：过滤器要检查最终的值。
+
+    公式原文能带分号和空格。消毒之后才换的话，过滤器看到的只是一个占位符，
+    style 白名单、class 前缀和 DOMPurify 自己的属性检查都被绕开。
+
+    这些标签都带一个 markdown-it 不认的属性名（`bad$`）：认得的标签在抽公式时就跳过了，
+    不认的才会让占位符真的进到属性里（HTML 块原样放行，浏览器解析时又是容错的）。
+    """
+    ns = load_app_partial(monkeypatch, tmp_path)
+    import backend
+    backend.api.notes_create()
+    source = '\n\n'.join([
+        '<div class="md-a" style="color: $red; position: fixed; top: 0; x: $" bad$>绕 style</div>',
+        '<div title="绕 class" class="md-$ panel-overlay $" bad$>绕 class</div>',
+        '<div class="md-b" title="$--><img src=x onerror=window.pwned=1>$" bad$>绕属性检查</div>',
+        '<div><a class="md-c" href="java$x$script:window.pwned=2" bad$>绕协议</a></div>',
+        '<div><a class="md-d" href="$x$" bad$>占位符当协议</a></div>',
+        '<span class="md-ok">$c^2$</span>',
+    ]) + '\n'
+
+    def actions(window, result):
+        _wait_editor_ready(window)
+        _set_source(window, source)
+        wait_for_js(window, "!!document.querySelector('#md-preview .md-ok .katex')")
+        result.update(json.loads(window.evaluate_js(
+            "(function () {"
+            "  var p = document.getElementById('md-preview');"
+            "  function attr(selector, name) {"
+            "    var el = p.querySelector(selector);"
+            "    return el ? el.getAttribute(name) : 'MISSING';"
+            "  }"
+            "  return JSON.stringify({"
+            "    style: attr('.md-a', 'style'),"
+            "    position: (function (el) { return el ? getComputedStyle(el).position : 'MISSING'; })"
+            "      (p.querySelector('.md-a')),"
+            "    className: attr('[title=\"绕 class\"]', 'class'),"
+            "    borrowed: p.querySelectorAll('.panel-overlay').length,"
+            "    title: attr('.md-b', 'title'),"
+            "    href: [attr('.md-c', 'href'), attr('.md-d', 'href')],"
+            "    img: p.querySelectorAll('img').length,"
+            "    pwned: window.pwned === undefined ? 'clean' : 'PWNED'"
+            "  });"
+            "})()")))
+
+    r = _run(ns, actions, wait_before=0)
+    assert 'error' not in r, r.get('error')
+    assert r['pwned'] == 'clean', '注入的脚本被执行了'
+    assert r['position'] == 'static', '公式原文带着 position 绕过了 style 白名单：%r' % r['style']
+    assert r['borrowed'] == 0, '公式原文带着空格绕过了 class 前缀：%r' % r['className']
+    assert r['title'] is None, '属性值含 `-->`，DOMPurify 看到真实的值就会删掉它'
+    assert r['href'] == [None, None], '消毒要拿真实的地址判断协议'
+    assert r['img'] == 0
+
+
+@pytest.mark.e2e
+def test_literal_regions_do_not_swallow_formulas(tmp_path, monkeypatch):
+    """反过来：认"字面量"认过了头，公式就不渲染了。这里都是长得像代码、标签、链接的公式，
+    以及公式靠抽占位符才保住的写法（表格里的 `|`、HTML 块里的公式、加粗和链接文字）。"""
+    ns = load_app_partial(monkeypatch, tmp_path)
+    import backend
+    backend.api.notes_create()
+    cases = [   # (源码, KaTeX 收到的公式)
+        ('$a<b$ 和 $c>d$', ['a<b', 'c>d']),                   # 中间那段像标签
+        ('$a<b>c$', ['a<b>c']),
+        ('$f[1](x)$', ['f[1](x)']),                           # 像链接地址
+        ('\\[E=mc^2\\](1)', ['E=mc^2']),                      # `\]` 不是链接的右括号
+        ('$\\text{``引号}$', ['\\text{``引号}']),              # 公式里的反引号
+        ('`代码` $e$ `代码`', ['e']),
+        ('\\`$v$\\`', ['v']),                                  # 转义的反引号不是行内代码
+        ('$a~~~b$', ['a~~~b']),                                # `~~~` 在公式里是空格，不是围栏
+        ('$w$', ['w']),
+        ('$c~~~d$', ['c~~~d']),
+        ('行中的 ``` 不是围栏', []),
+        ('$x$', ['x']),
+        ('行中的 ``` 也不是', []),
+        ('$g$ 和 `$h$` 和 $i$', ['g', 'i']),
+        ('\\(j\\) 和 `\\(k\\)`', ['j']),
+        ('| 表头 |\n|---|\n| $|l|$ |', ['|l|']),
+        ('<div>$m$</div>', ['m']),
+        ('<details><summary>$n$</summary>$o$</details>', ['n', 'o']),
+        ('<span style="color: red">$p$</span>', ['p']),
+        ('**$q$** 和 [$r$](https://a.b/)', ['q', 'r']),
+        ('$$\\int s$$', ['\\int s']),
+        ('<!-- 注释 -->$t$', ['t']),                           # 文字直接落在顶层，没有父元素
+    ]
+    # 序号不存在的占位符是用户自己写的字
+    source = '\n\n'.join(c[0] for c in cases) + '\n\n正文 @@MDMATH99@@，代码 ``@@MDMATH98@@``\n'
+    want = [tex for _src, group in cases for tex in group]
+
+    def actions(window, result):
+        _wait_editor_ready(window)
+        _set_source(window, source)
+        wait_for_js(window, "document.querySelectorAll('#md-preview .katex').length", len(want))
+        result.update(json.loads(window.evaluate_js(
+            "(function () {"
+            "  var p = document.getElementById('md-preview');"
+            "  return JSON.stringify({"
+            "    tex: Array.prototype.map.call(p.querySelectorAll('.katex-mathml annotation'),"
+            "      function (el) { return el.textContent; }),"
+            "    text: p.textContent"
+            "  });"
+            "})()")))
+
+    r = _run(ns, actions, wait_before=0)
+    assert 'error' not in r, r.get('error')
+    assert r['tex'] == want
+    assert '@@MDMATH99@@' in r['text'] and '@@MDMATH98@@' in r['text'], '用户自己写的字被删掉了'
 
 
 @pytest.mark.e2e
