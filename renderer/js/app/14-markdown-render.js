@@ -32,6 +32,10 @@ const NOT_MATH = new RegExp([
   /(?<!\\)\]\([^()\s]*\)/,
 ].map((re) => re.source).join('|'), 'gm');
 const MATH_HOLE_RE = /\u0000MDHOLE(\d+)\u0000/g;
+// 一行开头属于容器的那一段：引用的 `>`、列表符号、缩进（见 dropContainerPrefix）
+const CONTAINER_HEAD = /^(?:[ \t]*(?:>|(?:[*+-]|\d{1,9}[.)])(?=[ \t])))*[ \t]*/;
+// 分隔表格格子的竖线。转义的 `\|` 是格子里的字，markdown-it 也不拿它分格
+const CELL_PIPE = /(?<!\\)\|/;
 
 const ALLOWED_TAGS = [
   'p', 'br', 'hr', 'h1', 'h2', 'h3', 'h4', 'h5', 'h6',
@@ -269,6 +273,9 @@ function installSanitizer() {
  * 字面量（NOT_MATH）先挖走再做这两步，和 normalizeMathDelims 挖代码是同一个做法：
  * 只靠事后还原不够，`$HOME` 和 `$PATH` 这样的两段代码，中间的两个 `$` 会配成一个"公式"，
  * 把反引号也吞进去；行首的 `$$` 垫的空行也会把跨行的属性拦腰截断。
+ *
+ * 抽的时候还看不出容器结构：跨行公式的续行要自己去掉容器前缀（dropContainerPrefix），
+ * 垫不垫空行也只能看 `$$` 所在的这一行。
  */
 function extractMath(text, store) {
   const holes = [];
@@ -285,13 +292,51 @@ function extractMath(text, store) {
   // 只有从行首开始的 `$$` 才前后垫空行、自成一段：紧跟在表格或段落下一行时，不垫就成了表格的一行，
   // 或者并进那一段。别处只放占位符，空行会把所在的列表、引用、表格、缩进代码拦腰截断；
   // 公式留在原地也照样单独占一行，.katex-display 本身是块级的。
-  // 行首只认第 0 列：前面有空格的是列表项的续行或缩进代码，垫了空行，占位符就掉出容器了
-  out = out.replace(MATH_BLOCK, (m, tex, at, all) => {
-    const token = addMath(m, tex, true);
-    return at === 0 || all[at - 1] === '\n' ? '\n\n' + token + '\n\n' : token;
+  // 行首只认第 0 列：前面有空格的是列表项的续行或缩进代码，垫了空行，占位符就掉出容器了。
+  // 同一行后面还有分格的竖线也不垫：那是没写前导竖线的表格行（`$$o$$ | 格子`），垫了表格就断了。
+  // 行内公式里的竖线不算，解析之前它们就换成占位符了
+  out = out.replace(MATH_BLOCK, (m, _tex, at, all) => {
+    const lineStart = all.lastIndexOf('\n', at - 1) + 1;
+    const block = dropContainerPrefix(m, all.slice(lineStart, at));
+    const token = addMath(block, block.slice(2, -2), true);
+    if (lineStart < at) return token;
+    const lineEnd = all.indexOf('\n', at + m.length);
+    const rest = all.slice(at + m.length, lineEnd < 0 ? all.length : lineEnd);
+    return CELL_PIPE.test(rest.replace(MATH_INLINE, '')) ? token : '\n\n' + token + '\n\n';
   });
   out = out.replace(MATH_INLINE, (m, tex) => (tex.trim() ? addMath(m, tex, false) : m));
   return refill(out);
+}
+
+// 制表符跳到下一个 4 的整数倍列，和 markdown-it 算缩进的办法一样
+const nextColumn = (col, ch) => (ch === '\t' ? col + 4 - (col % 4) : col + 1);
+
+/**
+ * 跨行公式的续行去掉所在容器的前缀。
+ *
+ * markdown-it 解析时会去掉每一行开头引用的 `>`、列表项和缩进代码的缩进，可公式在那之前就抽走了：
+ * `>` 留着会进 tex（`> $$\n> k\n> $$` 排出来是"> k >"），缩进留着，代码里还原出的原文就多出空格。
+ *
+ * 按开头那一行算：`$$` 前面属于容器的那一段里有几个 `>`、占几列，每个续行最多去掉这么多。
+ * 开头那一行没有容器前缀（`$$` 在第 0 列，或者前面只有正文）时一个字都不动：续行里的 `>` 是公式自己的。
+ */
+function dropContainerPrefix(block, head) {
+  const prefix = CONTAINER_HEAD.exec(head)[0];
+  const width = Array.from(prefix).reduce(nextColumn, 0);
+  if (!width) return block;
+  const quotes = prefix.split('>').length - 1;
+  return block.replace(/\n[ \t>]*/g, (lead) => {
+    let col = 0;
+    let left = quotes;
+    let i = 1;
+    for (; i < lead.length; i++) {
+      const next = nextColumn(col, lead[i]);
+      if (next > width || (lead[i] === '>' && !left)) break;
+      if (lead[i] === '>') left -= 1;
+      col = next;
+    }
+    return '\n' + lead.slice(i);
+  });
 }
 
 /** 占位符 → 用户写的原文。序号不存在说明是用户自己打的字，原样留着 */

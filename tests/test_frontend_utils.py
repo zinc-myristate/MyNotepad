@@ -180,3 +180,43 @@ check('null_safe', N(null) === '');
 """)
     bad = [k for k, v in out.items() if not v]
     assert not bad, '这些断言没过：%r' % (bad,)
+
+
+def test_multiline_block_keeps_indent_like_backend(backend_mod):
+    r"""跨行的 `\[` / `\]` 折成单行时留着 `\[` 那一行的缩进，前后端折出同样的文字。
+
+    缩进属于所在的列表项：吃掉的话 `$$` 落到第 0 列，预览给它垫空行，列表从这里断开。
+    这里拿两边的函数跑同一批输入直接比，不靠各自写死的期望值。
+    """
+    text = backend_mod.text
+    cases = [
+        '\\[\nE=mc^2\n\\]',
+        '- 列表\n  \\[\n  k\n  \\]\n- 下一项',
+        '1. 第一项\n   \\[\n   a\n   b\n   \\]',
+        '- 第一段\n\n  \\[\n  k\n  \\]',
+        '\t\\[\n\tk\n\t\\]',
+        '前 \\(x\\) 与 \\[y\\]',
+    ]
+    want = ['\n'.join(text.normalize_line_math(ln)
+                      for ln in text.collapse_multiline_blocks(c).split('\n'))
+            for c in cases]
+    assert want[1] == '- 列表\n  $$k$$\n- 下一项', want[1]
+    out = _run_js('const cases = %s;\ncases.forEach((c, i) => { out[i] = normalizeMathDelims(c); });'
+                  % json.dumps(cases))
+    assert [out[str(i)] for i in range(len(cases))] == want
+
+
+def test_multiline_bracket_keeps_its_lines():
+    r"""定界符不各占一行的跨行 `\[…\]` 不 trim，原来的行留着。
+
+    引用里写成 `> \[`、`> k`、`> \]` 三行时，trim 会把第二行开头的 `>` 提到 `$$` 后面，
+    预览就分不出它是引用符号了。同一行的照旧 trim，这部分和后端的逐行规则一致。
+    """
+    out = _run_js(r"""
+const N = normalizeMathDelims;
+check('quote_keeps_lines', N('> \\[\n> k\n> \\]') === '> $$\n> k\n> $$');
+check('marker_line', N('- \\[\n  k\n  \\]') === '- $$\n  k\n  $$');
+check('same_line_trimmed', N('\\[  x  \\]') === '$$x$$');
+""")
+    bad = [k for k, v in out.items() if not v]
+    assert not bad, '这些断言没过：%r' % (bad,)

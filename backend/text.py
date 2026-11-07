@@ -121,6 +121,10 @@ def collapse_multiline_blocks(md_text):
     行数因此会减少（每个跨行块少一行），这是预期行为 —— 迁移脚本的守恒校验要按
     "减少了几个块"来核对，不能要求行数不变。
 
+    `\[` 那一行的缩进（空格和制表符）留在 `$$` 前面：它属于所在的列表项，前端预览吃掉它的话
+    `$$` 落到第 0 列，会被当成独立的一段，把列表拆开。这边判断块级公式前会先 `strip()`，
+    留着缩进不影响转换结果；留着是为了和前端 `normalizeMathDelims` 折出同样的文字。
+
     ⚠️ 必须在**跳过代码块**的前提下调用（调用方保证），否则代码里的 `\[` 会被动到。
     """
     lines = (md_text or '').split('\n')
@@ -136,7 +140,8 @@ def collapse_multiline_blocks(md_text):
                 j += 1
             if j < len(lines):
                 # 有配对：折成一行
-                out.append('$$%s$$' % ' '.join(p for p in body if p))
+                indent = re.match(r'[ \t]*', lines[i]).group(0)
+                out.append('%s$$%s$$' % (indent, ' '.join(p for p in body if p)))
                 i = j + 1
                 continue
         out.append(lines[i])

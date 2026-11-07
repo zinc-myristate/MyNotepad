@@ -192,12 +192,15 @@ export function normalizeMathDelims(text) {
   out = out.replace(/`[^`\n]*`/g, stash);
   // ① 跨行块：`\[` / `\]` 各自独占一行 —— 行级规则处理不了，先折成单行 `$$…$$`。
   //    行间内容用**空格**连接（不是 \n）：既保持单行，又不会把两段数学粘成一个命令。
-  //    与后端 `collapse_multiline_blocks()` 同规则。
-  out = out.replace(/^[ \t]*\\\[[ \t]*\r?\n([\s\S]*?)\r?\n[ \t]*\\\][ \t]*$/gm,
-    (_m, body) => '$$' + body.split(/\r?\n/).map((s) => s.trim())
+  //    `\[` 那一行的缩进留着：它属于所在的列表项，吃掉的话 `$$` 落到第 0 列，
+  //    预览会给它垫空行，列表从这里断开。与后端 `collapse_multiline_blocks()` 同规则。
+  out = out.replace(/^([ \t]*)\\\[[ \t]*\r?\n([\s\S]*?)\r?\n[ \t]*\\\][ \t]*$/gm,
+    (_m, indent, body) => indent + '$$' + body.split(/\r?\n/).map((s) => s.trim())
       .filter(Boolean).join(' ') + '$$');
-  // ② 行内 / 同行块
-  out = out.replace(MATH_BRACKET_BLOCK, (_m, tex) => '$$' + tex.trim() + '$$');
+  // ② 行内 / 同行块。跨行的不 trim，保留原来的行：trim 会把下一行开头引用的 `>` 提到 `$$` 后面，
+  //    预览就分不出哪些是引用符号了（见 extractMath）。后端是逐行的，碰不到跨行的情形
+  out = out.replace(MATH_BRACKET_BLOCK,
+    (_m, tex) => '$$' + (tex.includes('\n') ? tex : tex.trim()) + '$$');
   out = out.replace(MATH_PAREN_INLINE, (_m, tex) => '$' + tex.trim() + '$');
   return out.replace(/\u0000MDCODE(\d+)\u0000/g, (_m, i) => holes[Number(i)]);
 }
