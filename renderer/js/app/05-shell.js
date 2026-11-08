@@ -228,7 +228,7 @@ async function openTagManager() {
     });
     item.querySelector('[data-rename-tag]').addEventListener('click', async () => {
       const name = await showInputDialog({
-        title: '重命名标签', value: tag.name,
+        title: '重命名标签', defaultValue: tag.name,
         placeholder: '用 / 分层，例如 项目/子项目',
       });
       if (name == null) return;

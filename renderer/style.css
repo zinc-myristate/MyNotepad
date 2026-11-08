@@ -3168,6 +3168,12 @@ body.adaptive-bg {
 }
 .notebook-drop-item:hover { background: var(--accent-light); }
 .notebook-drop-item.active { background: var(--accent-soft); font-weight: 700; color: var(--accent-dark); }
+/* 行内改名按钮：和旁边的删除 × 一样低调，悬停或键盘聚焦时才显出主题色 */
+.notebook-rename-btn {
+  display: inline-flex; align-items: center; margin-left: 4px; padding: 0 4px;
+  border: none; background: none; color: var(--text-muted); cursor: pointer;
+}
+.notebook-rename-btn:hover, .notebook-rename-btn:focus-visible { color: var(--accent-text); }
 .notebook-drop-new {
   padding: 10px 14px; cursor: pointer; font-size: var(--font-size-xs);
   color: var(--accent-text); font-weight: 600; text-align: center;

@@ -71,7 +71,7 @@ async function menu(item) {
     okText: '重命名', cancelText: '删除',
   });
   if (rename) {
-    const name = await showInputDialog({ title: '重命名视图', value: item.name, placeholder: '视图名称' });
+    const name = await showInputDialog({ title: '重命名视图', defaultValue: item.name, placeholder: '视图名称' });
     if (name == null) return;
     const r = await window.pywebview.api.saved_search_update(item.id, { name: name.trim() });
     if (!r || !r.ok) showToast('重命名失败', { type: 'error' });
@@ -106,7 +106,7 @@ export function initSavedSearches() {
       showToast('先在搜索框里输入查询，再保存为视图', { type: 'warn' });
       return;
     }
-    const name = await showInputDialog({ title: '保存为视图', value: q, placeholder: '视图名称' });
+    const name = await showInputDialog({ title: '保存为视图', defaultValue: q, placeholder: '视图名称' });
     if (name == null) return;
     const r = await window.pywebview.api.saved_search_create(name, q);
     if (r && r.ok) showToast('已保存视图「' + r.name + '」', { type: 'success' });

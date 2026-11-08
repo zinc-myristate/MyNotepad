@@ -2681,13 +2681,32 @@ class Api:
         return dict(conn.execute("SELECT * FROM notebooks WHERE id = ?", (nid,)).fetchone())
 
     def notebooks_update(self, nid, fields):
+        """改笔记本的名称 / 排序 / 颜色等。返回 {'ok': True, 'notebook': 行} 或 {'ok': False, 'error': 原因}。
+
+        名称与标签改名（tags_rename）同一套规矩：去掉首尾空白、不能为空、不能与别的笔记本重名。
+        重名会让 `notebook:名字` 搜索、快速捕获按名字找笔记本（_find_or_create_notebook）认错本子。
+        存量库里可能已经有重名的（新建时不查重），所以名字没变时不查重，否则那一本连别的字段都改不了。
+        """
         allowed = {'name', 'sort_order', 'color', 'cover_type', 'default_paper'}
-        updates = {k: v for k, v in fields.items() if k in allowed}
-        if not updates: return None
+        updates = {k: v for k, v in (fields or {}).items() if k in allowed}
+        if not updates:
+            return {'ok': False, 'error': '没有可更新的字段'}
+        row = conn.execute("SELECT name FROM notebooks WHERE id = ?", (nid,)).fetchone()
+        if not row:
+            return {'ok': False, 'error': '笔记本不存在'}
+        if 'name' in updates:
+            name = updates['name'].strip() if isinstance(updates['name'], str) else ''
+            if not name:
+                return {'ok': False, 'error': '笔记本名称不能为空'}
+            if name != row['name'] and conn.execute(
+                    "SELECT 1 FROM notebooks WHERE name = ? AND id != ?", (name, nid)).fetchone():
+                return {'ok': False, 'error': '已有同名的笔记本'}
+            updates['name'] = name
         sets = ", ".join(f"{k} = ?" for k in updates)
         conn.execute(f"UPDATE notebooks SET {sets} WHERE id = ?", list(updates.values()) + [nid])
         conn.commit()
-        return dict(conn.execute("SELECT * FROM notebooks WHERE id = ?", (nid,)).fetchone())
+        return {'ok': True,
+                'notebook': dict(conn.execute("SELECT * FROM notebooks WHERE id = ?", (nid,)).fetchone())}
 
     def notebooks_delete(self, nid):
         # 将该笔记本下的笔记移到未分类
@@ -2865,15 +2884,16 @@ class Api:
         row = conn.execute("SELECT id, enc_dek, password_hash FROM notes WHERE id = ?", (note_id,)).fetchone()
         if not row:
             return False
-        # 防御：**已有密码但未解锁**时禁止直接覆盖密码。
+        # 已经有密码的笔记一律拒绝：改密码只走 note_change_password（要验旧密码）。
+        # 以前"已解锁"时放行，界面的「修改密码」就是走的这条路 —— 笔记开着的时候，
+        # 不知道旧密码也能把密码换掉。
         # 判据必须看 password_hash 而不只是 enc_dek：存量「明文密码」笔记（旧版本设过密码、
         # 还没走过懒迁移）正好是 password_hash 非空而 enc_dek 为 NULL —— 只查 enc_dek 的话
         # 守卫整个被跳过，任何调用方都能用**自选的新密码**调本函数，随后该笔记就被算作"已解锁"，
-        # 原本被隐藏的正文直接被读出来（实测复现）。改密码请走 note_change_password（要验旧密码）。
-        if row['password_hash'] and note_id not in crypto.unlocked_deks:
+        # 原本被隐藏的正文直接被读出来（实测复现）。
+        if row['password_hash']:
             return False
-        # 复用已解锁的 DEK（旧格式升级等路径），否则生成新 DEK
-        dek = crypto.unlocked_deks.get(note_id) or os.urandom(32)
+        dek = os.urandom(32)
         conn.execute("UPDATE notes SET password_hash = ?, enc_dek = ? WHERE id = ?",
                      (self._hash_password(password), _wrap_dek(dek, password), note_id))
         self._encrypt_all_note_content(note_id, dek)  # 内部 commit

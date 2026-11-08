@@ -1065,6 +1065,8 @@
       <button class="btn-close-panel" data-panel="password-panel"><svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round"><line x1="18" y1="6" x2="6" y2="18"/><line x1="6" y1="6" x2="18" y2="18"/></svg></button>
     </div>
     <div class="panel-body">
+      <!-- 已有密码时才显示：修改与移除都要先验当前密码（openPasswordPanel 切换） -->
+      <input id="password-current" class="search-input" type="password" placeholder="当前密码" style="width:100%;margin-bottom:8px;display:none;">
       <input id="password-input1" class="search-input" type="password" placeholder="输入密码" style="width:100%;margin-bottom:8px;">
       <input id="password-input2" class="search-input" type="password" placeholder="确认密码" style="width:100%;margin-bottom:8px;">
       <p style="font-size:12px;color:var(--danger);margin-bottom:14px;"><svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" style="vertical-align:-2px;"><path d="M10.29 3.86L1.82 18a2 2 0 001.71 3h16.94a2 2 0 001.71-3L13.71 3.86a2 2 0 00-3.42 0z"/><line x1="12" y1="9" x2="12" y2="13"/><line x1="12" y1="17" x2="12.01" y2="17"/></svg> 笔记内容将使用此密码加密存储，忘记密码将无法恢复内容，请妥善保管。</p>

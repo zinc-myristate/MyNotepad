@@ -152,6 +152,56 @@ class TestNotebookCounts:
         assert counts['total'] == len(api.notes_list())
 
 
+# ----- 改名（notebooks_update）：与标签改名同一套规矩 -----
+
+class TestNotebookRename:
+    def test_rename_trims_and_keeps_the_notes(self, api):
+        nb = api.notebooks_create('原神')['id']
+        _mk(api, 'A', nb)
+        r = api.notebooks_update(nb, {'name': '  星穹铁道 '})
+        assert r['ok'] and r['notebook']['name'] == '星穹铁道'
+        assert [n['name'] for n in api.notebooks_list()] == ['星穹铁道']
+        assert [n['title'] for n in api.notes_list(nb)] == ['A'], '改名不能动笔记的归属'
+
+    def test_empty_name_is_refused(self, api):
+        nb = api.notebooks_create('原神')['id']
+        for bad in ('', '   ', None, 42):
+            r = api.notebooks_update(nb, {'name': bad})
+            assert r['ok'] is False and r['error'], bad
+        assert api.notebooks_list()[0]['name'] == '原神'
+
+    def test_duplicate_name_is_refused(self, api):
+        """重名会让 `notebook:名字` 搜索和快速捕获（按名字找收件箱）认错本子"""
+        a = api.notebooks_create('原神')['id']
+        api.notebooks_create('日记')
+        r = api.notebooks_update(a, {'name': ' 日记'})
+        assert r == {'ok': False, 'error': '已有同名的笔记本'}
+        assert sorted(n['name'] for n in api.notebooks_list()) == ['原神', '日记']
+
+    def test_existing_duplicates_can_still_be_edited(self, api):
+        """新建时不查重，存量库里可能已有重名的：名字没变就不查重，否则那一本连颜色都改不了"""
+        a = api.notebooks_create('原神')['id']
+        api.notebooks_create('原神')
+        r = api.notebooks_update(a, {'name': '原神', 'color': '#5E7DA8'})
+        assert r['ok'] and r['notebook']['color'] == '#5E7DA8'
+        assert api.notebooks_update(a, {'name': '原神·旧'})['ok']
+
+    def test_unknown_notebook_and_no_fields(self, api):
+        nb = api.notebooks_create('原神')['id']
+        assert api.notebooks_update('no-such-id', {'name': 'x'}) == {'ok': False, 'error': '笔记本不存在'}
+        assert api.notebooks_update(nb, {'id': 'evil', 'created_at': 'x'})['ok'] is False
+        assert api.notebooks_update(nb, None)['ok'] is False
+        assert [n['id'] for n in api.notebooks_list()] == [nb]
+
+    def test_capture_after_renaming_inbox_creates_a_new_one(self, api):
+        """快速捕获按名字找「收件箱」：改名后再捕获会另建一本（界面改名时会提示这一点）"""
+        inbox = api.notebook_id_by_name('收件箱')
+        assert api.notebooks_update(inbox, {'name': '待整理'})['ok']
+        api.capture_text('改名后捕获的第一条')
+        names = sorted(n['name'] for n in api.notebooks_list())
+        assert names == ['待整理', '收件箱']
+
+
 # ----- 其它创建入口的归属 -----
 
 class TestOtherCreateEntrances:

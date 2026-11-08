@@ -282,8 +282,8 @@ function _resolveInput(v) {
   if (r) r(v);
 }
 
-/** 通用确认：resolve(true)=确认 / resolve(false)=取消。danger 控制按钮危险样式 */
-export function showConfirmAsync({ title = '确认', message = '', okText = '确定', danger = false } = {}) {
+/** 通用确认：resolve(true)=确认 / resolve(false)=取消（含 ×、Esc、点遮罩）。danger 控制按钮危险样式 */
+export function showConfirmAsync({ title = '确认', message = '', okText = '确定', cancelText = '取消', danger = false } = {}) {
   return new Promise((resolve) => {
     closeAllPanels();
     if (_confirmResolver) _confirmResolver(false);
@@ -292,6 +292,7 @@ export function showConfirmAsync({ title = '确认', message = '', okText = '确
     const ok = $('#btn-confirm-ok');
     const cancel = $('#btn-confirm-cancel');
     ok.textContent = okText;
+    cancel.textContent = cancelText;   // 对话框是共用的：每次都写，上一次的说法才不会留下来
     ok.classList.toggle('btn-danger', danger);
     ok.classList.toggle('btn-solid-secondary', !danger);
     cancel.style.display = '';

@@ -125,7 +125,7 @@ export function buildNoteItem(note) {
           <span class="note-item-time" title="${escapeHtml(note.updated_at || '')}">${escapeHtml((note.updated_at || '').substring(5, 10).replace('-', '/'))}</span>
         </div>
       </div>
-      <button class="note-item-password" title="设置密码" data-pwd-id="${note.id}">${svgKey}</button>
+      <button class="note-item-password" title="${note.has_password ? '修改密码' : '设置密码'}" data-pwd-id="${note.id}">${svgKey}</button>
       <button class="note-item-copy" title="复制这篇笔记" data-copy-id="${note.id}">${svgCopy}</button>
       <button class="note-item-pin" title="${note.is_pinned ? '取消置顶' : '置顶'}" data-pin-id="${note.id}">${svgPin}</button>
       <button class="note-item-fav" title="${note.is_favorite ? '取消收藏' : '收藏'}" data-fav-id="${note.id}">${note.is_favorite ? svgStar : svgStarOutline}</button>

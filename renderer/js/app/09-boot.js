@@ -142,7 +142,15 @@ export async function loadNotebookBar() {
     item.tabIndex = 0;
     item.setAttribute('role', 'button');
     const nbCount = (_counts.by_id && _counts.by_id[nb.id]) || 0;
-    item.innerHTML = `<span class="notebook-dot" style="background:${nb.color||'#7D8A6E'}"></span>${escapeHtml(nb.name)}<span style="margin-left:auto;font-size:10px;color:var(--text-muted);">${nbCount}篇</span><button class="notebook-delete-btn" title="删除笔记本" style="margin-left:4px;color:var(--text-muted);background:none;border:none;cursor:pointer;font-size:14px;padding:0 4px;">×</button>`;
+    item.innerHTML = `<span class="notebook-dot" style="background:${nb.color||'#7D8A6E'}"></span>${escapeHtml(nb.name)}<span style="margin-left:auto;font-size:10px;color:var(--text-muted);">${nbCount}篇</span>` +
+      `<button class="notebook-rename-btn" title="重命名笔记本">${ICONS.edit}</button>` +
+      `<button class="notebook-delete-btn" title="删除笔记本" style="margin-left:4px;color:var(--text-muted);background:none;border:none;cursor:pointer;font-size:14px;padding:0 4px;">×</button>`;
+    // 改名：先收起下拉、焦点回到笔记本按钮，对话框关掉后焦点才有地方回
+    item.querySelector('.notebook-rename-btn').addEventListener('click', async (e) => {
+      e.stopPropagation();
+      closeNotebookDropdown(true);
+      await renameNotebook(nb);
+    });
     // 删除按钮事件（阻止冒泡）
     setTimeout(() => {
       const delBtn = item.querySelector('.notebook-delete-btn');
@@ -172,6 +180,30 @@ export async function loadNotebookBar() {
   dropdown.appendChild(allItem);
 }
 
+// 快速捕获和今日日记是按名字找这两本的（后端 _find_or_create_notebook），改了名下次会另建一本
+const NOTEBOOK_FOUND_BY_NAME = {
+  '收件箱': '快速捕获按名字找「收件箱」：改名后，下次捕获会另建一个「收件箱」。',
+  '日记': '今日日记按名字找「日记」：改名后，下次写日记会另建一个「日记」。',
+};
+
+/** 改笔记本名。规矩在后端（notebooks_update）：去首尾空白、不能为空、不能和别的笔记本重名 */
+async function renameNotebook(nb) {
+  const name = await showInputDialog({
+    title: '重命名笔记本',
+    message: NOTEBOOK_FOUND_BY_NAME[nb.name] || '',
+    defaultValue: nb.name,
+    okText: '重命名',
+  });
+  if (name === null || name.trim() === nb.name) return;
+  const r = await window.pywebview.api.notebooks_update(nb.id, { name });
+  if (!r || !r.ok) {
+    showToast('重命名失败：' + ((r && r.error) || '未知原因'), { type: 'warn' });
+    return;
+  }
+  await loadNotebookBar();
+  showToast('已重命名为「' + r.notebook.name + '」', { type: 'success' });
+}
+
 function closeNotebookDropdown(returnFocus = false) {
   $('#notebook-dropdown').style.display = 'none';
   $('#btn-notebook-select').setAttribute('aria-expanded', 'false');
@@ -196,6 +228,10 @@ $('#notebook-dropdown').addEventListener('keydown', e => {
     const items = [...$('#notebook-dropdown').children];
     const index = items.indexOf(e.target.closest('.notebook-drop-item'));
     items[(index + (e.key === 'ArrowDown' ? 1 : -1) + items.length) % items.length]?.focus();
+  } else if (e.key === 'F2') {
+    // F2 = 改名（与资源管理器一致）。「全部笔记」那一项没有改名按钮，不响应
+    const rename = e.target.closest('.notebook-drop-item')?.querySelector('.notebook-rename-btn');
+    if (rename) { e.preventDefault(); rename.click(); }
   }
 });
 $('#notebook-dropdown').addEventListener('focusout', e => {

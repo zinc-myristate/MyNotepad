@@ -40,6 +40,18 @@ class TestSetPassword:
         api.note_lock(enc_note)
         assert api.note_set_password(enc_note, 'attacker123') is False
 
+    def test_overwrite_forbidden_even_when_unlocked(self, api, backend_mod, enc_note):
+        """改密码只走 note_change_password（要验旧密码）。
+
+        以前笔记开着（已解锁）时这里放行，界面的「修改密码」走的就是它：不知道旧密码也能把密码换掉。
+        """
+        before = raw(backend_mod, enc_note)
+        assert api.note_set_password(enc_note, 'attacker123') is False
+        assert raw(backend_mod, enc_note)['enc_dek'] == before['enc_dek']
+        api.note_lock(enc_note)
+        assert api.note_verify_password(enc_note, 'attacker123') is False
+        assert api.note_verify_password(enc_note, 'pass123456') is True
+
 
 class TestLockUnlock:
     def test_locked_hides_content_even_if_frontend_lies(self, api, enc_note):
@@ -101,6 +113,18 @@ class TestChangeRemovePassword:
         assert after['enc_dek'] != before['enc_dek']       # DEK 已重包裹
         api.note_lock(enc_note)
         assert api.note_verify_password(enc_note, 'pass123456') is False
+        assert api.note_verify_password(enc_note, 'newpass789') is True
+
+    def test_change_password_needs_the_current_one(self, api, backend_mod, enc_note):
+        before = raw(backend_mod, enc_note)
+        assert api.note_change_password(enc_note, 'wrong-pass', 'newpass789') is False
+        assert api.note_change_password(enc_note, 'pass123456', '12345') is False   # 新密码太短
+        assert dict(raw(backend_mod, enc_note)) == dict(before), '验不过就什么都不能动'
+        # 锁着的笔记也能改：验当前密码这一步顺带解锁
+        api.note_lock(enc_note)
+        assert api.note_change_password(enc_note, 'pass123456', 'newpass789')
+        assert api.notes_get(enc_note)['content'] == DELTA1
+        api.note_lock(enc_note)
         assert api.note_verify_password(enc_note, 'newpass789') is True
 
     def test_remove_password_back_to_plaintext(self, api, backend_mod, enc_note):

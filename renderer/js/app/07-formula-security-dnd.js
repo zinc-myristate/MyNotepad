@@ -134,7 +134,8 @@ $('#btn-insert-math').addEventListener('click', () => {
 
 // ====== 密码保护 ======
 export const unlockedNotes = {}; // 本次会话已解锁的笔记 ID → true
-let passwordPanelMode = 'set'; // 'set' | 'remove'
+// 密码面板打开时这篇是否已有密码：有 = 修改或移除（都要先输当前密码），没有 = 设置
+let _changingPassword = false;
 
 // 工具栏锁按钮
 $('#btn-lock').addEventListener('click', async () => {
@@ -297,39 +298,57 @@ export function updateLockButton() {
   }
 }
 
-export async function openPasswordPanel(mode) {
-  passwordPanelMode = mode;
+/** 打开密码面板。没有密码 = 设置；已有密码 = 修改或移除，两者都要先输当前密码。
+ *  参数是旧接口留下的，调用方一律传 'set'。 */
+export async function openPasswordPanel(_mode) {
   const hasPwd = await window.pywebview.api.note_has_password(state.activeNoteId);
+  _changingPassword = Boolean(hasPwd);
+  $('#password-current').value = '';
   $('#password-input1').value = '';
   $('#password-input2').value = '';
-  if (mode === 'set') {
-    $('#password-panel-title').textContent = hasPwd ? '修改密码' : '设置密码';
-    $('#btn-save-password').textContent = hasPwd ? '修改密码' : '设置密码';
-    $('#btn-remove-password').style.display = hasPwd ? 'block' : 'none';
-  }
+  $('#password-panel-title').textContent = hasPwd ? '修改密码' : '设置密码';
+  $('#btn-save-password').textContent = hasPwd ? '修改密码' : '设置密码';
+  $('#btn-remove-password').style.display = hasPwd ? 'block' : 'none';
+  $('#password-current').style.display = hasPwd ? '' : 'none';
+  $('#password-input1').placeholder = hasPwd ? '新密码' : '输入密码';
+  $('#password-input2').placeholder = hasPwd ? '确认新密码' : '确认密码';
   openPanel($('#password-panel'));
 }
 
 $('#btn-save-password').addEventListener('click', async () => {
+  const noteId = state.activeNoteId;
+  const current = $('#password-current').value;
   const p1 = $('#password-input1').value;
   const p2 = $('#password-input2').value;
-  if (!p1) { showToast('请输入密码', { type: 'warn' }); return; }
+  if (_changingPassword && !current) { showToast('请输入当前密码', { type: 'warn' }); return; }
+  if (!p1) { showToast(_changingPassword ? '请输入新密码' : '请输入密码', { type: 'warn' }); return; }
   if (p1 !== p2) { showToast('两次输入不一致', { type: 'warn' }); return; }
   if (p1.length < 6) { showToast('密码至少 6 位', { type: 'warn' }); return; }
+  if (_changingPassword && p1 === current) { showToast('新密码与当前密码相同', { type: 'warn' }); return; }
   await flushSave();  // 设密码前先落盘，加密以最新内容为准
-  const ok = await window.pywebview.api.note_set_password(state.activeNoteId, p1);
-  if (!ok) { showToast('密码设置失败：请先解锁笔记后再修改密码', { type: 'error' }); return; }
+  if (_changingPassword) {
+    // 后端先验当前密码，再用新密码重新包裹同一把密钥：正文不重新加密，也不会有一刻是明文
+    const ok = await window.pywebview.api.note_change_password(noteId, current, p1);
+    if (!ok) { showToast('当前密码错误', { type: 'error' }); return; }
+    closePanel($('#password-panel'));
+    unlockedNotes[noteId] = true;   // 验当前密码时后端顺带解了锁
+    updateLockButton();
+    showToast('密码已修改', { type: 'success' });
+    return;
+  }
+  const ok = await window.pywebview.api.note_set_password(noteId, p1);
+  if (!ok) { showToast('密码设置失败：这篇笔记已有密码或已被删除', { type: 'error' }); return; }
   closePanel($('#password-panel'));
   await showInfoDialog({
     title: '密码设置成功',
     message: '笔记内容已加密存储。\n\n请务必牢记密码：忘记密码将无法恢复笔记内容。'
   });
-  unlockedNotes[state.activeNoteId] = true;
+  unlockedNotes[noteId] = true;
   loadNotes().then(renderNoteList);
 });
 
 $('#btn-remove-password').addEventListener('click', async () => {
-  const p = $('#password-input1').value;
+  const p = $('#password-current').value;
   if (!p) { showToast('请先输入当前密码', { type: 'warn' }); return; }
   await flushSave();  // 先落盘，解密回写以最新内容为准
   const ok = await window.pywebview.api.note_remove_password(state.activeNoteId, p);
@@ -339,8 +358,15 @@ $('#btn-remove-password').addEventListener('click', async () => {
     delete unlockedNotes[state.activeNoteId];
     loadNotes().then(renderNoteList);
   } else {
-    showToast('密码错误', { type: 'error' });
+    showToast('当前密码错误', { type: 'error' });
   }
+});
+
+// 三个输入框里回车 = 点「设置 / 修改密码」。移除密码会把正文解回明文，只能点按钮
+['#password-current', '#password-input1', '#password-input2'].forEach(sel => {
+  $(sel).addEventListener('keydown', (e) => {
+    if (e.key === 'Enter' && !e.isComposing) { e.preventDefault(); $('#btn-save-password').click(); }
+  });
 });
 
 // 密码验证
