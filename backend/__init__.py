@@ -600,6 +600,7 @@ def _scope_where(scope):
 
 def _scope_note_ids(scope):
     """按范围取候选笔记 id"""
+    conn = _ctx_conn()   # 只读连接（上下文解析）：见 _ctx_conn 的说明
     where, params = _scope_where(scope)
     rows = conn.execute(
         "SELECT n.id FROM notes n LEFT JOIN note_derived d ON d.note_id = n.id WHERE "
@@ -609,6 +610,7 @@ def _scope_note_ids(scope):
 
 def _trash_title_ids(text):
     """回收站里的笔记已被移出 FTS 索引，正文搜索只能退化为标题 LIKE（够用来找回来删掉的那篇）"""
+    conn = _ctx_conn()   # 只读连接（上下文解析）：见 _ctx_conn 的说明
     esc = text.replace('\\', '\\\\').replace('%', '\\%').replace('_', '\\_')
     rows = conn.execute(
         "SELECT id FROM notes WHERE deleted_at IS NOT NULL AND title LIKE ? ESCAPE '\\'",
@@ -712,7 +714,9 @@ def _probe_fts5():
         return False
 
 FTS_AVAILABLE = _probe_fts5()
-FTS_VERSION = '1'   # 索引结构版本：变更时改此值触发全量重建
+FTS_VERSION = '2'   # 索引结构版本：变更时改此值触发全量重建
+# '2'：全量重建改用 note_plain_text（按格式提取）。'1' 的重建一律按 Delta 解析，Markdown 笔记会把
+#      带标记的原文写进 body；而搜索摘要现在直接读 body（_fts_snippets），body 必须就是纯文本。
 
 def _fts_sync(note_id, title, plain_content, fmt='delta'):
     """重写单条 FTS 行。plain_content=None（加密笔记）时 body 恒空——索引绝不落加密明文。"""
@@ -744,6 +748,17 @@ def _fts_delete(note_id):
     except Exception:
         pass
 
+
+def _fts_rebuild():
+    """全量重建：与 _fts_sync 同一套提取（加密笔记 body 恒空，回收站里的笔记不进索引）"""
+    conn.execute("DELETE FROM notes_fts")
+    for r in conn.execute("SELECT id, title, content, format, password_hash FROM notes "
+                          "WHERE deleted_at IS NULL").fetchall():
+        body = '' if r['password_hash'] else note_plain_text(r['content'], r['format'] or 'delta')
+        conn.execute("INSERT INTO notes_fts (note_id, title, body) VALUES (?, ?, ?)",
+                     (r['id'], r['title'] or '', body))
+
+
 # 建表 + 版本门控全量回填
 if FTS_AVAILABLE:
     try:
@@ -752,19 +767,152 @@ if FTS_AVAILABLE:
             "USING fts5(note_id UNINDEXED, title, body, tokenize='trigram')")
         _ver = conn.execute("SELECT value FROM settings WHERE key='fts_version'").fetchone()
         if not _ver or _ver['value'] != FTS_VERSION:
-            conn.execute("DELETE FROM notes_fts")
-            # 双保险：软删笔记的 FTS 行先清掉（防止版本号变更时残留）
-            conn.execute("DELETE FROM notes_fts WHERE note_id IN (SELECT id FROM notes WHERE deleted_at IS NOT NULL)")
-            for _r in conn.execute("SELECT id, title, content, password_hash FROM notes WHERE deleted_at IS NULL").fetchall():
-                _body = '' if _r['password_hash'] else _delta_to_text(_r['content'])
-                conn.execute("INSERT INTO notes_fts (note_id, title, body) VALUES (?, ?, ?)",
-                             (_r['id'], _r['title'] or '', _body))
+            _fts_rebuild()
             conn.execute("INSERT OR REPLACE INTO settings (key, value) VALUES ('fts_version', ?)",
                          (FTS_VERSION,))
         conn.commit()
     except Exception:
         applog.get_logger().exception("FTS 初始化失败，降级为 LIKE 搜索")
         FTS_AVAILABLE = False
+
+
+# ====== 搜索：纯文本与命中片段 ======
+# 按 note_id 过滤 FTS 表是整表扫描（UNINDEXED 列没有索引），每一块就是一遍扫描：块要大。
+# 5000 远低于 SQLite 绑定变量的上限（32766）。
+FTS_SCAN_CHUNK = 5000
+# 逐篇现算 vs 扫一遍 FTS：逐篇的代价跟篇数走，扫描的代价跟全库走。10KB 一篇时实测
+# 逐篇现算约 1.5 ms/篇，扫 800 篇约 70–100 ms，相差 15 倍上下（2026-11-08）。
+# 只按篇数定阈值不行：同样 60 篇命中，800 篇的库该扫描，5000 篇的库扫描反而慢好几倍。
+SCAN_COST_RATIO = 15
+_WS_RUN = re.compile(r'\s+')     # 与 str.split() 是同一套空白定义（逐码点核对过）
+
+
+def _scan_is_cheaper(n):
+    """n 篇笔记要纯文本：扫一遍 FTS 是否比逐篇现算便宜"""
+    conn = _ctx_conn()   # 只读连接（上下文解析）：见 _ctx_conn 的说明
+    total = conn.execute("SELECT COUNT(*) FROM notes WHERE deleted_at IS NULL").fetchone()[0]
+    return n * SCAN_COST_RATIO > total
+
+
+def _plain_texts(note_ids):
+    """{id: 纯文本}；加密笔记的值是 None，库里没有的 id 不出现。
+
+    篇数相对全库多时读 FTS 的 body（保存时已经算好的 note_plain_text），扫一遍拿全；
+    篇数少、或没有 FTS 行（回收站里的笔记、FTS 不可用）时逐篇现算。现算要对全文跑七趟正则：
+    800 篇 × 10KB 全部现算时，搜索的 94% 时间花在这里（2026-11-08 实测）。
+    """
+    conn = _ctx_conn()   # 只读连接（上下文解析）：见 _ctx_conn 的说明
+    ids = list(note_ids or [])
+    out, plain = {}, []
+    for chunk in _chunked(ids):
+        marks = ','.join('?' * len(chunk))
+        for r in conn.execute(f"SELECT id, password_hash FROM notes WHERE id IN ({marks})",
+                              list(chunk)):
+            if r['password_hash']:
+                out[r['id']] = None
+            else:
+                plain.append(r['id'])
+    if FTS_AVAILABLE and plain and _scan_is_cheaper(len(plain)):
+        for chunk in _chunked(plain, FTS_SCAN_CHUNK):
+            marks = ','.join('?' * len(chunk))
+            for r in conn.execute(f"SELECT note_id, body FROM notes_fts WHERE note_id IN ({marks})",
+                                  list(chunk)):
+                out[r['note_id']] = r['body'] or ''
+    missing = [i for i in plain if i not in out]
+    for chunk in _chunked(missing):
+        marks = ','.join('?' * len(chunk))
+        for r in conn.execute(f"SELECT id, content, format FROM notes WHERE id IN ({marks})",
+                              list(chunk)):
+            out[r['id']] = note_plain_text(r['content'], r['format'] or 'delta')
+    return out
+
+
+def _snippet_from_text(plain, q, width):
+    """命中片段的定义：整篇空白折叠成单个空格后，取第一处命中前后各 width 字，两侧被截断时
+    加省略号；找不到关键词（标题命中）时给正文开头 2×width 字。_fts_snippets 必须与它逐字相同。"""
+    text = ' '.join(plain.split())
+    i = text.lower().find(q.lower())
+    if i < 0:
+        return text[:width * 2]
+    start = max(0, i - width)
+    end = min(len(text), i + len(q) + width)
+    return ('…' if start > 0 else '') + text[start:end] + ('…' if end < len(text) else '')
+
+
+def _fast_snippet_query(q):
+    """能不能交给 SQLite 定位。SQLite 的 lower() 只折叠 ASCII；查询里有空白时，命中位置要在
+    折叠空白后的全文上找。这两种情况走 _snippet_from_text。"""
+    return bool(q) and not any(c.isspace() for c in q) and \
+        all(c.isascii() or c.lower() == c.upper() for c in q)
+
+
+def _snippet_from_window(pre, hit, post, at_start, at_end, width):
+    """在命中处前后的原文窗口上复现 _snippet_from_text。at_start / at_end：窗口是否已经碰到
+    正文开头 / 结尾。窗口里剩下的字不多于 width 时判断不了截在哪里（整篇首尾的空白会被去掉），
+    返回 None。"""
+    pre = _WS_RUN.sub(' ', pre)
+    post = _WS_RUN.sub(' ', post)
+    if at_start:
+        pre = pre.lstrip(' ')
+    elif len(pre.lstrip(' ')) <= width:
+        return None
+    if at_end:
+        post = post.rstrip(' ')
+    elif len(post.rstrip(' ')) <= width:
+        return None
+    head = ('…' + pre[len(pre) - width:]) if len(pre) > width else pre
+    return head + hit + post[:width] + ('…' if len(post) > width else '')
+
+
+def _snippet_from_head(head, at_end, width):
+    """正文里没有关键词时：开头 2×width 字。判断不了时返回 None。"""
+    text = _WS_RUN.sub(' ', head).lstrip(' ')
+    if at_end:
+        text = text.rstrip(' ')
+    elif len(text.rstrip(' ')) < width * 2:
+        return None
+    return text[:width * 2]
+
+
+def _fts_snippets(q, width, note_ids=None, match=None):
+    """让 SQLite 在 FTS 的 body 里定位关键词，只取命中处前后一小段回来。
+
+    要哪些行有两种给法：match（FTS 查询式）走索引，只读命中的行；note_ids 要整表扫描，
+    由调用方先用 _scan_is_cheaper 判断值不值得。
+    窗口取 width 的 4 倍，折叠空白后一般还剩足够的字；判断不了的笔记不放进结果，
+    由调用方按全文再算。调用方保证 _fast_snippet_query(q) 为真，并自行处理加密笔记。
+    """
+    conn = _ctx_conn()   # 只读连接（上下文解析）：见 _ctx_conn 的说明
+    span = width * 4
+    q_len = len(q)
+    if match is not None:
+        batches = [('notes_fts MATCH :m', {'m': match})]
+    else:
+        batches = []
+        for chunk in _chunked(note_ids, FTS_SCAN_CHUNK):
+            names = {'i%d' % k: v for k, v in enumerate(chunk)}
+            batches.append(('note_id IN (%s)' % ','.join(':' + k for k in names), names))
+    out = {}
+    for where, params in batches:
+        rows = conn.execute(
+            "SELECT note_id, n, pos,"
+            " CASE WHEN pos > 0 THEN substr(body, max(1, pos - :span), pos - max(1, pos - :span)) END AS pre,"
+            " CASE WHEN pos > 0 THEN substr(body, pos, :qlen) END AS hit,"
+            " CASE WHEN pos > 0 THEN substr(body, pos + :qlen, :span) END AS post,"
+            " CASE WHEN pos = 0 THEN substr(body, 1, :head) END AS head"
+            # LIMIT -1 OFFSET 0 不让子查询被展开：展开后 instr(lower(body)) 每行要算四遍，实测慢一倍多
+            " FROM (SELECT note_id, body, length(body) AS n, instr(lower(body), :q) AS pos"
+            "       FROM notes_fts WHERE %s LIMIT -1 OFFSET 0)" % where,
+            dict(params, span=span, qlen=q_len, head=span * 2, q=q.lower())).fetchall()
+        for r in rows:
+            if r['pos']:
+                snip = _snippet_from_window(r['pre'], r['hit'], r['post'], r['pos'] - span <= 1,
+                                            r['pos'] - 1 + q_len + span >= r['n'], width)
+            else:
+                snip = _snippet_from_head(r['head'], span * 2 >= r['n'], width)
+            if snip is not None:
+                out[r['note_id']] = snip
+    return out
 # '2'：第 9 轮加入 note_links（双链索引）→ 版本号一变，启动时会为存量笔记重建索引
 # '3'：列表摘要改为保存时预计算（note_derived.preview）→ 存量笔记需要回填一次
 DERIVED_VERSION = '3'
@@ -787,6 +935,7 @@ def _filter_props(ids, conds):
     """
     if not conds or not ids:
         return ids
+    conn = _ctx_conn()   # 只读连接（上下文解析）：见 _ctx_conn 的说明
     props = {}
     for chunk in _chunked(ids):          # 分块：ids 可能上千，SQLite 变量数有上限
         marks = ','.join('?' * len(chunk))
@@ -1680,7 +1829,7 @@ class Api:
             ids = [i for i in scoped if i in found]
             hits = list(ids)
         else:
-            res = self._search_plain(text)
+            res = self._search_plain(text, with_snippets=False)   # 片段只给求交后剩下的那些
             found = set(res['ids'])
             ids = [i for i in scoped if i in found]
             hits = [i for i in ids if i in set(res['title_hits'])]
@@ -1699,25 +1848,17 @@ class Api:
         if not exclude or not ids:
             return ids
         out = []
-        texts = {}
-        for chunk in _chunked(ids):      # 分块：全库搜索的候选集可能上千
-            marks = ','.join('?' * len(chunk))
-            for r in conn.execute(
-                    f"SELECT id, content, format, password_hash FROM notes WHERE id IN ({marks})",
-                    list(chunk)).fetchall():
-                if r['password_hash']:
-                    texts[r['id']] = None
-                    continue
-                texts[r['id']] = note_plain_text(r['content'], r['format'] or 'delta').lower()
+        texts = _plain_texts(ids)
         lowered = [w.lower() for w in exclude]
         for i in ids:
             t = texts.get(i)
-            if t is None or not any(w in t for w in lowered):
+            if t is None or not any(w in t.lower() for w in lowered):
                 out.append(i)
         return out
 
-    def _search_plain(self, q):
-        """不带范围前缀的关键词搜索（原逻辑）"""
+    def _search_plain(self, q, with_snippets=True):
+        """不带范围前缀的关键词搜索（原逻辑）。with_snippets=False：范围搜索只要命中集。"""
+        conn = _ctx_conn()   # 只读连接（上下文解析）：见 _ctx_conn 的说明
         if FTS_AVAILABLE and len(q) >= 3:
             try:
                 phrase = '"' + q.replace('"', '""') + '"'
@@ -1728,7 +1869,7 @@ class Api:
                     "SELECT note_id FROM notes_fts WHERE notes_fts MATCH ?",
                     (phrase,)).fetchall()]
                 return {'ids': all_ids, 'title_hits': title_ids,
-                        'snippets': self._snippets_for(all_ids, q)}
+                        'snippets': self._snippets_for(all_ids, q, match=phrase) if with_snippets else {}}
             except Exception:
                 applog.get_logger().exception("FTS 查询失败，回退 LIKE")
         # LIKE 回退：<3 字符（中文双字常态）/ FTS 不可用 / FTS 查询异常
@@ -1742,33 +1883,45 @@ class Api:
         ids = [r['id'] for r in rows]
         return {'ids': ids,
                 'title_hits': [r['id'] for r in rows if r['th']],
-                'snippets': self._snippets_for(ids, q)}
+                'snippets': self._snippets_for(ids, q) if with_snippets else {}}
 
     @staticmethod
-    def _snippets_for(note_ids, q, width=40):
-        """给命中结果生成正文片段（只在命中集上取，通常只有几条，成本可忽略）"""
+    def _snippets_for(note_ids, q, width=40, match=None):
+        """给命中结果生成正文片段（定义见 _snippet_from_text）；加密笔记恒为空串。
+
+        常见词能命中上千篇，不能逐篇现算全文：能交给 SQLite 定位的查询走 _fts_snippets
+        （给了 match 就只读命中的行；否则命中多到值得扫一遍 FTS 时才扫），
+        其余（含空白或非 ASCII 大小写字母的查询、窗口判断不了的笔记）按全文算，
+        全文也尽量取 FTS 里存好的纯文本（_plain_texts）。结果与原先逐篇现算逐字相同。
+        """
         if not note_ids:
             return {}
-        out = {}
-        ql = q.lower()
-        rows = []
-        for chunk in _chunked(note_ids):     # 分块：搜索命中的候选可能上千
+        conn = _ctx_conn()   # 只读连接（上下文解析）：见 _ctx_conn 的说明
+        ids = list(note_ids)
+        out, rest = {}, []
+        for chunk in _chunked(ids):
             marks = ','.join('?' * len(chunk))
-            rows += conn.execute(
-                f"SELECT id, content, password_hash, format FROM notes WHERE id IN ({marks})",
-                list(chunk)).fetchall()
-        for r in rows:
-            if r['password_hash']:
-                out[r['id']] = ''      # 加密笔记不外泄任何正文片段
-                continue
-            text = ' '.join(note_plain_text(r['content'], r['format'] or 'delta').split())
-            i = text.lower().find(ql)
-            if i < 0:
-                out[r['id']] = text[:width * 2]        # 标题命中：给正文开头
-                continue
-            start = max(0, i - width)
-            end = min(len(text), i + len(q) + width)
-            out[r['id']] = ('…' if start > 0 else '') + text[start:end] + ('…' if end < len(text) else '')
+            for r in conn.execute(f"SELECT id, password_hash FROM notes WHERE id IN ({marks})",
+                                  list(chunk)):
+                if r['password_hash']:
+                    out[r['id']] = ''      # 加密笔记不外泄任何正文片段
+                else:
+                    rest.append(r['id'])
+        if rest and FTS_AVAILABLE and _fast_snippet_query(q):
+            if match is not None:
+                found = _fts_snippets(q, width, match=match)
+            elif _scan_is_cheaper(len(rest)):
+                found = _fts_snippets(q, width, note_ids=rest)
+            else:
+                found = {}
+            for i in rest:
+                if i in found:
+                    out[i] = found[i]
+            rest = [i for i in rest if i not in out]
+        texts = _plain_texts(rest)
+        for i in rest:
+            if i in texts:
+                out[i] = _snippet_from_text(texts[i] or '', q, width)
         return out
 
     # ----- 派生指标 / 待办（第 7 轮） -----
