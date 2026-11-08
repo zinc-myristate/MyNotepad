@@ -5,6 +5,7 @@ build/
 data_backup*/
 _predist-backup*/
 pytmp*/
+.pytmp/
 
 # Python
 __pycache__/

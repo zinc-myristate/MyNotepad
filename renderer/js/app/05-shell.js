@@ -1,5 +1,5 @@
 // ====== ESM 依赖（原先靠全局作用域与加载顺序隐式依赖，现显式声明）======
-import { $, closePanel, dom, openPanel, showConfirmAsync, showInputDialog, showToast, state } from './01-core.js';
+import { $, closePanel, dom, hasOpenPanel, openPanel, showConfirmAsync, showInputDialog, showToast, state } from './01-core.js';
 import { notesStore } from './01b-store.js';
 import { clearVoiceTemp, isVoiceRecording, stopVoiceRecording } from './02-editor.js';
 import { confirmDeleteNote, createNewNote, flushSave, renderNoteList, saveCurrentNote } from './03-notes.js';
@@ -42,6 +42,7 @@ function inTypingField() {
 }
 
 document.addEventListener('keydown', async (e) => {
+  if (hasOpenPanel()) return;
   // Ctrl+N 新建笔记
   if (e.ctrlKey && e.key === 'n') {
     e.preventDefault();
@@ -54,7 +55,7 @@ document.addEventListener('keydown', async (e) => {
   }
   // Ctrl+F：焦点在编辑器里 → 让位给「笔记内查找」（第 8 轮接上）；否则聚焦侧栏搜索。
   // 必须放在默认行为之前判断，否则编辑器里按 Ctrl+F 永远只能搜列表。
-  if (e.ctrlKey && e.key === 'f') {
+  if (e.ctrlKey && !e.shiftKey && e.key === 'f') {
     const el = document.activeElement;
     const inEditor = el && (el.isContentEditable
       || (el.closest && el.closest('.CodeMirror, .ql-editor')));
@@ -96,7 +97,7 @@ export async function loadTagBar() {
     const chip = document.createElement('span');
     chip.className = 'tag-chip';
     chip.setAttribute('data-tag-color', tag.color || '');
-    chip.innerHTML = `${escapeHtml(tag.name)}<span class="tag-remove" data-tag-id="${tag.id}">×</span>`;
+    chip.innerHTML = `${escapeHtml(tag.name)}<span class="tag-remove" role="button" tabindex="0" aria-label="移除标签 ${escapeHtml(tag.name)}" data-tag-id="${tag.id}">×</span>`;
     chip.querySelector('.tag-remove').addEventListener('click', async (e) => {
       e.stopPropagation();
       const current = await window.pywebview.api.note_tags_get(state.activeNoteId);
@@ -128,12 +129,17 @@ export async function loadTagFilter() {
   const tags = await window.pywebview.api.tags_list();
   _tags = tags;
   const container = $('#tag-filter-list');
+  // 矮窗口下这里是一条横向滚动的窄条：重建不能把用户滚到的位置冲回开头
+  const scrollLeft = container.scrollLeft;
+  // 焦点在标签上时重建会掉到 body：再按一次回车就没有落点，选中的标签取消不了
+  const focusedTag = document.activeElement?.closest('.tag-filter-chip')?.dataset.tagId;
   container.innerHTML = '';
   if (tags.length === 0) { $('#tag-filter').style.display = 'none'; return; }
-  $('#tag-filter').style.display = 'block';
+  $('#tag-filter').style.display = '';    // 显示方式交给样式表：矮窗口下是 flex，内联 block 会盖掉它
   tags.forEach(tag => {
     const chip = document.createElement('button');
     chip.className = 'tag-filter-chip';
+    chip.dataset.tagId = tag.id;
     if (currentTagFilter === tag.id) chip.classList.add('active');
     chip.textContent = tag.name;
     chip.addEventListener('click', async () => {
@@ -142,6 +148,10 @@ export async function loadTagFilter() {
     });
     container.appendChild(chip);
   });
+  container.scrollLeft = scrollLeft;
+  // 「清除筛选」随选中出现，会把窄条挤窄：选中的标签要留在看得见的地方
+  container.querySelector('.active')?.scrollIntoView({ block: 'nearest', inline: 'nearest' });
+  if (focusedTag) container.querySelector(`[data-tag-id="${CSS.escape(focusedTag)}"]`)?.focus();
 }
 
 $('#btn-clear-tag-filter').addEventListener('click', async () => {

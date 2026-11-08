@@ -4,7 +4,7 @@
 
 // ====== 装饰分割线 ======
 // ====== ESM 依赖（原先靠全局作用域与加载顺序隐式依赖，现显式声明）======
-import { state } from '../app/01-core.js';
+import { state, closePanel } from '../app/01-core.js';
 
 const DividerBlot = Quill.import('blots/block/embed');
 
@@ -53,8 +53,7 @@ export function buildDividerPanel() {
     preview.style.cssText = 'width:100%;pointer-events:none;';
     btn.appendChild(preview);
     btn.addEventListener('click', function() {
-      const panel = document.getElementById('divider-panel');
-      if (panel) panel.style.display = 'none';
+      closePanel(document.getElementById('divider-panel'));
       if (!state.quill || !state.activeNoteId) return;
       const range = state.quill.getSelection(true);
       state.quill.insertEmbed(range.index, 'divider', { type: d.id });
@@ -242,8 +241,7 @@ export function buildStickerGrid() {
     preview.innerHTML = itemHtml;
     btn.appendChild(preview);
     btn.addEventListener('click', function() {
-      const panel = document.getElementById('sticker-panel');
-      if (panel) panel.style.display = 'none';
+      closePanel(document.getElementById('sticker-panel'));
       if (!state.quill || !state.activeNoteId) return;
       const range = state.quill.getSelection(true);
       const html = '<span class="' + s.cls + '" style="' + ((s.bg?'background:'+s.bg+';':'')+(s.style||'')) + '">' + itemHtml + '</span>';

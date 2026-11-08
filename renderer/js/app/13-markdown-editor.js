@@ -31,6 +31,11 @@ export function isMarkdownEditorReady() {
   return !!cm;
 }
 
+/** Refresh after the workspace changes pane size; never recreate the editor or its undo history. */
+export function refreshMarkdownLayout() {
+  if (cm) cm.refresh();
+}
+
 /** 初始化（启动时调用一次）。缺库时降级为普通 textarea，功能仍在，只是没有高亮。 */
 export function initMarkdownEditor() {
   if (cm) return;
@@ -58,6 +63,7 @@ export function initMarkdownEditor() {
       'Ctrl-`': () => applyMarkdownAction('code'),
     },
   });
+  cm.getInputField().setAttribute('aria-label', 'Markdown 源码');
   cm.on('change', () => {
     if (state.isLoading) return;                      // 切换笔记时的程序化写入不算用户输入
     setSaveDot('dirty');

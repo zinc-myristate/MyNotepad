@@ -220,6 +220,12 @@ class TestBackupAndRestoreHardening:
     覆盖成 0 字节，还打印「恢复完成」。
     """
 
+    @pytest.fixture(autouse=True)
+    def _app_not_running(self, monkeypatch):
+        """同 test_restore.py：`restore.app_running()` 查全局互斥体，开发机上开着记事本时恢复会被拒绝"""
+        import restore
+        monkeypatch.setattr(restore, 'app_running', lambda: False)
+
     def _make_backup(self, backend_mod, tmp_path):
         bdir = tmp_path / 'backups'
         bdir.mkdir(exist_ok=True)

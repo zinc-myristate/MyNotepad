@@ -34,6 +34,47 @@ let _topSpacer = null;
 let _bottomSpacer = null;
 let _bound = false;
 let _buildItem = null;          // 由 renderWindow / initVirtualList 登记（见 initVirtualList 的注释）
+let _focusId = null;
+
+dom.noteList.setAttribute('role', 'list');
+dom.noteList.setAttribute('aria-label', '笔记列表，方向键浏览，Enter 打开');
+dom.noteList.tabIndex = 0;
+
+dom.noteList.addEventListener('focusin', e => {
+  const row = e.target.closest('.note-item');
+  if (!row) return;
+  _focusId = row.dataset.noteId;
+  dom.noteList.tabIndex = -1;
+  dom.noteList.querySelectorAll('.note-item').forEach(item => {
+    item.tabIndex = item === row ? 0 : -1;
+  });
+});
+dom.noteList.addEventListener('keydown', e => {
+  if (e.isComposing || e.ctrlKey || e.metaKey || e.altKey || e.shiftKey ||
+      e.target.closest('button, input, select, textarea')) return;
+  const items = listItems();
+  if (!items.length) return;
+  const index = items.findIndex(note => note.id === _focusId);
+  let next;
+  if (e.key === 'ArrowDown') next = Math.min(items.length - 1, index + 1);
+  else if (e.key === 'ArrowUp') next = Math.max(0, index < 0 ? 0 : index - 1);
+  else if (e.key === 'Home') next = 0;
+  else if (e.key === 'End') next = items.length - 1;
+  else if (e.key === 'Enter' || e.key === ' ') {
+    const row = e.target.closest('.note-item');
+    if (row) { e.preventDefault(); row.click(); }
+    return;
+  } else return;
+  e.preventDefault();
+  _focusId = items[next].id;
+  const top = next * _rowH;
+  if (top < dom.noteList.scrollTop) dom.noteList.scrollTop = top;
+  else if (top + _rowH > dom.noteList.scrollTop + viewportHeight()) {
+    dom.noteList.scrollTop = top + _rowH - viewportHeight();
+  }
+  renderWindow();
+  dom.noteList.querySelector(`[data-note-id="${CSS.escape(_focusId)}"]`)?.focus({ preventScroll: true });
+});
 
 /** 当前要展示的笔记序列（虚拟列表的输入）。
  *
@@ -91,12 +132,21 @@ export function renderWindow(buildItem, force = false) {
   if (typeof buildItem === 'function') _buildItem = buildItem;
   const builder = _buildItem;
   const items = listItems();
+  const oldFocus = document.activeElement;
+  const focusedRow = oldFocus?.closest('.note-item');
+  const hadFocus = focusedRow && dom.noteList.contains(focusedRow);
+  const focusedButton = hadFocus && oldFocus.tagName === 'BUTTON' ? oldFocus.className : null;
+  if (!items.some(note => note.id === _focusId)) {
+    _focusId = items.find(note => note.id === state.activeNoteId)?.id || items[0]?.id || null;
+  }
   ensureSpacers();
 
   if (!items.length) {
     dom.noteList.innerHTML = '';
     _lastRange = [0, -1];
     _built = 0;
+    dom.noteList.tabIndex = 0;
+    if (hadFocus) dom.noteList.focus({ preventScroll: true });
     return;
   }
   if (typeof builder !== 'function') return;   // 还没人登记 builder：什么都不做（不猜）
@@ -121,6 +171,11 @@ export function renderWindow(buildItem, force = false) {
                     { index: i, note: items[i] && { id: items[i].id, title: items[i].title } });
       continue;
     }
+    node.tabIndex = items[i].id === _focusId ? 0 : -1;
+    node.setAttribute('role', 'listitem');
+    node.setAttribute('aria-posinset', String(i + 1));
+    node.setAttribute('aria-setsize', String(items.length));
+    node.setAttribute('aria-label', items[i].title || '未命名笔记');
     frag.appendChild(node);
   }
   _built = last - first + 1;
@@ -137,6 +192,16 @@ export function renderWindow(buildItem, force = false) {
   // 撑高块高度变了会让 scrollTop 漂移，这里把它按"窗口首个可见行"重新对齐
   if (Math.abs(dom.noteList.getBoundingClientRect().top - listTop) > 1) {
     dom.noteList.scrollTop = scroll;
+  }
+
+  // 【注意】焦点必须等撑高块定好高度才还回去：focus() 会强制布局，提前调用时滚动高度还是
+  // 上一个窗口的，scrollTop 被夹断之后再也回不来（实测 End 键落在视口下方 450px）。
+  const focusRow = dom.noteList.querySelector(`[data-note-id="${CSS.escape(_focusId)}"]`);
+  dom.noteList.tabIndex = focusRow ? -1 : 0;
+  if (hadFocus) {
+    const button = focusedButton && focusRow && [...focusRow.querySelectorAll('button')]
+      .find(el => el.className === focusedButton);
+    (button || focusRow || dom.noteList).focus({ preventScroll: true });
   }
 }
 

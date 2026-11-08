@@ -97,6 +97,7 @@ export function buildNoteItem(note) {
   item.className = `note-item${note.id === state.activeNoteId ? ' active' : ''}` +
     (state.selectedIds.has(note.id) ? ' selected' : '');
   item.dataset.noteId = note.id;
+  if (note.id === state.activeNoteId) item.setAttribute('aria-current', 'true');
   item.draggable = true;
   // SVG 图标定义（统一取 icons.js，避免循环内重复字符串）
   const svgLock = ICONS.lock;
@@ -121,7 +122,7 @@ export function buildNoteItem(note) {
         </div>
         <div class="note-item-meta">
           <span class="note-item-preview">${previewHtmlFor(note)}</span>
-          <span class="note-item-time">${(note.updated_at || '').substring(0, 16)}</span>
+          <span class="note-item-time" title="${escapeHtml(note.updated_at || '')}">${escapeHtml((note.updated_at || '').substring(5, 10).replace('-', '/'))}</span>
         </div>
       </div>
       <button class="note-item-password" title="设置密码" data-pwd-id="${note.id}">${svgKey}</button>
@@ -131,6 +132,7 @@ export function buildNoteItem(note) {
       <button class="note-item-delete" title="删除笔记" data-delete-id="${note.id}">${svgTrash}</button>
     </div>
   `;
+  item.querySelectorAll('button[title]').forEach(button => button.setAttribute('aria-label', button.title));
   return item;
 }
 
@@ -260,6 +262,8 @@ function updateNoteListItem(noteId) {
   // 更新活跃状态
   dom.noteList.querySelectorAll('.note-item').forEach(el => {
     el.classList.toggle('active', el.dataset.noteId === noteId);
+    if (el.dataset.noteId === noteId) el.setAttribute('aria-current', 'true');
+    else el.removeAttribute('aria-current');
   });
 }
 
@@ -441,6 +445,8 @@ export function setSaveDot(s) {
   d.classList.toggle('dirty', s === 'dirty');
   d.classList.toggle('error', s === 'error');
   d.title = { saved: '已保存', dirty: '有未保存修改…', error: '保存失败（已记录日志）' }[s] || '';
+  const label = document.getElementById('save-label');
+  if (label) label.textContent = { saved: '已保存到本地', dirty: '正在保存…', error: '保存失败，请重试' }[s] || '';
 }
 
 export async function saveCurrentNote() {

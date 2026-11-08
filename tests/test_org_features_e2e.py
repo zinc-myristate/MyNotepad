@@ -236,6 +236,42 @@ def test_saved_search_save_and_apply(tmp_path, monkeypatch):
 
 
 @pytest.mark.e2e
+def test_saved_search_highlight_follows_the_search(tmp_path, monkeypatch):
+    """高亮跟着已生效的搜索走：点视图要亮，换视图要切换，改写或清空搜索要灭。
+
+    以前点视图时搜索还在防抖，`state.searchQuery` 是旧值，所以点完不亮，要等下一次重建列表；
+    而亮着的高亮在改写或清空搜索后也不会撤，因为搜索落定时根本没人更新它。
+    """
+    ns = load_app_partial(monkeypatch, tmp_path)
+    import backend
+    _md_note(backend.api, '苹果笔记', '甲\n')
+    backend.api.saved_search_create('只看苹果', 'title:苹果')
+    backend.api.saved_search_create('只看汽车', 'title:汽车')
+    active = "document.querySelector('.ss-item.active .ss-name')?.textContent || ''"
+
+    def actions(window, result):
+        assert wait_for_js(window, "document.querySelectorAll('.ss-item').length", 2)
+        window.evaluate_js("document.querySelector('.ss-item').click()")
+        result['applied'] = wait_for_js(window, active, '只看苹果')
+        window.evaluate_js("document.querySelectorAll('.ss-item')[1].click()")
+        result['switched'] = wait_for_js(window, active, '只看汽车')
+        window.evaluate_js("var i=document.getElementById('search-input'); i.value='title:汽';"
+                           "i.dispatchEvent(new Event('input',{bubbles:true}));")
+        result['edited'] = wait_for_js(window, active, '')
+        window.evaluate_js("document.querySelector('.ss-item').click()")
+        assert wait_for_js(window, active, '只看苹果')
+        window.evaluate_js("document.getElementById('btn-search-clear').click()")
+        result['cleared'] = wait_for_js(window, active, '')
+
+    r = _run(ns, actions, wait_before=0)
+    assert 'error' not in r, r.get('error')
+    assert r['applied'] == '只看苹果', '点视图后要高亮：%r' % r
+    assert r['switched'] == '只看汽车', '换视图后高亮要跟着换：%r' % r
+    assert r['edited'] == '', '改写搜索后不再是这个视图：%r' % r
+    assert r['cleared'] == '', '清空搜索后不再是这个视图：%r' % r
+
+
+@pytest.mark.e2e
 def test_ctrl_f_respects_editor_focus(tmp_path, monkeypatch):
     """焦点在编辑器里时 Ctrl+F 不抢侧栏搜索（第 8 轮的笔记内查找要靠这条规则）"""
     ns = load_app_partial(monkeypatch, tmp_path)

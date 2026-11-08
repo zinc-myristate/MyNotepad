@@ -49,7 +49,7 @@ function renderItems() {
       <div class="todo-main">
         <div class="todo-text">${esc(it.text)}</div>
         <div class="todo-meta">
-          <span class="todo-note" data-open="${i}" title="打开这篇笔记">${esc(it.note_title || '未命名笔记')}</span>
+          <span class="todo-note" role="button" tabindex="0" data-open="${i}" title="打开这篇笔记">${esc(it.note_title || '未命名笔记')}</span>
           ${it.due ? `<span class="todo-due${isOverdue(it.due) ? ' overdue' : ''}">${ICONS.calendar} ${esc(it.due)}</span>` : ''}
         </div>
       </div>

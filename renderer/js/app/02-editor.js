@@ -62,6 +62,7 @@ export function initQuill() {
   try {
     quill.root.setAttribute('spellcheck', 'true');
     quill.root.setAttribute('lang', 'zh-CN');
+    quill.root.setAttribute('aria-label', '笔记正文');
   } catch (e) { /* 属性设置失败不影响编辑功能 */ }
 
   // 表格删除增强：Quill 默认在单元格开头吃掉 Backspace（空 handler 保护结构），

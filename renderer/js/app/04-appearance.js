@@ -10,7 +10,9 @@ import { debounce } from '../shared/utils.js';
 
 export async function loadSettings(retryCount = 0) {
   try {
-    if (!window.pywebview || !window.pywebview.api) {
+    // 要判函数在不在：pywebview 的 api 先是空对象，撞上这段空档时下面的调用失败不会重试，
+    // 这次启动的主题和背景就都不恢复了
+    if (!window.pywebview?.api?.settings_get_all) {
       if (retryCount < 10) { await new Promise(r => setTimeout(r, 500)); return loadSettings(retryCount + 1); }
       return;
     }

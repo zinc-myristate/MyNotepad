@@ -11,7 +11,7 @@
 // 对外导出（各模块显式 import，不再依赖全局作用域）：
 //   state, dom, $, $$                    — 核心状态与 DOM 引用
 //   NotepadConfig                        — 共享数据常量命名空间
-//   openPanel/closePanel                 — 面板显隐
+//   openPanel/closePanel/hasOpenPanel    — 面板显隐
 //   showConfirmAsync/showInfoDialog/showInputDialog — 统一对话框
 //   showToast / saveIndicatorTimer       — 统一提示（后者带 setter，见下方注释）
 //   showEditorUI/hideEditorUI/reportError
@@ -130,13 +130,77 @@ window.addEventListener('unhandledrejection', (e) => {
 });
 
 // ====== 面板管理 ======
+const panelStack = [];
+const focusableSelector = 'button, input, textarea, select, a[href], summary, [tabindex], [contenteditable="true"]';
+
+function canFocus(el) {
+  return el && el.isConnected && !el.closest('[inert]') && !el.disabled &&
+    el.getClientRects().length > 0 && getComputedStyle(el).visibility !== 'hidden';
+}
+function panelTabStops(panel) {
+  return [...panel.querySelectorAll(focusableSelector)].filter(el => el.tabIndex >= 0 && canFocus(el));
+}
+function syncPanelContext() {
+  const top = panelStack.at(-1)?.panel;
+  dom.app.inert = Boolean(top);
+  panelStack.forEach(({ panel }, index) => {
+    panel.inert = panel !== top;
+    panel.style.zIndex = String(1000 + index);
+    panel.querySelector('.panel-dialog')?.setAttribute('aria-modal', String(panel === top));
+  });
+}
 
 export function openPanel(panel) {
+  if (!panel || panelStack.some(entry => entry.panel === panel)) return;
+  const trigger = document.activeElement;
+  panelStack.push({ panel, trigger, noteId: trigger?.closest('.note-item')?.dataset.noteId });
   panel.style.display = 'flex';
+  const dialog = panel.querySelector('.panel-dialog') || panel;
+  dialog.setAttribute('role', 'dialog');
+  dialog.tabIndex = -1;
+  const heading = dialog.querySelector('h3');
+  if (heading) {
+    if (!heading.id) heading.id = panel.id + '-heading';
+    dialog.setAttribute('aria-labelledby', heading.id);
+  }
+  syncPanelContext();
+  const stops = panelTabStops(panel);
+  (stops.find(el => el.matches('input:not([type=range]):not([type=checkbox]), textarea, select')) || stops[0] || dialog).focus();
 }
 export function closePanel(panel) {
+  if (!panel) return;
+  const index = panelStack.findIndex(entry => entry.panel === panel);
+  const wasTop = index === panelStack.length - 1 && index >= 0;
+  const entry = index >= 0 ? panelStack.splice(index, 1)[0] : null;
   panel.style.display = 'none';
+  panel.inert = false;
+  panel.querySelector('.panel-dialog')?.removeAttribute('aria-modal');
+  // Every dismissal route settles pending promises, including X, backdrop and panel replacement.
+  if (panel.id === 'confirm-dialog' && _confirmResolver) {
+    const resolve = _confirmResolver; _confirmResolver = null; resolve(false);
+  }
+  if (panel.id === 'input-dialog' && _inputResolver) {
+    const resolve = _inputResolver; _inputResolver = null; resolve(null);
+  }
+  syncPanelContext();
+  if (wasTop) {
+    const row = entry.noteId && dom.noteList.querySelector(`[data-note-id="${CSS.escape(entry.noteId)}"]`);
+    const fallback = panelStack.at(-1)?.panel;
+    const target = [entry.trigger, row, fallback && panelTabStops(fallback)[0], dom.btnNewNote].find(canFocus);
+    target?.focus({ preventScroll: true });
+  }
 }
+// X、Esc、点遮罩都是"取消"。面板有自己的取消动作（清临时文件、还原笔记状态）时必须走它，
+// 否则窗口关掉了、收尾却没做。取消按钮在 index.html 里标 data-panel-cancel。
+function dismissPanel(panel) {
+  const cancel = panel.querySelector('[data-panel-cancel]');
+  if (cancel) cancel.click();
+  else closePanel(panel);
+}
+// 有弹窗开着时键盘归弹窗：工作区快捷键（Ctrl+N/S/F/D/E/P…）一律不穿透到它背后。
+// 判据必须是面板栈，不能靠事件路径：弹窗里的控件被重建后焦点会落到 body，那时按键根本不经过弹窗
+export function hasOpenPanel() { return panelStack.length > 0; }
+
 // 所有面板 ID 列表（新增面板只需在此添加）
 const ALL_PANEL_IDS = [
   'theme-panel','background-panel','confirm-dialog','input-dialog','move-notebook-panel','export-panel','table-picker',
@@ -148,21 +212,41 @@ const ALL_PANEL_IDS = [
 ];
 
 export function closeAllPanels() {
+  [...panelStack].reverse().forEach(({ panel }) => closePanel(panel));
   ALL_PANEL_IDS.forEach(id => {
     const p = document.getElementById(id);
-    if (p) p.style.display = 'none';
+    if (p) closePanel(p);
   });
-  // 也关闭旧 dom 引用中的面板
-  if (dom.themePanel) dom.themePanel.style.display = 'none';
-  if (dom.backgroundPanel) dom.backgroundPanel.style.display = 'none';
-  if (dom.confirmDialog) dom.confirmDialog.style.display = 'none';
 }
+
+// Capture Esc/Tab before editor and document shortcuts; IME Escape belongs to composition.
+document.addEventListener('keydown', e => {
+  const panel = panelStack.at(-1)?.panel;
+  if (!panel || e.isComposing) return;
+  if (e.key === 'Escape') {
+    e.preventDefault(); e.stopImmediatePropagation(); dismissPanel(panel);
+  } else if (e.key === 'Tab') {
+    const stops = panelTabStops(panel);
+    const index = stops.indexOf(document.activeElement);
+    if (!stops.length || index < 0 || (e.shiftKey ? index === 0 : index === stops.length - 1)) {
+      e.preventDefault();
+      (stops[e.shiftKey ? stops.length - 1 : 0] || panel.querySelector('.panel-dialog') || panel).focus();
+    }
+  }
+}, true);
+document.addEventListener('focusin', e => {
+  const panel = panelStack.at(-1)?.panel;
+  if (panel && !panel.contains(e.target)) {
+    (panelTabStops(panel)[0] || panel.querySelector('.panel-dialog') || panel).focus();
+  }
+});
 
 // 关闭按钮
 $$('.btn-close-panel').forEach(btn => {
+  if (!btn.hasAttribute('aria-label')) btn.setAttribute('aria-label', btn.title || '关闭弹窗');
   btn.addEventListener('click', () => {
     const panelId = btn.dataset.panel;
-    if (panelId) closePanel(document.getElementById(panelId));
+    if (panelId) dismissPanel(document.getElementById(panelId));
   });
 });
 
@@ -170,7 +254,7 @@ $$('.btn-close-panel').forEach(btn => {
 $$('.panel-overlay').forEach(overlay => {
   overlay.addEventListener('click', (e) => {
     if (e.target === overlay) {
-      closePanel(overlay);
+      dismissPanel(overlay);
     }
   });
 });
@@ -213,7 +297,7 @@ export function showConfirmAsync({ title = '确认', message = '', okText = '确
     cancel.style.display = '';
     _confirmResolver = resolve;
     openPanel($('#confirm-dialog'));
-    setTimeout(() => ok.focus(), 50);
+    (danger ? cancel : ok).focus();
   });
 }
 
@@ -232,7 +316,7 @@ export function showInfoDialog({ title = '提示', message = '' } = {}) {
     cancel.style.display = 'none';
     _confirmResolver = () => resolve();  // 任意关闭方式（ok/遮罩/Esc/关闭钮）都 resolve
     openPanel($('#confirm-dialog'));
-    setTimeout(() => ok.focus(), 50);
+    ok.focus();
   });
 }
 
@@ -248,33 +332,21 @@ export function showInputDialog({ title = '输入', message = '', defaultValue =
     input.placeholder = placeholder || '';
     _inputResolver = resolve;
     openPanel($('#input-dialog'));
-    setTimeout(() => { input.focus(); input.select(); }, 50);
+    input.focus(); input.select();
   });
 }
 
 // 确认框按钮
 $('#btn-confirm-ok').addEventListener('click', () => _resolveConfirm(true));
 $('#btn-confirm-cancel').addEventListener('click', () => _resolveConfirm(false));
-// 确认框遮罩点击 = 取消（通用 overlay 处理器只负责关闭面板，这里补 resolver）
-$('#confirm-dialog').addEventListener('click', (e) => {
-  if (e.target === $('#confirm-dialog')) _resolveConfirm(false);
-});
-// 输入框按钮 + 关闭钮 + 遮罩 = 取消
+// 关闭钮和遮罩不用另外处理：closePanel 会兑现 Promise。
+// 【注意】别在这里再挂 resolve：真实点击时微任务在两个监听器之间执行，调用方接着弹的
+// 下一个对话框（比如「保存的搜索」的删除确认）会被这里的第二个监听器当场取消。
 $('#btn-input-ok').addEventListener('click', () => _resolveInput($('#input-dialog-input').value));
 $('#btn-input-cancel').addEventListener('click', () => _resolveInput(null));
-document.querySelector('#input-dialog .btn-close-panel').addEventListener('click', () => _resolveInput(null));
-$('#input-dialog').addEventListener('click', (e) => {
-  if (e.target === $('#input-dialog')) _resolveInput(null);
-});
 // 输入框 Enter = 确认
 $('#input-dialog-input').addEventListener('keydown', (e) => {
-  if (e.key === 'Enter') { e.preventDefault(); _resolveInput($('#input-dialog-input').value); }
-});
-// Esc = 取消当前对话框
-document.addEventListener('keydown', (e) => {
-  if (e.key !== 'Escape') return;
-  if (_confirmResolver) _resolveConfirm(false);
-  else if (_inputResolver) _resolveInput(null);
+  if (e.key === 'Enter' && !e.isComposing) { e.preventDefault(); _resolveInput($('#input-dialog-input').value); }
 });
 
 // ====== 统一 Toast 提示（替代一次性 alert；单元素模式，与现状一致） ======
@@ -301,6 +373,7 @@ export function showToast(msg, { type = 'info', duration = 2500 } = {}) {
 // ====== 编辑器 UI 显隐 ======
 export function showEditorUI() {
   const isMd = state.noteFormat === 'md';
+  document.body.dataset.editorFormat = state.noteFormat;
   // Quill 工具栏与字体/字号栏只对 Delta 笔记有意义；Markdown 笔记用源码 + 预览
   const tb = document.querySelector('.ql-toolbar');
   if (tb) tb.classList.toggle('hidden', isMd);
@@ -319,6 +392,7 @@ export function showEditorUI() {
   document.body.classList.remove('no-active-note');
 }
 export function hideEditorUI() {
+  delete document.body.dataset.editorFormat;
   const tb = document.querySelector('.ql-toolbar');
   if (tb) tb.classList.add('hidden');
   const mdtb = $('#md-toolbar');

@@ -517,11 +517,11 @@ async function loadReminderList() {
       const repeatIcon = repeatLabels[r.repeat_type] || '';
       const noteTitle = r.note_title || '已删除笔记';
       return `<div class="reminder-item${isCompleted ? ' completed' : ''}" data-rid="${r.id}">
-        <div class="reminder-item-content" title="点击跳转到笔记" data-noteid="${r.note_id}">${escapeHtml(r.content || '未命名提醒')}</div>
+        <div class="reminder-item-content" role="button" tabindex="0" title="点击跳转到笔记" data-noteid="${r.note_id}">${escapeHtml(r.content || '未命名提醒')}</div>
         <div class="reminder-item-meta">
           ${repeatIcon ? `<span class="reminder-item-repeat">${repeatIcon}</span>` : ''}
           <span>${r.remind_at}</span>
-          <span class="reminder-item-note" data-noteid="${r.note_id}">${escapeHtml(noteTitle)}</span>
+          <span class="reminder-item-note" role="button" tabindex="0" data-noteid="${r.note_id}">${escapeHtml(noteTitle)}</span>
         </div>
         <div class="reminder-item-actions">
           ${!isCompleted ? `<button class="reminder-item-btn" title="完成" data-action="complete" data-rid="${r.id}">${svgCheck}</button>` : ''}

@@ -146,3 +146,13 @@ def wait_for_js(window, expression, expected=None, timeout=20.0, interval=0.25):
         if time.time() >= deadline:
             return value
         time.sleep(interval)
+
+
+def wait_until(predicate, timeout=20.0, interval=0.05):
+    """`wait_for_js` 的 Python 版：条件在后端或假桥接上时用它。约定相同，超时也返回最后的值。"""
+    deadline = time.time() + timeout
+    while True:
+        value = predicate()
+        if value or time.time() >= deadline:
+            return value
+        time.sleep(interval)

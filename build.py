@@ -161,6 +161,10 @@ def run_build():
     if not os.path.exists(EXE):
         raise RuntimeError('构建结束但找不到产物：%s' % EXE)
     log('构建完成：%s (%s)' % (EXE, human(EXE)))
+    # 与 release.yml 同一道闸门：缺许可文本、FFmpeg 混回来都算构建失败（失败时 main() 会还原数据）
+    gate = os.path.join(ROOT, 'build_resources', 'collect_licenses.py')
+    if subprocess.run([sys.executable, gate, '--verify', DIST], cwd=ROOT).returncode != 0:
+        raise RuntimeError('产物合规检查未通过（见上方输出）')
 
 
 def _shortcut_dirs():

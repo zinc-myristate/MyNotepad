@@ -11,17 +11,35 @@
 开发机上 site-packages 里往往躺着几十个与本项目无关的包，把它们的许可证也塞进产物只会误导用户。
 
 返回 PyInstaller 的 `datas` 条目：`[(源文件绝对路径, 产物内目录), ...]`。
-收集失败（缺文件、元数据坏掉）一律跳过，**绝不让打包失败**。
+收集失败（缺文件、元数据坏掉）一律跳过，**绝不让打包失败**；
+发版前由 `--verify` 闸门核对产物（缺合规文件时在那里失败，见 `verify_bundle`）。
 """
 from __future__ import annotations
 
 import importlib.metadata as md
 import os
 import re
+import sys
 
 _LICENSE_PREFIXES = ('license', 'licence', 'copying', 'notice', 'authors')
 _TEXT_SUFFIXES = ('', '.txt', '.md', '.rst')
+# 后缀本身就是许可名的文件。漏掉它们收到的只是空壳：cryptography 的 `LICENSE` 只有 197 字节，
+# 正文在 `LICENSE.APACHE` / `LICENSE.BSD`；pystray 的 LGPL 正文在 `COPYING.LGPL`。
+_LICENSE_SUFFIXES = ('.apache', '.bsd', '.gpl', '.lgpl', '.mit', '.psf', '.python')
 _MAX_BYTES = 512 * 1024          # 超过这个体积的多半不是许可证文本（有的包塞了示例数据）
+# 产物里必须有的合规文件（相对产物根目录）
+_REQUIRED_FILES = (
+    'LICENSE',
+    'THIRD_PARTY_NOTICES.md',
+    '_internal/licenses/pystray/COPYING',            # LGPL-3.0 第 4 条：GPL 与 LGPL 全文都要随附
+    '_internal/licenses/pystray/COPYING.LGPL',
+    '_internal/pystray/__init__.py',                 # 独立文件才可替换，不能进 exe 内的模块归档
+    '_internal/renderer/katex/LICENSE',
+    '_internal/renderer/katex/fonts/OFL.txt',        # KaTeX 字体是 OFL-1.1，不是 MIT
+    '_internal/renderer/quill.js.LICENSE.txt',
+)
+# 产物里不许有的文件：FFmpeg 是 LGPL-2.1 且含 H.264/HEVC/AAC 解码器，而本应用不处理视频
+_FORBIDDEN_PREFIXES = ('opencv_videoio_ffmpeg',)
 _REQ_RE = re.compile(r'^\s*([A-Za-z0-9][A-Za-z0-9._-]*)')     # requirements.txt 的行首包名
 # 少数包的元数据里既没有 License 字段也没有 License 分类器（实测 winrt-* 七个包如此），
 # 用这张前缀表兜底，免得生成的 NOTICE 里写着"见项目主页"这种没用的话。
@@ -88,7 +106,7 @@ def _is_license_file(basename: str) -> bool:
     low = basename.lower()
     if not low.startswith(_LICENSE_PREFIXES):
         return False
-    return os.path.splitext(low)[1] in _TEXT_SUFFIXES
+    return os.path.splitext(low)[1] in _TEXT_SUFFIXES + _LICENSE_SUFFIXES
 
 
 def _dist_license_files(dist):
@@ -186,12 +204,54 @@ def collect_license_datas(req_path=None):
                 continue
             seen.add((dest, base))
             out.append((src, dest))
+    # CPython 不是 pip 包，上面的循环收不到；LICENSE.txt 连它带的 OpenSSL、libffi 等一起写了
+    py_license = os.path.join(sys.base_prefix, 'LICENSE.txt')
+    if os.path.isfile(py_license):
+        out.append((py_license, 'licenses/python'))
     return out
 
 
-if __name__ == '__main__':                                   # 自检：python build_resources/collect_licenses.py
-    items = collect_license_datas()
-    pkgs = sorted({dest.split('/', 1)[1] for _src, dest in items})
-    print('共收集 %d 个许可证文件，覆盖 %d 个依赖：' % (len(items), len(pkgs)))
-    for p in pkgs:
-        print(' -', p)
+def verify_bundle(dist_dir):
+    """发版闸门：核对打包产物的合规要点，返回问题清单（空 = 通过）。
+
+    收集阶段为了不让打包挂掉而吞掉了所有错误，所以"合规文件真的进包了"要在这里单独确认。
+    """
+    problems = ['missing: %s' % rel for rel in _REQUIRED_FILES
+                if not os.path.isfile(os.path.join(dist_dir, *rel.split('/')))]
+    for base, _dirs, files in os.walk(os.path.join(dist_dir, '_internal')):
+        for name in files:
+            if name.lower().startswith(_FORBIDDEN_PREFIXES):
+                rel = os.path.relpath(os.path.join(base, name), dist_dir).replace(os.sep, '/')
+                problems.append('forbidden: %s' % rel)
+    return problems
+
+
+def main(argv=None):
+    """`python build_resources/collect_licenses.py` 列出收集结果；
+    `--verify [产物目录]` 是发版闸门（默认 dist/MyNotepad）。
+
+    闸门的输出**只用 ASCII**：与 tcl_tk_data.py 同一条理由，runner 的 stdout 可能是 cp1252。
+    """
+    args = list(sys.argv[1:] if argv is None else argv)
+    if args[:1] != ['--verify']:
+        items = collect_license_datas()
+        pkgs = sorted({dest.split('/', 1)[1] for _src, dest in items})
+        print('共收集 %d 个许可证文件，覆盖 %d 个依赖：' % (len(items), len(pkgs)))
+        for p in pkgs:
+            print(' -', p)
+        return 0
+    target = args[1] if len(args) > 1 else os.path.join('dist', 'MyNotepad')
+    if not os.path.isdir(target):
+        print('bundle dir not found: %s' % target)
+        return 2
+    problems = verify_bundle(target)
+    for problem in problems:
+        print('::error title=License bundle gate::%s' % problem)
+    if problems:
+        return 1
+    print('license bundle OK: %s' % target)
+    return 0
+
+
+if __name__ == '__main__':
+    raise SystemExit(main())

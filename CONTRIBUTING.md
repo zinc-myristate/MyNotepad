@@ -55,8 +55,12 @@ CI（`.github/workflows/ci.yml`）会跑同样的三步，**e2e 失败会直接�
    里有一张参数个数守卫表，历史上两次踩过"桥接方法少一个参数导致点了没反应"。
 3. 加了新的 `data/` 文件或设置项？**写进备份/导出/恢复的路径**，并补默认值。
 4. 用了新的第三方库？**加进 `requirements.txt`（锁精确版本）、`THIRD_PARTY_NOTICES.md`，
-   并在 `MyNotepad.spec` 里确认能被打包**（前端库要离线自带，不要 CDN）。
+   并在 `MyNotepad.spec` 里确认能被打包**（前端库要离线自带，不要 CDN；自带的前端库还要登记进
+   `build_resources/audit_deps.py` 的 `VENDORED`，否则没有人查它的漏洞）。
 5. 改了 `notes` 表结构？写进 `backend.py` 的 `ALTER TABLE` 迁移区（老库要能平滑升级）。
+6. 加了新面板？显隐只走 `openPanel` / `closePanel`（直接写 `style.display` 会让整个界面卡在 inert，
+   `tests/test_frontend_modules.py` 有静态守卫）；关闭时要清理或还原东西的，给取消按钮标
+   `data-panel-cancel`，这样 ×、`Esc`、点遮罩走的都是同一条路。
 
 ## 发版清单（维护者）
 
@@ -74,10 +78,11 @@ CI（`.github/workflows/ci.yml`）会跑同样的三步，**e2e 失败会直接�
    与 **`FileVersion` / `ProductVersion`** 两个字符串（`'1.2.0.0'`）——**四处都要改**，少一处就会出现
    "属性里显示旧版本号"。
 2. 把 [CHANGELOG.md](CHANGELOG.md) 顶部的「## 未发布（日期）」改成「## v1.2.0（日期）」，并在下面开一个新的空「未发布」段。
-3. 本地跑一遍 `python -m ruff check .` + `python -m pytest`，再 `python build.py` 确认打包与冒烟都过。
+3. 本地跑一遍 `python -m ruff check .` + `python -m pytest` + `python build_resources/audit_deps.py`，
+   再 `python build.py` 确认打包与冒烟都过。
 4. `git tag v1.2.0 -m "一句话说明"` → `git push origin master` → `git push origin v1.2.0`。
-5. [`release.yml`](.github/workflows/release.yml) 会自动：跑测试 → PyInstaller → 复制
-   `LICENSE` / `THIRD_PARTY_NOTICES.md` 进包 → 冒烟 → **校验产物里有 `licenses/` 且没有私人数据**
+5. [`release.yml`](.github/workflows/release.yml) 会自动：跑测试 → PyInstaller → 冒烟 →
+   **许可证闸门（`collect_licenses.py --verify`）+ 校验没有私人数据**
    → 出 `MyNotepad-v1.2.0-windows-x64.zip` → 建 Release（release notes 自动生成）。
 6. 顺手把 GitHub Release 说明补两句"这一版用户能感知的变化"（自动生成的只是 PR/提交列表）。
 

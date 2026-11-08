@@ -104,6 +104,8 @@ jobs:
       # 与 release.yml 同一套闸门：Tcl/Tk 数据缺一个，打包版就起不来（2026-09-27 的教训）
       - name: Verify Tcl/Tk data landed in the bundle
         run: python build_resources/tcl_tk_data.py dist/MyNotepad
+      - name: Verify license files landed in the bundle
+        run: python build_resources/collect_licenses.py --verify dist/MyNotepad
       # 静态闸门只证明"目录里有标记文件"，这一步证明**冻结产物里 Tk 真的能起来**：
       # v1.0.0 那个坏包的 `_tk_data` 里装的是 Tcl 库，静态检查（当年用宽松标记）放行了，
       # 而真起 Tk 会当场抛错 —— 选图片/选附件/换背景/确认框全走 tkinter。
