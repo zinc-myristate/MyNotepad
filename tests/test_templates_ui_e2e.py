@@ -96,7 +96,9 @@ def test_templates_drawer_preview_autosave_and_actions(tmp_path, monkeypatch):
         result['content'] = window.evaluate_js("document.getElementById('tpl-content').value")
         # 预览用的标题 → {{title}} 跟着变，且日期由**后端**渲染出来
         _type(window, '#tpl-title', '周一例会')
-        time.sleep(0.8)
+        # 防抖 300ms 再走一趟桥接。全量跑时机器忙，固定等 0.8 秒偶尔不够（2026-11-08 红过一次）。
+        # 等的是"预览里出现新标题"：如果是旧请求晚回来盖掉了新结果，这里会一直等不到，照样会红
+        wait_for_js(window, "document.getElementById('tpl-preview').textContent.includes('# 周一例会')")
         result['preview'] = window.evaluate_js("document.getElementById('tpl-preview').textContent")
         # 改内容 → 自动保存
         _type(window, '#tpl-content', '# {{title}}\n\n改过的模板 {{weekday}}\n')
