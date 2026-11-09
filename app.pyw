@@ -31,6 +31,7 @@ import tkinter.messagebox
 import desktop          # 托盘常驻 / 开机自启 / 提醒守护（见 desktop.py）
 import json
 import base64
+import inspect
 import ocr              # 图片文字识别（Windows 内置 OCR，见 ocr.py）
 import tempfile
 import time
@@ -159,24 +160,6 @@ def pick_background_file():
         filetypes=[("图片文件", "*.png *.jpg *.jpeg *.gif *.bmp *.webp")]
     )
     return path if path else None
-
-def show_confirm_dialog(message, title="确认操作"):
-    """显示确认对话框"""
-    # 隐藏主窗口避免对话框被遮挡
-    try:
-        window = webview.windows[0]
-        window.minimize()
-    except Exception:
-        pass
-
-    result = tkinter.messagebox.askyesno(title, message)
-
-    try:
-        window.restore()
-    except Exception:
-        pass
-
-    return result
 
 def show_error_dialog(message, title="错误"):
     """显示错误对话框"""
@@ -459,8 +442,6 @@ class AppApi:
         # 投影：前端只读 note.id（03-notes 复制笔记）
         return _ack(self.backend.notes_duplicate(note_id))
     # 第 7 轮：派生指标 / 跨笔记待办 / 标签管理 / 保存的搜索
-    def note_metrics(self, note_id): return self.backend.note_metrics(note_id)
-    def metrics_bulk(self, note_ids=None): return self.backend.metrics_bulk(note_ids)
     def todos_list(self, scope='open'): return self.backend.todos_list(scope)
     def todo_toggle(self, note_id, idx, expected_text=''):
         return self.backend.todo_toggle(note_id, idx, expected_text)
@@ -483,7 +464,6 @@ class AppApi:
     # 第 10 轮：模板 / 每日笔记 / 快速捕获
     def templates_list(self): return self.backend.templates_list()
     def template_create(self, name, content=''): return self.backend.template_create(name, content)
-    def template_get(self, template_id): return self.backend.template_get(template_id)
     def template_update(self, template_id, fields):
         return self.backend.template_update(template_id, fields)
     def template_delete(self, template_id): return self.backend.template_delete(template_id)
@@ -492,8 +472,6 @@ class AppApi:
     def daily_note_open(self):
         # 投影：两个调用点都只读 note.id（08 日历今日笔记、28 捕获菜单今日日记）
         return _ack(self.backend.daily_note_open())
-    def capture_text(self, text, notebook_name=None):
-        return _ack(self.backend.capture_text(text, notebook_name))
     def capture_image(self, src_path, title=None, body=None):
         # 投影：前端只读 note.id（29-ocr「存为新笔记」）
         return _ack(self.backend.capture_image(src_path, title, body))
@@ -585,7 +563,6 @@ class AppApi:
     def notes_search(self, query): return self.backend.notes_search(query)
 
     # 附件操作
-    def attachments_list(self, note_id): return self.backend.attachments_list(note_id)
     def attachments_get_path(self, note_id, filename): return self.backend.attachments_get_path(note_id, filename)
 
     # 文件操作
@@ -635,18 +612,6 @@ class AppApi:
     def settings_get(self, key): return self.backend.settings_get(key)
     def settings_set(self, key, value): return self.backend.settings_set(key, value)
     def settings_get_all(self): return self.backend.settings_get_all()
-
-    # 对话框
-    def confirm(self, message, title="确认操作"):
-        return show_confirm_dialog(message, title)
-
-    def show_error(self, message, title="错误"):
-        return show_error_dialog(message, title)
-
-    # 获取数据目录（用于加载本地图片）
-    def get_data_dir(self):
-        # 与后端一致：frozen 模式下 __file__ 在 bundle 内，不能据此拼数据目录
-        return _backend_mod.DATA_DIR
 
     # 读取文件为 base64（用于在 WebView 中显示本地图片）
     def read_file_base64(self, file_path):
@@ -740,9 +705,7 @@ class AppApi:
         """写注册表；返回操作后的真实状态（失败时可能与请求不同）"""
         return desktop.set_autostart(bool(enabled))
 
-    # 提醒（兼容旧接口）
-    def reminder_set(self, note_id, reminder_time): return self.backend.reminder_set(note_id, reminder_time)
-    def reminder_cancel(self, note_id): return self.backend.reminder_cancel(note_id)
+    # 提醒（兼容旧接口：前端还在用的只剩 reminders_check）
     def reminders_check(self): return self.backend.reminders_check()
     # 提醒（新接口）
     def reminder_create(self, note_id, content, remind_at, repeat_type='none', repeat_interval=1):
@@ -780,11 +743,6 @@ class AppApi:
         if success:
             return save_path
         return None
-
-    # PDF 导出（通过前端打印）
-    def print_to_pdf(self):
-        """触发前端打印（用户可在打印对话框中选择另存为 PDF)"""
-        return True  # 前端通过 window.print() 处理
 
     # 一键全库导出（zip：notes.db + attachments + backgrounds）
     def export_all(self):
@@ -1027,6 +985,65 @@ class AppApi:
             }
         except Exception as e:
             return {"success": False, "error": str(e)}
+
+
+# ====== 页面能调用的 Python 方法：按窗口分的白名单 ======
+# 窗口不传 js_api，改用 window.expose 按名字逐个登记（expose_bridge）。原因在 pywebview 的分派
+# （webview/util.py 的 js_bridge_call）：收到的函数名按 '.' 拆开，从 js_api 对象逐级 getattr，
+# 既不查下划线，也不对照它公布的函数清单。以前 js_api=AppApi，而 AppApi.backend 就是整个后端：
+# 页面里任何脚本 postMessage 一个 'backend.notes_purge_all' 或 'notes_list.__func__.__globals__.clear'
+# 都能直接调到。expose 登记的函数按名字查表，查不到才逐级 getattr，那时的起点是 None，什么都摸不到。
+#
+# 每个窗口只登记它的页面真会调用的方法。tests/test_bridge_whitelist.py 从前端源码里数出来对照，
+# 多一个、少一个都会红；AppApi 的公开方法也必须正好是这三份的并集（不再长出没人调用的方法）。
+BRIDGE_MAIN = (
+    'attachments_get_path', 'cancel_icon', 'capture_begin', 'capture_image', 'capture_mini_open',
+    'clipboard_capture', 'confirm_icon', 'convert_note_format', 'daily_note_open', 'desktop_status',
+    'export_all', 'export_markdown', 'export_note', 'export_scope', 'export_table_csv',
+    'file_copy_to_note', 'file_open', 'import_markdown_dialog', 'log_error', 'note_change_password',
+    'note_format_info', 'note_has_password', 'note_links', 'note_lock', 'note_remove_password',
+    'note_set_lock_ttl', 'note_set_password', 'note_tags_get', 'note_tags_set', 'note_unlock_status',
+    'note_verify_password', 'notebook_counts', 'notebooks_create', 'notebooks_delete', 'notebooks_list',
+    'notebooks_update', 'notes_add_tag_many', 'notes_by_tag', 'notes_create', 'notes_create_from_link',
+    'notes_create_from_template', 'notes_created_on', 'notes_delete', 'notes_delete_many',
+    'notes_duplicate', 'notes_get', 'notes_list', 'notes_move_many', 'notes_purge', 'notes_purge_all',
+    'notes_reorder', 'notes_resolve_link', 'notes_restore', 'notes_search', 'notes_table',
+    'notes_trash_list', 'notes_update', 'ocr_clipboard_image', 'ocr_languages', 'ocr_pick_image',
+    'ocr_recognize', 'ocr_release', 'pick_and_preview_icon', 'pick_attachment', 'pick_background',
+    'pick_image', 'read_file_base64', 'reminder_complete', 'reminder_create', 'reminder_delete',
+    'reminder_get', 'reminder_list', 'reminder_list_all', 'reminder_snooze', 'reminder_update',
+    'reminder_update_next_repeat', 'reminders_check', 'restore_default_icon', 'restore_delta_backup',
+    'save_temp_image', 'saved_search_create', 'saved_search_delete', 'saved_search_update',
+    'saved_searches_list', 'set_autostart', 'set_capture_hotkey_enabled', 'set_hotkey_enabled',
+    'set_tray_enabled', 'settings_get', 'settings_get_all', 'settings_set', 'startup_notice',
+    'tags_create', 'tags_delete', 'tags_list', 'tags_merge', 'tags_rename', 'template_create',
+    'template_delete', 'template_render', 'template_update', 'templates_list', 'todo_toggle',
+    'todos_list', 'update_icon_preview', 'versions_create', 'versions_delete', 'versions_delete_all',
+    'versions_get', 'versions_list', 'versions_restore',
+)
+BRIDGE_CAPTURE_OVERLAY = ('capture_commit', 'capture_overlay_info', 'capture_overlay_ready')
+BRIDGE_CAPTURE_MINI = ('capture_mini_close', 'capture_mini_submit')
+
+
+def expose_bridge(window, bridge, names):
+    """把 bridge 上的这些方法登记到 window（pywebview 的 Window.expose）。
+
+    登记的是包装函数而不是绑定方法：expose 用 inspect.getfullargspec 生成 JS 存根的形参，
+    绑定方法会多带一个 self。包装函数带着方法自己的签名（已去掉 self），存根和以前走 js_api 时一样。
+    """
+    funcs = []
+    for name in names:
+        method = getattr(bridge, name)
+
+        def call(*args, _method=method):
+            return _method(*args)
+
+        call.__name__ = call.__qualname__ = name
+        call.__signature__ = inspect.signature(method)
+        funcs.append(call)
+    window.expose(*funcs)
+    return funcs
+
 
 api = AppApi(backend_api)
 
@@ -1500,7 +1517,6 @@ _geo = _resolve_window_geometry(backend_api)
 window = webview.create_window(
     "我的记事本",
     html_path,
-    js_api=api,
     width=_geo['w'],
     height=_geo['h'],
     x=_geo['x'],
@@ -1508,6 +1524,7 @@ window = webview.create_window(
     min_size=(900, 600),
     text_select=True
 )
+expose_bridge(window, api, BRIDGE_MAIN)    # 不传 js_api：见 BRIDGE_MAIN 上方的说明
 
 # 窗口加载完成后自动弹出到桌面最前
 def _on_loaded():
@@ -1731,10 +1748,11 @@ def _capture_begin(note_id=None):
     try:
         overlay = webview.create_window(
             _CAPTURE_TITLE, _OVERLAY_HTML,
-            js_api=api,
             width=geo['width'], height=geo['height'], x=geo['x'], y=geo['y'],
             frameless=True, easy_drag=False, resizable=False, on_top=True,
             focus=True, shadow=False, background_color='#000000', hidden=True)
+        # 紧跟着登记：页面先加载完也不要紧，expose 会在页面里补建这几个函数（overlay.js 等的就是它们）
+        expose_bridge(overlay, api, BRIDGE_CAPTURE_OVERLAY)
     except Exception:
         _cleanup_files(full)
         if was_visible:
@@ -1953,10 +1971,11 @@ def _mini_open():
     y = int(work[1] + max(0, work[3] // 4))          # 靠上四分之一：离视线近，又不压住中间
     try:
         win = webview.create_window(
-            _MINI_TITLE, _MINI_HTML, js_api=api,
+            _MINI_TITLE, _MINI_HTML,
             width=w, height=h, x=x, y=y,
             frameless=True, easy_drag=False, resizable=False, on_top=True,
             focus=True, shadow=True, background_color='#000000')
+        expose_bridge(win, api, BRIDGE_CAPTURE_MINI)
     except Exception:
         try:
             import applog

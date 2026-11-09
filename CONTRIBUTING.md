@@ -51,8 +51,11 @@ CI（`.github/workflows/ci.yml`）会跑同样的三步，**e2e 失败会直接�
 ## 新增功能时的检查清单
 
 1. 有没有**第二个真相源**？（例如属性面板改写正文而不是另存一份）
-2. 加了新的桥接方法？**参数个数**要和前端调用一致——`tests/test_capture_templates_unit.py`
-   里有一张参数个数守卫表，历史上两次踩过"桥接方法少一个参数导致点了没反应"。
+2. 加了新的桥接方法？先把名字加进 `app.pyw` 里对应窗口的白名单（`BRIDGE_MAIN` /
+   `BRIDGE_CAPTURE_OVERLAY` / `BRIDGE_CAPTURE_MINI`），漏了的话页面调不到、点了没反应；
+   `tests/test_bridge_whitelist.py` 会拿白名单和前端源码对照。**参数个数**也要和前端调用一致——
+   `tests/test_capture_templates_unit.py` 里有一张参数个数守卫表，历史上两次踩过"桥接方法少一个参数导致点了没反应"。
+   只给 Python 侧用的方法加下划线，别挂在桥上。
 3. 加了新的 `data/` 文件或设置项？**写进备份/导出/恢复的路径**，并补默认值。
 4. 用了新的第三方库？**加进 `requirements.txt`（锁精确版本）、`THIRD_PARTY_NOTICES.md`，
    并在 `MyNotepad.spec` 里确认能被打包**（前端库要离线自带，不要 CDN；自带的前端库还要登记进

@@ -52,7 +52,7 @@
 | Markdown 栈 | markdown-it（渲染）+ CodeMirror 5（源码编辑）+ DOMPurify（消毒）+ highlight.js（代码高亮），全部离线自带、无 CDN |
 | 加密 | `cryptography`（AES-256-GCM） |
 | 打包 | PyInstaller（`MyNotepad.spec`） |
-| 测试 | pytest（806 单测 + 128 无头 E2E）、ruff |
+| 测试 | pytest（810 单测 + 129 无头 E2E）、ruff |
 
 ## 快速开始
 
@@ -96,8 +96,8 @@ python build.py                     # 推荐：关实例 → 备份 data → PyI
 ## 测试
 
 ```bash
-py -3.14 -m pytest                 # 806 单测（自动隔离临时数据目录）
-py -3.14 -m pytest -m e2e          # 128 无头 pywebview 端到端（真开窗口，约 20 分钟）
+py -3.14 -m pytest                 # 810 单测（自动隔离临时数据目录）
+py -3.14 -m pytest -m e2e          # 129 无头 pywebview 端到端（真开窗口，约 20 分钟）
 python -m ruff check .             # 代码检查（配置见 pyproject.toml）
 ```
 

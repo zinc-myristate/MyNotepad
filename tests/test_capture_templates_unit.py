@@ -251,7 +251,7 @@ def test_bridge_signatures_accept_the_arguments_js_passes(app_ns):
         'capture_mini_close': 0,
         'clipboard_capture': 0,
         'daily_note_open': 0,
-        'capture_text': 1,
+        # capture_text 已不在桥上（前端从没调用，剪贴板和迷你窗走的是 clipboard_capture / capture_mini_submit）
         'capture_image': 3,          # capture_image(path, title, body) —— 第 11 轮加了 body
         'template_render': 2,
         'template_update': 2,
