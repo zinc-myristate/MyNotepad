@@ -152,14 +152,42 @@ def _drag(window, x0, y0, x1, y1, steps=3):
         "{clientX:%d, clientY:%d, button:0, bubbles:true}));" % (x1, y1))
 
 
-def _overlay_factory(bridge, title='覆盖窗测试'):
+def _overlay_factory(bridge, title='覆盖窗测试', width=420, height=320):
     """建一个覆盖窗（**不**把窗口对象挂到桥接上，见 OverlayBridge 的说明）"""
     import webview
 
     def factory():
         return webview.create_window(title, RENDERER + '/capture-overlay.html',
-                                     js_api=bridge, width=420, height=320, frameless=True)
+                                     js_api=bridge, width=width, height=height, frameless=True)
     return factory
+
+
+def _real_click(window, act):
+    """按浏览器处理真实鼠标点击的顺序点工具条按钮，返回按下、松开各自命中了哪里。
+
+    按下、松开都按坐标重新命中，click 落在两处的最近公共祖先上（UI Events 规范，Chromium 也是这样）。
+    脚本里的 `.click()` 不经过 pointerdown，抓不到"按下那一下把按钮藏掉了"：以前覆盖窗正是这样，
+    真人点哪个按钮都没反应，选区还被清掉，而用 `.click()` 的用例全是绿的（2026-11-09 用 CDP 真机实测到）。
+    """
+    return window.evaluate_js('''(function (act) {
+      var b = document.querySelector('[data-act="' + act + '"]');
+      var r = b.getBoundingClientRect();
+      var x = r.left + r.width / 2, y = r.top + r.height / 2;
+      var opts = {clientX: x, clientY: y, button: 0, buttons: 1, bubbles: true, cancelable: true,
+                  pointerId: 1, isPrimary: true, pointerType: 'mouse'};
+      var up_opts = Object.assign({}, opts, {buttons: 0});
+      var down = document.elementFromPoint(x, y);
+      down.dispatchEvent(new PointerEvent('pointerdown', opts));
+      down.dispatchEvent(new MouseEvent('mousedown', opts));
+      var up = document.elementFromPoint(x, y) || document.documentElement;
+      up.dispatchEvent(new PointerEvent('pointerup', up_opts));
+      up.dispatchEvent(new MouseEvent('mouseup', up_opts));
+      var t = down;
+      while (t && !t.contains(up)) t = t.parentNode;
+      (t || document.documentElement).dispatchEvent(new MouseEvent('click', up_opts));
+      return (b.contains(down) ? 'down-on-button' : 'down-elsewhere') + '/'
+        + (b.contains(up) ? 'up-on-button' : 'up-elsewhere');
+    })(%s)''' % json.dumps(act))
 
 
 def _overlay_ready(window, bridge):
@@ -317,6 +345,36 @@ def test_overlay_keyboard_shortcuts(tmp_path):
     assert 'error' not in r2, r2.get('error')
     assert r2['insert_disabled'] is True
     assert r2['commit']['action'] == 'note'
+
+
+@pytest.mark.e2e
+def test_overlay_toolbar_buttons_work_with_a_real_click(tmp_path):
+    """工具条的五个按钮用鼠标都要点得动：按在按钮上不能被当成重新框选，选区要原样交上去。
+
+    窗口开大一点：420 宽放不下整条工具条，右边的按钮会落在视口外，按坐标命中不到。
+    """
+    bridge = OverlayBridge(tmp_path)
+    acts = ['insert', 'note', 'ocr', 'clipboard', 'cancel']
+
+    def actions(window, result):
+        _overlay_ready(window, bridge)
+        result['hits'] = []
+        for i, act in enumerate(acts, 1):
+            _drag(window, 5, 5, 5, 5, steps=1)          # 先在空白处点一下，清掉上一次的选区
+            _drag(window, 40, 40, 200, 160)
+            wait_for_js(window, "!document.getElementById('bar').classList.contains('hidden')")
+            result['hits'].append(_real_click(window, act))
+            wait_for_js(window, 'window.__commitsDone', expected=i, timeout=5)
+        result['bar_inside_viewport'] = window.evaluate_js(
+            "document.getElementById('bar').getBoundingClientRect().right <= window.innerWidth")
+
+    r = _run(_overlay_factory(bridge, '覆盖窗测试-真实点击', width=900, height=600), actions)
+    assert 'error' not in r, r.get('error')
+    assert r['bar_inside_viewport'] is True
+    assert r['hits'] == ['down-on-button/up-on-button'] * len(acts), \
+        '按下那一下把按钮藏掉了（click 落不到按钮上）：%s' % r['hits']
+    assert [c['action'] for c in bridge.commits] == acts
+    assert all(c['rect'] == [40, 40, 160, 120] for c in bridge.commits), bridge.commits
 
 
 # ---------------- 迷你捕获窗 ----------------

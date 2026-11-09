@@ -224,6 +224,10 @@ function defaultAction() {
 function bindEvents() {
   document.addEventListener('pointerdown', (ev) => {
     if (busy || ev.button !== 0) return;
+    // 按在工具条上：交给按钮自己的 click。不拦的话这一下会被当成"重新框选"，hideBar() 当场
+    // 把工具条藏掉，松开时按钮已经不在了，click 落到 body 上：真人用鼠标点哪个按钮都没反应，
+    // 选区还被清掉了。脚本里的 .click() 不经过 pointerdown，所以以前的用例照样是绿的。
+    if (ev.target.closest && ev.target.closest('#bar')) return;
     const handle = ev.target.closest && ev.target.closest('.ov-handle');
     if (handle && rect) {
       drag = { mode: 'resize', h: handle.getAttribute('data-h'), start: { ...rect } };
