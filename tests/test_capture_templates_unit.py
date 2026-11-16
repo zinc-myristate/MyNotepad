@@ -1,5 +1,6 @@
 # -*- coding: utf-8 -*-
-"""第十轮「捕获与模板」的第二批单测：截图坐标换算、裁剪、模板建笔记、桥接与界面接线。
+"""第十轮「捕获与模板」的第二批单测：截图坐标换算、裁剪、模板建笔记、桥接与界面接线、
+覆盖窗启动看门狗。
 
 为什么截图这一块要单独测：**坐标算错是这一轮唯一"用户会立刻看出来但代码不会报错"的地方**
 （框了 A 区域，裁出来是 B 区域）。所以把最危险的一段抽成纯函数
@@ -9,9 +10,10 @@
 """
 import json
 import os
+from types import SimpleNamespace
 
 import pytest
-from conftest import PROJECT_ROOT
+from conftest import PROJECT_ROOT, load_capture_session, wait_until
 
 import desktop
 
@@ -336,6 +338,191 @@ def test_json_payload_passed_to_main_window_is_serialisable():
     seg = src.split('def _capture_commit')[1].split('def _capture_end')[0]
     assert 'json.dumps(result.get(\'saved\') or {})' in seg
     json.dumps({'id': 'x', 'filename': 'a.png', 'storedPath': 'C:/x/a.png'})
+
+
+# ---------------- 覆盖窗启动看门狗 ----------------
+# 覆盖窗是隐藏创建的，页面报 ready 才显示，而这时主窗已经藏了：页面起不来就全靠看门狗把主窗放回来。
+# 这里跑真的会话函数、用假窗口钉住状态，真窗口那条路在 test_capture_windows_e2e.py。
+
+class _FakeEvent:
+    """pywebview 的窗口事件：只用到 `+=`"""
+
+    def __iadd__(self, handler):
+        return self
+
+
+class _FakeWindow:
+    """主窗和覆盖窗共用的假窗口：只记调用"""
+
+    def __init__(self):
+        self.calls = []
+        self.exposed = []
+        self.events = SimpleNamespace(closed=_FakeEvent())
+
+    def expose(self, *funcs):
+        """桥接方法是建窗后按白名单登记的（expose_bridge），不算窗口操作，另外记"""
+        self.exposed.extend(f.__name__ for f in funcs)
+
+    def hide(self):
+        self.calls.append('hide')
+
+    def show(self):
+        self.calls.append('show')
+
+    def restore(self):
+        self.calls.append('restore')
+
+    def destroy(self):
+        self.calls.append('destroy')
+
+
+def _fire(timer):
+    """直接调 Timer 的回调：它已经过了等待，cancel() 拦不住，或者就是到点了。"""
+    timer.function(*timer.args, **timer.kwargs)
+
+
+@pytest.fixture
+def capture(app_ns, tmp_path, monkeypatch):
+    """真的会话函数 + 假窗口 + 假抓屏，临时图落在 tmp_path。"""
+    import tempfile
+    monkeypatch.setattr(tempfile, 'tempdir', os.path.realpath(str(tmp_path)))
+    shots = []
+
+    def grab_screen(path):
+        shots.append(path)
+        return _touch(path)
+
+    monkeypatch.setattr(desktop, 'virtual_screen_rect', lambda: (0, 0, 800, 600))
+    monkeypatch.setattr(desktop, 'grab_screen', grab_screen)
+    main = _FakeWindow()
+    overlays = []
+
+    def create_window(*args, **kwargs):
+        overlays.append(_FakeWindow())
+        return overlays[-1]
+
+    load_capture_session(app_ns, main)
+    app_ns.update({'webview': SimpleNamespace(create_window=create_window),
+                   '_focus_window': lambda title: True, '_HIDE_SETTLE_SEC': 0})
+    yield SimpleNamespace(ns=app_ns, main=main, overlays=overlays, shots=shots,
+                          log=tmp_path / 'error.log')
+    app_ns['_capture_end'](restore=False)           # 没到点的 Timer 别留给下一条用例
+
+
+def test_watchdog_gives_the_main_window_back_when_page_never_reports_ready(capture):
+    """页面起不来：到点放弃这次截图，主窗回来、临时图删掉、error.log 留痕，之后还能再截。"""
+    ns, main = capture.ns, capture.main
+    ns['_CAPTURE_READY_TIMEOUT'] = 0.05
+    assert ns['_capture_begin']('note-1') is True
+
+    assert wait_until(lambda: 'restore' in main.calls), '看门狗没有把主窗放回来'
+    assert main.calls == ['hide', 'show', 'restore']
+    assert capture.overlays[0].calls == ['destroy']
+    assert not os.path.exists(capture.shots[0]), '临时图没删'
+    assert '[ERROR] 截图覆盖窗' in capture.log.read_text(encoding='utf-8')
+    assert ns['_capture']['window'] is None and ns['_capture']['watchdog'] is None
+
+    ns['_CAPTURE_READY_TIMEOUT'] = 30.0
+    assert ns['_capture_begin']('note-1') is True, '会话没清干净，再点截图还是直接返回'
+    assert ns['_capture']['window'] is capture.overlays[1]
+
+
+def test_ready_cancels_the_watchdog(capture):
+    """页面报了 ready、窗口也显示了：看门狗撤掉，用户框选多久都行。"""
+    ns = capture.ns
+    ns['_capture_begin']('note-1')
+    overlay, timer = ns['_capture']['window'], ns['_capture']['watchdog']
+    assert timer.is_alive()
+
+    assert ns['_capture_overlay_ready']() is True
+    assert ns['_capture']['watchdog'] is None
+    assert wait_until(lambda: not timer.is_alive(), timeout=5), '收到 ready 后 Timer 还在等'
+    assert overlay.calls == ['show', 'restore']
+    assert ns['_capture']['window'] is overlay
+    assert tuple(overlay.exposed) == ns['BRIDGE_CAPTURE_OVERLAY'], '覆盖窗只登记它那份白名单'
+
+
+@pytest.mark.parametrize('end', [
+    lambda ns: ns['_capture_commit']('cancel'),
+    lambda ns: ns['_on_overlay_closed'](),
+    lambda ns: ns['_capture_end'](restore=False),
+], ids=['page-cancels', 'closed-from-outside', 'app-exit'])
+def test_session_ending_before_ready_cancels_the_watchdog(capture, end):
+    """会话提前结束的每条路都要撤掉看门狗：`_capture_end` 是它们共同的出口。"""
+    ns = capture.ns
+    ns['_capture_begin']('note-1')
+    timer = ns['_capture']['watchdog']
+
+    end(ns)
+    assert ns['_capture']['watchdog'] is None
+    assert wait_until(lambda: not timer.is_alive(), timeout=5), '会话结束后 Timer 还在等'
+    assert 'ready' not in capture.log.read_text(encoding='utf-8')
+
+
+def test_overlay_closed_from_outside_gives_the_main_window_back(capture):
+    """覆盖窗被外部关掉：看门狗跟着撤了，主窗只能靠这条路回来。"""
+    ns = capture.ns
+    ns['_capture_begin']('note-1')
+
+    ns['_on_overlay_closed']()
+    assert capture.main.calls == ['hide', 'show', 'restore']
+    assert ns['_capture']['window'] is None
+
+
+def test_late_timer_leaves_the_next_session_alone(capture):
+    """上一次的 Timer 取消晚了一步：回调照样走进来，也不能动下一次截图的会话。"""
+    ns = capture.ns
+    ns['_capture_begin']('note-1')
+    stale = ns['_capture']['watchdog']
+    ns['_capture_commit']('cancel')
+    ns['_capture_begin']('note-2')
+    overlay, current = ns['_capture']['window'], ns['_capture']['watchdog']
+
+    _fire(stale)
+    assert ns['_capture']['window'] is overlay
+    assert ns['_capture']['watchdog'] is current and current.is_alive()
+    assert ns['_capture']['note_id'] == 'note-2'
+    assert overlay.calls == []
+    assert 'ready' not in capture.log.read_text(encoding='utf-8')
+
+
+def test_late_timer_leaves_a_shown_overlay_alone(capture):
+    """Timer 刚过等待，ready 就到了：窗口已经显示，用户正要框选，不能被收掉。"""
+    ns = capture.ns
+    ns['_capture_begin']('note-1')
+    overlay, stale = ns['_capture']['window'], ns['_capture']['watchdog']
+    ns['_capture_overlay_ready']()
+
+    _fire(stale)
+    assert ns['_capture']['window'] is overlay
+    assert 'destroy' not in overlay.calls
+    assert capture.main.calls == ['hide']
+
+
+def test_overlay_that_fails_to_show_stays_under_the_watchdog(capture):
+    """报了 ready 但窗口显示失败：这时撤掉看门狗，主窗就还是一直藏着。"""
+    ns = capture.ns
+
+    def show_fails():
+        raise RuntimeError('显示失败')
+
+    ns['_capture_begin']('note-1')
+    overlay, timer = ns['_capture']['window'], ns['_capture']['watchdog']
+    overlay.show = show_fails
+
+    assert ns['_capture_overlay_ready']() is False
+    assert ns['_capture']['watchdog'] is timer, '窗口没显示出来，看门狗不能撤'
+    _fire(timer)
+    assert ns['_capture']['window'] is None
+    assert capture.main.calls == ['hide', 'show', 'restore']
+
+
+def test_watchdog_leaves_room_for_slow_startup_and_never_blocks_exit(capture):
+    """到点太早，慢机器就截不了图：要盖住 pywebview 等窗口的 20 秒和页面等桥接的 10 秒。"""
+    ns = capture.ns
+    assert ns['_CAPTURE_READY_TIMEOUT'] >= 30
+    ns['_capture_begin']('note-1')
+    assert ns['_capture']['watchdog'].daemon is True, '没到点的 Timer 不该拖住进程退出'
 
 
 # ---------------- 第 11 轮：识别文字（OCR）的接线 ----------------

@@ -7,17 +7,21 @@
 逐条钉死；这里用假桥接提供一张**已知内容**的冻屏图，于是两半能接上：
 放大镜读到的颜色必须等于合成图对应位置的颜色，也就证明了 JS 的 CSS↔图片 约定与 Python 一致。
 
-真窗口创建/藏主窗/抓屏那一段（要真屏幕）不进自动化，走打包后的手工探针。
+抓屏要真屏幕，不进自动化，走打包后的手工探针。覆盖窗启动看门狗那几条跑真窗口的完整会话
+（藏主窗 → 建覆盖窗 → 收尾），只把抓屏换成假的。
 """
 import base64
+import ctypes
 import json
 import os
 import threading
 import time
 
 import pytest
-from conftest import PROJECT_ROOT, wait_for_js, wait_until
+from conftest import PROJECT_ROOT, load_capture_session, wait_for_js, wait_until
 from PIL import Image
+
+import desktop
 
 RENDERER = os.path.join(PROJECT_ROOT, 'renderer')
 
@@ -375,6 +379,153 @@ def test_overlay_toolbar_buttons_work_with_a_real_click(tmp_path):
         '按下那一下把按钮藏掉了（click 落不到按钮上）：%s' % r['hits']
     assert [c['action'] for c in bridge.commits] == acts
     assert all(c['rect'] == [40, 40, 160, 120] for c in bridge.commits), bridge.commits
+
+
+# ---------------- 覆盖窗启动看门狗 ----------------
+
+WM_CLOSE = 0x0010
+
+
+def _visible(win):
+    """按窗口自己的句柄问 Win32：隔离数据目录下没有单实例互斥，按标题可能问到别的进程。"""
+    return bool(ctypes.windll.user32.IsWindowVisible(win.native.Handle.ToInt64()))
+
+
+def _dead_page(tmp_path):
+    """起不来的覆盖窗页面：能加载，但永远不报 ready。
+
+    要给 file:// 地址：普通路径走 pywebview 的 HTTP 服务，全量运行时服务的根目录已经定在项目所在的盘，
+    临时目录在别的盘时建窗直接抛错，而失败的窗口还留在 webview.windows 里，后面每条用例都跟着炸。
+    """
+    page = tmp_path / 'dead.html'
+    page.write_text('<!doctype html><title>起不来的页面</title>', encoding='utf-8')
+    return page.as_uri()
+
+
+@pytest.fixture
+def capture_ns(app_ns, tmp_path, monkeypatch):
+    """真的会话函数 + 真窗口。只有抓屏是假的，覆盖窗也缩成小窗，不盖住整个桌面。"""
+    import tempfile
+
+    def grab_screen(path):
+        Image.new('RGB', (1000, 800), QUADRANTS['white']).save(path)
+        return True
+
+    monkeypatch.setattr(tempfile, 'tempdir', os.path.realpath(str(tmp_path)))
+    monkeypatch.setattr(desktop, 'virtual_screen_rect', lambda: (0, 0, 420, 320))
+    monkeypatch.setattr(desktop, 'grab_screen', grab_screen)
+    load_capture_session(app_ns, None)
+    app_ns['_CAPTURE_TITLE'] = '看门狗测试覆盖窗'
+    return app_ns
+
+
+def _run_session(ns, actions):
+    """`_run` 的真主窗版：等主窗显示出来再开始，结束时收掉覆盖窗，否则 webview.start 不会返回。"""
+    import webview
+
+    def factory():
+        ns['window'] = webview.create_window('看门狗测试主窗', html='<p>主窗</p>', width=420, height=320)
+        return ns['window']
+
+    def run(window, result):
+        wait_until(window.events.shown.is_set)
+        try:
+            actions(window, result)
+        finally:
+            ns['_capture_end'](restore=False)
+
+    return _run(factory, run, wait_before=0)
+
+
+@pytest.mark.e2e
+def test_overlay_page_that_never_reports_ready_gives_the_main_window_back(
+        capture_ns, tmp_path, monkeypatch):
+    """页面起不来时主窗不能一直藏着，之后也要能再截。
+
+    看门狗是在自己的线程里销毁一个隐藏的、WebView2 可能还没起完的窗口，这一步只有真窗口验得了。
+    """
+    import webview
+    ns = capture_ns
+    ns['_OVERLAY_HTML'] = _dead_page(tmp_path)
+    ns['_CAPTURE_READY_TIMEOUT'] = 2.0
+    grab_screen = desktop.grab_screen
+
+    def actions(window, result):
+        def grab_while_hidden(path):
+            result['main_hidden'] = not _visible(window)
+            return grab_screen(path)
+
+        monkeypatch.setattr(desktop, 'grab_screen', grab_while_hidden)
+        result['began'] = ns['_capture_begin']('note-1')
+        overlay = ns['_capture']['window']
+        result['main_back'] = wait_until(lambda: _visible(window))
+        result['overlay_gone'] = overlay not in webview.windows
+        result['session'] = ns['_capture']['window']
+        result['temp_files'] = [p.name for p in tmp_path.glob('mynotepad_*')]
+        result['began_again'] = ns['_capture_begin']('note-1')
+
+    r = _run_session(ns, actions)
+    assert 'error' not in r, r.get('error')
+    assert r['began'] is True
+    assert r['main_hidden'] is True, '抓屏时主窗应该已经藏起来了'
+    assert r['main_back'] is True, '页面起不来，主窗一直藏着'
+    assert r['overlay_gone'] is True, '隐藏的覆盖窗没有销毁'
+    assert r['session'] is None
+    assert r['temp_files'] == []
+    assert 'ready' in (tmp_path / 'error.log').read_text(encoding='utf-8')
+    assert r['began_again'] is True, '放弃之后再点截图还是直接返回'
+
+
+@pytest.mark.e2e
+def test_real_overlay_page_reporting_ready_cancels_the_watchdog(capture_ns, tmp_path):
+    """真页面走完启动：窗口显示出来、看门狗撤掉，这次会话不再有时限；取消后主窗回来。"""
+    ns = capture_ns
+
+    def actions(window, result):
+        result['began'] = ns['_capture_begin']('note-1')
+        overlay, timer = ns['_capture']['window'], ns['_capture']['watchdog']
+        result['overlay_shown'] = wait_until(lambda: _visible(overlay))
+        result['timer_stopped'] = wait_until(lambda: not timer.is_alive(), timeout=5)
+        result['session_alive'] = ns['_capture']['window'] is overlay
+        result['main_hidden'] = not _visible(window)
+        ns['_capture_commit']('cancel')
+        result['main_back'] = wait_until(lambda: _visible(window))
+        result['temp_files'] = [p.name for p in tmp_path.glob('mynotepad_*')]
+
+    r = _run_session(ns, actions)
+    assert 'error' not in r, r.get('error')
+    assert r['began'] is True
+    assert r['overlay_shown'] is True, '页面没有把窗口显示出来'
+    assert r['timer_stopped'] is True, '收到 ready 后看门狗还在等，到点会把正在框选的窗口收掉'
+    assert r['session_alive'] is True
+    assert r['main_hidden'] is True
+    assert r['main_back'] is True
+    assert r['temp_files'] == []
+
+
+@pytest.mark.e2e
+@pytest.mark.parametrize('shown', [False, True], ids=['hidden', 'shown'])
+def test_overlay_closed_from_outside_gives_the_main_window_back(capture_ns, tmp_path, shown):
+    """覆盖窗被外部关掉（WM_CLOSE，Alt+F4 最终也是这条消息）：看门狗撤了，主窗只能靠这条路回来。"""
+    ns = capture_ns
+    if not shown:
+        ns['_OVERLAY_HTML'] = _dead_page(tmp_path)
+
+    def actions(window, result):
+        result['began'] = ns['_capture_begin']('note-1')
+        overlay = ns['_capture']['window']
+        wait_until((lambda: _visible(overlay)) if shown else overlay.events.shown.is_set)
+        ctypes.windll.user32.PostMessageW(overlay.native.Handle.ToInt64(), WM_CLOSE, 0, 0)
+        result['main_back'] = wait_until(lambda: _visible(window))
+        result['session'] = ns['_capture']['window']
+        result['temp_files'] = [p.name for p in tmp_path.glob('mynotepad_*')]
+
+    r = _run_session(ns, actions)
+    assert 'error' not in r, r.get('error')
+    assert r['began'] is True
+    assert r['main_back'] is True, '覆盖窗被关掉后主窗一直藏着'
+    assert r['session'] is None
+    assert r['temp_files'] == []
 
 
 # ---------------- 迷你捕获窗 ----------------

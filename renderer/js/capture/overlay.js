@@ -333,7 +333,7 @@ async function boot() {
   bindEvents();
   try {
     await window.pywebview.api.capture_overlay_ready();
-  } catch (e) { /* 显示失败时窗口本来也不会出现，交给 Python 侧超时 */ }
+  } catch (e) { /* 报不上去窗口就显示不出来，页面这里也收不了尾：Python 的看门狗到点会放弃这次截图并恢复主窗 */ }
 }
 
 boot();

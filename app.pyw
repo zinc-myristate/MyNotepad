@@ -1610,6 +1610,9 @@ _OVERLAY_HTML = os.path.join(BASE_DIR, 'renderer', 'capture-overlay.html')
 _MINI_HTML = os.path.join(BASE_DIR, 'renderer', 'capture-mini.html')
 # 藏窗后等这么久再抓屏：DWM 把窗口撤下去有个过程，立刻抓会把自己拍进去（实测 0.12s 起稳定）
 _HIDE_SETTLE_SEC = 0.18
+# 覆盖窗页面这么久没报 ready 就放弃这次截图。要盖住慢机器上 WebView2 的冷启动（pywebview 自己
+# 等窗口就给 20 秒）和页面等桥接（最多 10 秒）。设长了只是真卡住时主窗晚点回来，设短了慢机器截不了图。
+_CAPTURE_READY_TIMEOUT = 30.0
 
 _capture = {
     'full': None,        # 冻屏整图（虚拟屏幕）临时文件
@@ -1622,6 +1625,7 @@ _capture = {
     'note_id': None,     # 开始截图时正在编辑的笔记（插入用）
     'window': None,
     'was_visible': False,
+    'watchdog': None,    # 启动看门狗（Timer）：窗口显示出来或会话结束时撤掉
 }
 _mini = {'window': None}
 
@@ -1768,20 +1772,54 @@ def _capture_begin(note_id=None):
         if was_visible:
             _show_window()
         return False
+    # 窗口是隐藏建的，页面报 ready 才显示：页面起不来时全靠看门狗把主窗放回来。
+    # 先进会话再 start：取消就算抢在 start 前面，Timer 启动后也会直接退出。
+    watchdog = _capture_watchdog()
     _capture.update({'full': full, 'view': None, 'origin': (screen[0], screen[1]),
                      'view_origin': (screen[0], screen[1]),
                      'view_size': (screen[2], screen[3]), 'client': None,
                      'image': None, 'note_id': note_id, 'window': overlay,
-                     'was_visible': was_visible})
+                     'was_visible': was_visible, 'watchdog': watchdog})
     overlay.events.closed += _on_overlay_closed
+    watchdog.start()
     return True
+
+
+def _capture_watchdog():
+    """建一只还没启动的看门狗。Timer 自己就是这次会话的凭证，见 `_capture_overlay_timeout`。"""
+    timer = _threading.Timer(_CAPTURE_READY_TIMEOUT, lambda: _capture_overlay_timeout(timer))
+    timer.daemon = True                     # 没到点的 Timer 不该拖住进程退出
+    return timer
+
+
+def _capture_watchdog_cancel():
+    timer = _capture['watchdog']
+    _capture['watchdog'] = None
+    if timer is not None:
+        timer.cancel()
+
+
+def _capture_overlay_timeout(timer):
+    """页面到点还没报 ready：放弃这次截图，把主窗还给用户。
+
+    `cancel()` 拦不住已经过了等待、正要调到这里的 Timer，而那时下一次截图可能已经开始了，
+    所以只认会话里挂着的那一只：取消过的 Timer 走到这里什么都不做。
+    """
+    if _capture['watchdog'] is not timer:
+        return
+    try:
+        import applog
+        applog.get_logger().error("截图覆盖窗 %g 秒内没有报 ready，已放弃这次截图", _CAPTURE_READY_TIMEOUT)
+    except Exception:
+        pass
+    _capture_end(restore=True)
 
 
 def _on_overlay_closed():
     """覆盖窗被外部关掉（Alt+F4 / 系统）时也要收尾，不留一个卡住的会话"""
     if _capture['window'] is None:
         return
-    _capture_end(restore=False)
+    _capture_end(restore=True)              # 看门狗会跟着撤掉，这里不放回来主窗就一直藏着
 
 
 def _capture_overlay_info(viewport_w=None, viewport_h=None):
@@ -1845,7 +1883,8 @@ def _capture_overlay_ready():
         overlay.show()
         overlay.restore()
     except Exception:
-        return False
+        return False                        # 窗口没显示出来，看门狗留着，到点由它收尾
+    _capture_watchdog_cancel()
     _focus_window(_CAPTURE_TITLE)
     return True
 
@@ -1936,7 +1975,8 @@ def _capture_commit(action, rect=None, viewport=None):
 
 
 def _capture_end(restore=True):
-    """收尾：销毁覆盖窗、删掉临时图、按需把主窗放回来"""
+    """收尾：撤掉看门狗、销毁覆盖窗、删掉临时图、按需把主窗放回来"""
+    _capture_watchdog_cancel()
     was_visible = _capture['was_visible']
     overlay = _capture['window']
     files = [_capture['full'], _capture['view']]
