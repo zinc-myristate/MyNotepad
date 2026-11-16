@@ -898,12 +898,12 @@ def _preview_skeleton(tmp_path, monkeypatch, cases):
     import backend
     backend.api.notes_create()
     source = '\n\n<!-- -->\n\n'.join(c[0] for c in cases) + '\n'
-    count = sum(block.count('{{') for c in cases for block in c[1])    # 这里的公式都是块级的
+    count = sum(block.count('{{') for c in cases for block in c[1])    # 只数块级的
 
     def actions(window, result):
         _wait_editor_ready(window)
         _set_source(window, source)
-        wait_for_js(window, "document.querySelectorAll('#md-preview .katex').length", count)
+        wait_for_js(window, "document.querySelectorAll('#md-preview .katex-display').length", count)
         result['skeleton'] = json.loads(window.evaluate_js(_SKELETON_JS))
 
     r = _run(ns, actions, wait_before=0)
@@ -946,6 +946,71 @@ def test_block_math_at_line_start_still_stands_alone(tmp_path, monkeypatch):
          ['table(thead(tr(th(表头))) tbody(tr(td(格子))))', 'p({{x}})']),
         ('段落\n$$y$$\n段落',
          ['p(段落)', 'p({{y}})', 'p(段落)']),
+    ]
+    want = [block for c in cases for block in c[1]]
+    assert _preview_skeleton(tmp_path, monkeypatch, cases) == want
+
+
+@pytest.mark.e2e
+def test_multiline_block_math_in_containers(tmp_path, monkeypatch):
+    """跨行的块级公式写在引用、列表、缩进代码里：续行开头属于容器的部分不能算进公式。
+
+    公式在解析之前就抽走了，那时还看不出容器：引用的 `>` 原样进了 tex，排出来是"> k >"；
+    列表里跨行的 `\\[`、`\\]` 折成单行时连缩进一起吃掉，`$$` 落到第 0 列，垫了空行，
+    列表从这里断开；缩进代码里还原出的原文从第 2 行起多出缩进的空格。
+    """
+    cases = [
+        ('> $$\n> k\n> $$',
+         ['blockquote(p({{k}}))']),
+        ('> 引用 $$\n> k\n> $$\n> 下一行',
+         ['blockquote(p(引用 {{k}} 下一行))']),
+        ('> > $$\n> > k\n> > $$',
+         ['blockquote(blockquote(p({{k}})))']),
+        ('> - $$\n>   k\n>   $$',
+         ['blockquote(ul(li({{k}})))']),
+        ('- > $$\n  > k\n  > $$',
+         ['ul(li(blockquote(p({{k}}))))']),
+        ('> $$\n> a\n> > b\n> $$',                    # 每行只去掉一层：第二个 `>` 是公式自己的
+         ['blockquote(p({{a\n> b}}))']),
+        ('$$\n> c\n$$',                               # 开头那一行不在引用里，`>` 也是公式的
+         ['p({{> c}})']),
+        ('- $$\n> h\n$$',                             # 列表项里也一样：去掉的只有列表的缩进
+         ['ul(li({{> h}}))']),
+        ('- 列表\n  \\[\n  d\n  \\]\n- 下一项',
+         ['ul(li(列表 {{d}}) li(下一项))']),
+        ('1. 第一项\n   \\[\n   e\n   \\]\n2. 第二项',
+         ['ol(li(第一项 {{e}}) li(第二项))']),
+        ('- 第一段\n\n  \\[\n  f\n  \\]',
+         ['ul(li(p(第一段) p({{f}})))']),
+        ('> \\[\n> g\n> \\]',
+         ['blockquote(p({{g}}))']),
+        ('    $$\n      x\n    $$',                  # 缩进代码里的是文字，按写的样子还原
+         ['pre(code($$\n  x\n$$))']),
+        ('- 列表\n\n      $$\n      y\n      $$',
+         ['ul(li(p(列表) pre(code($$\ny\n$$))))']),
+        ('>     $$\n>     z\n>     $$',
+         ['blockquote(pre(code($$\nz\n$$)))']),
+        ('\t$$\n    t\n\t$$',                         # 制表符按 4 列算，和后面的 4 个空格一样深
+         ['pre(code($$\nt\n$$))']),
+    ]
+    want = [block for c in cases for block in c[1]]
+    assert _preview_skeleton(tmp_path, monkeypatch, cases) == want
+
+
+@pytest.mark.e2e
+def test_block_math_opening_a_table_row(tmp_path, monkeypatch):
+    """没写前导竖线的表格行以 `$$` 开头：它在第 0 列，原来照样垫空行，表格从这一行断开。
+
+    同一行后面还有分格的竖线就是表格行，不垫。转义的 `\\|`、行内公式里的竖线都不分格，
+    公式照旧自成一段。
+    """
+    cases = [
+        ('$$a$$ | 表头\n---|---\n$$b$$ | 格子\n$$c$$ | 格子',
+         ['table(thead(tr(th({{a}}) th(表头))) tbody(tr(td({{b}}) td(格子)) tr(td({{c}}) td(格子))))']),
+        ('| 表头 |\n|---|\n| 格子 |\n$$d$$ \\| 不分格',
+         ['table(thead(tr(th(表头))) tbody(tr(td(格子))))', 'p({{d}})', 'p(| 不分格)']),
+        ('| 表头 |\n|---|\n| 格子 |\n$$e$$ 和 $|y|$',
+         ['table(thead(tr(th(表头))) tbody(tr(td(格子))))', 'p({{e}})', 'p(和 {|y|})']),
     ]
     want = [block for c in cases for block in c[1]]
     assert _preview_skeleton(tmp_path, monkeypatch, cases) == want

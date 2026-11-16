@@ -201,6 +201,18 @@ class TestMarkdownToDelta:
                         if isinstance(op['insert'], str))
         assert '\\alpha' not in texts, '命令不该以裸文本形式残留'
 
+    def test_multiline_block_in_list_keeps_indent(self, backend_mod):
+        r"""列表里跨行的 `\[` / `\]` 折成单行时留着 `\[` 那一行的缩进，和前端折出同样的文字
+        （见 tests/test_frontend_utils.py）。转出来的公式不受影响：判断块级公式之前会先 strip()。"""
+        src = '- 列表\n  \\[\n  k\n  \\]\n- 下一项\n'
+        assert backend_mod.text.collapse_multiline_blocks(src) == '- 列表\n  $$k$$\n- 下一项\n'
+        ops = json.loads(backend_mod.markdown_to_delta(src))['ops']
+        maths = [op['insert']['math-formula'] for op in ops
+                 if isinstance(op['insert'], dict) and 'math-formula' in op['insert']]
+        assert maths == [{'latex': 'k', 'display': True}]
+        lists = [op['attributes']['list'] for op in ops if op.get('attributes', {}).get('list')]
+        assert lists == ['bullet', 'bullet']
+
     def test_latex_delims_inside_table_cells(self, backend_mod):
         r"""表格单元格里的 `\(…\)` 同样要变成公式（用户那篇笔记的公式大量在表格里）。"""
         delta = json.loads(backend_mod.markdown_to_delta(
