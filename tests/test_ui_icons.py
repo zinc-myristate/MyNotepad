@@ -31,7 +31,9 @@ TEXT_GLYPH_ALLOWED = ('math-sym-btn',)
 
 # emoji 属于**内容/语法**而非图标的清单（文件 → 允许的行内特征）
 EMOJI_CONTENT_ALLOWED = {
-    'renderer/js/app/02-editor.js': ['emojis:', "cat: '"],          # 表情选择器的数据
+    'renderer/js/app/02-editor.js': ['emojis:', "cat: '",          # 表情选择器的数据
+                                     'const LIST_SYMBOLS'],          # 导出时写进正文的列表 / 待办符号
+    'renderer/js/app/14-markdown-render.js': ["prepend(done ? '☑ '"],  # 导出时写进正文的待办符号
     'renderer/js/quill/quill-deco.js': ["html:'", 'cat:'],          # 贴纸/印章数据
     'renderer/js/app/17-markdown-actions.js': ['[📎'],               # 写进正文的附件链接标签（后端靠 📎 识别）
     'renderer/js/app/09-boot.js': ['console.log'],                  # 控制台提示

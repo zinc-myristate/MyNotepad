@@ -328,6 +328,55 @@ class TestFullPathsFromThePage:
         assert seen == [], '没通过校验的路径不该交给识别引擎'
         assert remote_touches == [], '右键识别会连出去：%r' % remote_touches
 
+    # ----- file_copy_to_note / capture_image：插图、插附件、「存为新笔记」 -----
+
+    def test_copy_into_note_only_takes_picked_or_app_files(self, app_ns, tmp_path, monkeypatch,
+                                                         remote_touches):
+        """源路径来自页面。以前拿到就 isfile、复制：写成网络共享的地址会连过去，
+        随便一个本机文件也能被页面复制进附件，再从附件里读出来"""
+        import tempfile
+        api, backend = app_ns['api'], app_ns['_backend_mod']
+        temp = tmp_path / 'systemp'
+        temp.mkdir()
+        monkeypatch.setattr(tempfile, 'tempdir', str(temp))
+        nid = backend.api.notes_create()['id']
+        src = tmp_path / 'pic.png'
+        src.write_bytes(_PNG)
+        doc = tmp_path / 'doc.txt'
+        doc.write_text('hi', encoding='utf-8')
+
+        # 没在对话框里选过的文件：两条路都不认，也不会建出笔记
+        notes_before = len(backend.api.notes_list())
+        assert api.file_copy_to_note(str(src), nid, 'image') is None
+        assert api.file_copy_to_note(str(doc), nid, 'file') is None
+        assert api.capture_image(str(src)) is None
+        assert len(backend.api.notes_list()) == notes_before
+        note_dir = os.path.join(backend.ATTACH_DIR, nid)
+        assert not os.path.isdir(note_dir) or not os.listdir(note_dir), '没认的文件不该被复制进附件'
+
+        # 自己造的临时文件（粘贴图片走 save_temp_image）和附件（右键识别后「存为新笔记」）认
+        pasted = backend.api.save_temp_image(list(_PNG), 'paste.png')
+        assert api.file_copy_to_note(pasted, nid, 'image')['filename']
+        stored = backend.api.file_copy_to_note(str(src), nid, 'image')['storedPath']
+        assert api.capture_image(stored)['id']
+
+        # 对话框选过才认，换种写法（对话框给的是正斜杠）也认
+        picked = str(src).replace('\\', '/')
+        app_ns['pick_image_file'] = lambda: picked
+        assert api.pick_image() == picked
+        assert api.file_copy_to_note(str(src), nid, 'image')['filename']
+        assert api.capture_image(picked)['id']
+        app_ns['pick_attachment_file'] = lambda: str(doc)
+        assert api.pick_attachment() == str(doc)
+        assert api.file_copy_to_note(str(doc), nid, 'file')['filename']
+        app_ns['pick_image_file'] = lambda: None                # 对话框点了取消
+        assert api.pick_image() is None
+
+        for path in _REMOTE_PATHS + [None, 42, '']:
+            assert api.file_copy_to_note(path, nid, 'file') is None
+            assert api.capture_image(path) is None
+        assert remote_touches == [], '复制进附件 / 存为新笔记会连出去：%r' % remote_touches
+
 
 # ====== 加密笔记的明文不许经派生索引泄漏 ======
 
@@ -398,6 +447,32 @@ class TestEncryptedDerivedLeak:
         assert row['props_json'] == '{}' and row['preview'] == ''
         assert not backend_mod.conn.execute(
             'SELECT 1 FROM note_todos WHERE note_id = ?', (nid,)).fetchone()
+
+    def test_startup_cleanup_reports_only_what_it_cleaned(self, backend_mod, api, monkeypatch):
+        """以前库里只要有一篇加密笔记，每次启动都报"清理……0 条待办、1 行指标"：
+        UPDATE 的行数把本来就是空的那一行也算了进去。排查问题时会被它带偏"""
+        warnings = []
+
+        class Logger:
+            def warning(self, msg, *args):
+                warnings.append(msg % args)
+
+            def exception(self, msg, *args):
+                raise AssertionError(msg % args)
+
+        monkeypatch.setattr(backend_mod.applog, 'get_logger', lambda *a, **k: Logger())
+        nid = self._locked_encrypted_note(api)
+        assert backend_mod.conn.execute(
+            'SELECT 1 FROM note_derived WHERE note_id = ?', (nid,)).fetchone(), '加密笔记也有一行（全是空的）'
+        backend_mod._purge_encrypted_derived_leaks()
+        assert warnings == [], '什么都没清，不该报'
+
+        backend_mod.conn.execute("UPDATE note_derived SET preview = '泄漏的摘要' WHERE note_id = ?", (nid,))
+        backend_mod.conn.commit()
+        backend_mod._purge_encrypted_derived_leaks()
+        assert warnings == ['清理加密笔记的派生明文残留：0 条待办、1 行指标']
+        backend_mod._purge_encrypted_derived_leaks()
+        assert len(warnings) == 1, '清过一次之后就不该再报'
 
 
 # ====== 密码路径 ======

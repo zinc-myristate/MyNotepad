@@ -234,7 +234,13 @@ async function openTagManager() {
       if (name == null) return;
       const r = await window.pywebview.api.tags_rename(tag.id, name);
       if (!r || !r.ok) showToast('重命名失败：' + ((r && r.error) || ''), { type: 'warn' });
-      else showToast('已重命名为「' + r.tag.name + '」', { type: 'success' });
+      else {
+        // 视图和搜索框里写死的 `tag:旧名` 跟着换（视图后端已经改好，这里刷新并改搜索框）
+        window.dispatchEvent(new CustomEvent('saved-searches-changed', {
+          detail: { keys: ['tag'], from: tag.name, to: r.tag.name },
+        }));
+        showToast('已重命名为「' + r.tag.name + '」', { type: 'success' });
+      }
       openTagManager();
       loadTagFilter();
     });
@@ -257,7 +263,12 @@ async function openTagManager() {
       }
       const r = await window.pywebview.api.tags_merge(tag.id, dst.id);
       if (!r || !r.ok) showToast('合并失败：' + ((r && r.error) || ''), { type: 'error' });
-      else showToast('已合并 ' + r.moved + ' 条关联到「' + dst.name + '」', { type: 'success' });
+      else {
+        window.dispatchEvent(new CustomEvent('saved-searches-changed', {
+          detail: { keys: ['tag'], from: tag.name, to: dst.name },
+        }));
+        showToast('已合并 ' + r.moved + ' 条关联到「' + dst.name + '」', { type: 'success' });
+      }
       openTagManager();
       loadTagFilter();
     });

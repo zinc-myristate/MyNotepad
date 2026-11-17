@@ -32,6 +32,8 @@ _EXE_DIR = (os.path.dirname(sys.executable) if getattr(sys, 'frozen', False)
             else os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 _ENV_DATA_DIR = os.environ.get('MYNOTEPAD_DATA_DIR')
 DATA_DIR = _ENV_DATA_DIR or os.path.join(_EXE_DIR, "data")
+# 随程序打包的静态文件（renderer/ 等）：打包版在 bundle 里、不在 exe 旁边，与 app.pyw 的 BASE_DIR 同一个位置
+_BUNDLE_DIR = getattr(sys, '_MEIPASS', _EXE_DIR)
 
 # 文件大小限制
 MAX_IMAGE_SIZE = 50 * 1024 * 1024    # 图片最大 50MB
@@ -632,6 +634,9 @@ from .backup import (  # noqa: F401
     reclaim_space,
     space_stats,
 )
+
+# 导出 DOCX 的 HTML → Word 转换，同样是不碰数据库的叶子（python-docx 用到时才导入）
+from .docx_export import html_to_docx
 from .text import (  # noqa: F401
     _DUE_RE,
     _FM_RE,
@@ -700,6 +705,9 @@ from .text import (  # noqa: F401
     parse_front_matter,
     render_template,
 )  # noqa: E501
+
+# 导出 XLSX / TXT：和 DOCX 同一棵解析树，按行写（openpyxl 用到时才导入）
+from .xlsx_export import html_to_text, html_to_xlsx
 
 
 # ====== FTS5 全文搜索（trigram，中文可用） ======
@@ -963,17 +971,51 @@ def _filter_props(ids, conds):
     return out
 DAILY_NOTEBOOK = '日记'
 INBOX_NOTEBOOK = '收件箱'
+# 快速捕获和今日日记落在这两本里。第一次找到（或建出）就把 id 记进 settings，以后按 id 找
+_SPECIAL_NOTEBOOK_KEYS = {INBOX_NOTEBOOK: 'inbox_notebook_id', DAILY_NOTEBOOK: 'daily_notebook_id'}
 
 
 def _find_or_create_notebook(name):
-    """按名字找笔记本，没有就建一个（每日笔记/收件箱都靠它保证幂等）"""
+    """按名字找笔记本，没有就建一个（每日笔记/收件箱都靠它保证幂等）。
+
+    「收件箱」「日记」按记下的 id 找：以前一直按名字找，用户把「收件箱」改名成「待整理」，
+    下次捕获就另建一个「收件箱」。记下的那一本被删掉了，才回到按名字找（找不到再建）。
+    """
+    key = _SPECIAL_NOTEBOOK_KEYS.get(name)
+    if key:
+        row = conn.execute("SELECT n.id FROM settings s JOIN notebooks n ON n.id = s.value "
+                           "WHERE s.key = ?", (key,)).fetchone()
+        if row:
+            return row['id']
     row = conn.execute("SELECT id FROM notebooks WHERE name = ?", (name,)).fetchone()
     if row:
-        return row['id']
-    nid = str(uuid.uuid4())
-    conn.execute("INSERT INTO notebooks (id, name, sort_order) VALUES (?,?,?)",
-                 (nid, name, _next_sort_order('notebooks')))
+        nid = row['id']
+    else:
+        nid = str(uuid.uuid4())
+        conn.execute("INSERT INTO notebooks (id, name, sort_order) VALUES (?,?,?)",
+                     (nid, name, _next_sort_order('notebooks')))
+    if key:
+        conn.execute("INSERT OR REPLACE INTO settings (key, value) VALUES (?, ?)", (key, nid))
     return nid
+
+
+def _retarget_saved_searches(keys, old, new):
+    """标签、笔记本改名（或标签合并）之后，把保存的视图里写死的 `键:旧名` 换成新名字。
+
+    只换整个词：`tag:项目` 换，`tag:项目/甲` 是另一个标签，不换；`-tag:项目` 也换。
+    键不分大小写，和 _parse_search_scope 一样。查询按空白分词、没有引号，
+    新名字里有空白就写不进查询，这种情况不改（改了反而把查询拆成两个词）。返回改了几个视图。
+    """
+    if not old or not new or old == new or any(ch.isspace() for ch in new):
+        return 0
+    pattern = re.compile(r'(?<!\S)(-?(?i:%s):)%s(?!\S)' % ('|'.join(keys), re.escape(old)))
+    changed = 0
+    for row in conn.execute("SELECT id, query FROM saved_searches").fetchall():
+        query = pattern.sub(lambda m: m.group(1) + new, row['query'] or '')
+        if query != row['query']:
+            conn.execute("UPDATE saved_searches SET query = ? WHERE id = ?", (query, row['id']))
+            changed += 1
+    return changed
 
 
 def _refresh_derived(note_id, content=None, fmt=None):
@@ -1058,11 +1100,16 @@ def _purge_encrypted_derived_leaks():
             "DELETE FROM note_todos WHERE note_id IN "
             "(SELECT id FROM notes WHERE COALESCE(password_hash, '') <> '')")
         n_todos = cur.rowcount
+        # 只动还留着东西的行：UPDATE 的行数把"本来就是空的"也算进去，以前每次启动都报
+        # "0 条待办、1 行指标"（库里有一篇加密笔记就有一行），其实什么都没清
         cur = conn.execute(
             "UPDATE note_derived SET word_count = 0, char_count = 0, todo_total = 0, "
             "todo_open = 0, todo_next_due = NULL, has_formula = 0, has_code = 0, "
             "link_count = 0, props_json = '{}', preview = '' "
-            "WHERE note_id IN (SELECT id FROM notes WHERE COALESCE(password_hash, '') <> '')")
+            "WHERE note_id IN (SELECT id FROM notes WHERE COALESCE(password_hash, '') <> '') "
+            "AND (word_count <> 0 OR char_count <> 0 OR todo_total <> 0 OR todo_open <> 0 "
+            "OR todo_next_due IS NOT NULL OR has_formula <> 0 OR has_code <> 0 OR link_count <> 0 "
+            "OR COALESCE(props_json, '{}') <> '{}' OR COALESCE(preview, '') <> '')")
         n_derived = cur.rowcount
         conn.commit()
         if n_todos or n_derived:
@@ -2386,27 +2433,34 @@ class Api:
                               (name, tag_id)).fetchone()
         if exists:
             return {'ok': False, 'error': '同名标签已存在，请用「合并」把两者并起来'}
-        if not conn.execute("SELECT 1 FROM tags WHERE id = ?", (tag_id,)).fetchone():
+        old = conn.execute("SELECT name FROM tags WHERE id = ?", (tag_id,)).fetchone()
+        if not old:
             return {'ok': False, 'error': '标签不存在'}
         conn.execute("UPDATE tags SET name = ? WHERE id = ?", (name, tag_id))
+        views = _retarget_saved_searches(('tag',), old['name'], name)
         conn.commit()
-        return {'ok': True, 'tag': self.tags_get(tag_id)}
+        return {'ok': True, 'tag': self.tags_get(tag_id), 'views': views}
 
     def tags_merge(self, src_id, dst_id):
         """把 src 标签合并到 dst：关联转移后删掉 src（比"重命名"更常用）"""
         if src_id == dst_id:
             return {'ok': False, 'error': '不能合并到自己'}
+        names = {}
         for tid in (src_id, dst_id):
-            if not conn.execute("SELECT 1 FROM tags WHERE id = ?", (tid,)).fetchone():
+            row = conn.execute("SELECT name FROM tags WHERE id = ?", (tid,)).fetchone()
+            if not row:
                 return {'ok': False, 'error': '标签不存在'}
+            names[tid] = row['name']
         moved = conn.execute("SELECT COUNT(*) FROM note_tags WHERE tag_id = ?",
                              (src_id,)).fetchone()[0]
         conn.execute("INSERT OR IGNORE INTO note_tags (note_id, tag_id) "
                      "SELECT note_id, ? FROM note_tags WHERE tag_id = ?", (dst_id, src_id))
         conn.execute("DELETE FROM note_tags WHERE tag_id = ?", (src_id,))
         conn.execute("DELETE FROM tags WHERE id = ?", (src_id,))
+        # 合并之后 src 没了，视图里的 `tag:src` 什么也搜不到；它的笔记都在 dst 里，就指向 dst
+        views = _retarget_saved_searches(('tag',), names[src_id], names[dst_id])
         conn.commit()
-        return {'ok': True, 'moved': moved, 'tag': self.tags_get(dst_id)}
+        return {'ok': True, 'moved': moved, 'tag': self.tags_get(dst_id), 'views': views}
 
     # ----- 保存的搜索 -----
     def saved_searches_list(self):
@@ -2674,6 +2728,16 @@ class Api:
                 'total': uncategorized + sum(by_id.values())}
 
     def notebooks_create(self, name='新建笔记本'):
+        """新建笔记本，返回新建的那一行；名字不合规时返回 {'ok': False, 'error': 原因}（没有 id）。
+
+        名字的规矩和改名（notebooks_update）一样：去掉首尾空白、不能为空、不能和已有的笔记本重名。
+        以前新建不查重、改名却查，两个同名的笔记本在 `notebook:名字` 搜索里分不开。
+        """
+        name = name.strip() if isinstance(name, str) else ''
+        if not name:
+            return {'ok': False, 'error': '笔记本名称不能为空'}
+        if conn.execute("SELECT 1 FROM notebooks WHERE name = ?", (name,)).fetchone():
+            return {'ok': False, 'error': '已有同名的笔记本'}
         nid = str(uuid.uuid4())
         conn.execute("INSERT INTO notebooks (id, name, sort_order) VALUES (?, ?, ?)",
                      (nid, name, _next_sort_order('notebooks')))
@@ -2681,11 +2745,13 @@ class Api:
         return dict(conn.execute("SELECT * FROM notebooks WHERE id = ?", (nid,)).fetchone())
 
     def notebooks_update(self, nid, fields):
-        """改笔记本的名称 / 排序 / 颜色等。返回 {'ok': True, 'notebook': 行} 或 {'ok': False, 'error': 原因}。
+        """改笔记本的名称 / 排序 / 颜色等。返回 {'ok': True, 'notebook': 行, 'views': 改了几个视图}
+        或 {'ok': False, 'error': 原因}。
 
         名称与标签改名（tags_rename）同一套规矩：去掉首尾空白、不能为空、不能与别的笔记本重名。
-        重名会让 `notebook:名字` 搜索、快速捕获按名字找笔记本（_find_or_create_notebook）认错本子。
-        存量库里可能已经有重名的（新建时不查重），所以名字没变时不查重，否则那一本连别的字段都改不了。
+        重名会让 `notebook:名字` 搜索认错本子。存量库里可能已经有重名的（以前新建时不查重），
+        所以名字没变时不查重，否则那一本连别的字段都改不了。
+        改了名，保存的视图里写死的 `notebook:旧名` / `nb:旧名` 跟着改（_retarget_saved_searches）。
         """
         allowed = {'name', 'sort_order', 'color', 'cover_type', 'default_paper'}
         updates = {k: v for k, v in (fields or {}).items() if k in allowed}
@@ -2704,8 +2770,10 @@ class Api:
             updates['name'] = name
         sets = ", ".join(f"{k} = ?" for k in updates)
         conn.execute(f"UPDATE notebooks SET {sets} WHERE id = ?", list(updates.values()) + [nid])
+        views = (_retarget_saved_searches(('notebook', 'nb'), row['name'], updates['name'])
+                 if 'name' in updates else 0)
         conn.commit()
-        return {'ok': True,
+        return {'ok': True, 'views': views,
                 'notebook': dict(conn.execute("SELECT * FROM notebooks WHERE id = ?", (nid,)).fetchone())}
 
     def notebooks_delete(self, nid):
@@ -3413,9 +3481,35 @@ class Api:
         else:
             return False
 
+    def _katex_export_css(self):
+        """KaTeX 的样式表，字体内嵌成 data URI：导出文件拷到别的机器、断网打开都不走样。
+
+        只带 woff2（20 个文件约 350 KB）：@font-face 里的 woff / ttf 是给老浏览器的回退。
+        """
+        katex_dir = os.path.join(_BUNDLE_DIR, 'renderer', 'katex')
+        with open(os.path.join(katex_dir, 'katex.min.css'), encoding='utf-8') as f:
+            css = f.read()
+
+        def embed_font(match):
+            with open(os.path.join(katex_dir, 'fonts', match.group(1)), 'rb') as font:
+                data = base64.b64encode(font.read()).decode('ascii')
+            return f'src:url(data:font/woff2;base64,{data}) format("woff2")'
+
+        css = re.sub(r'src:url\(fonts/([\w-]+\.woff2)\)[^;}]*', embed_font, css)
+        return ('/* KaTeX：代码 MIT，(c) Khan Academy and other contributors；字体 SIL OFL-1.1 */\n'
+                + css
+                # 块级公式默认不折行，长公式会把整页撑宽。不能改用 overflow: auto hidden 在框里滚动：
+                # y 向的 hidden 会切掉 \raisebox 这类超出行框的笔画（实测）
+                + '\n.katex-display > .katex { white-space: normal; }')
+
     def _export_html(self, title, html_content, save_path):
         import html
         safe_title = html.escape(title)
+        # 公式的排版全靠 KaTeX 的样式表。少了它，藏给读屏软件的 MathML 和排版用的 HTML 会一起露出来，
+        # 根号那个 width="400em" 的 SVG 也没了裁切，页面被撑到 6000 多 px 宽。
+        # 不能图省事隐藏 .katex-html、只留 MathML：Chromium 的 MathML 只认 mathvariant="normal"，
+        # \mathbb{R} 会变成斜体 R、\mathbf 的粗体没了，\cancel、\boxed 的装饰也画不出来
+        katex_css = self._katex_export_css() if 'class="katex"' in html_content else ''
         template = f'''<!DOCTYPE html>
 <html lang="zh-CN">
 <head>
@@ -3428,6 +3522,7 @@ class Api:
          line-height: 1.8; color: #333; }}
   h1 {{ font-size: 24px; border-bottom: 2px solid #eee; padding-bottom: 10px; }}
   img {{ max-width: 100%; border-radius: 8px; margin: 10px 0; }}
+{katex_css}
 </style>
 </head>
 <body>
@@ -3440,277 +3535,35 @@ class Api:
         return True
 
     def _export_txt(self, html_content, save_path):
-        import re
-        # 简单的 HTML 标签去除
-        text = re.sub(r'<br\s*/?>', '\n', html_content)
-        text = re.sub(r'</p>', '\n\n', text)
-        text = re.sub(r'</div>', '\n', text)
-        text = re.sub(r'<[^>]+>', '', text)
-        text = re.sub(r'\n{3,}', '\n\n', text)
-        text = text.strip()
-        with open(save_path, 'w', encoding='utf-8') as f:
-            f.write(text)
-        return True
+        """HTML → 纯文本在 xlsx_export.py（和 XLSX 同一套"按行写"）。
 
-    def _export_docx(self, title, html_content, save_path):
+        以前是正则删标签：公式写成三份字连在一起，`&lt;` 原样留着，标题和下一段连成一行。
+        """
         try:
-            import base64
-            import os
-            import re
-
-            from docx import Document
-            from docx.enum.text import WD_ALIGN_PARAGRAPH
-            from docx.shared import Inches
-
-            doc = Document()
-
-            # 标题
-            title_para = doc.add_heading(title, level=0)
-            title_para.alignment = WD_ALIGN_PARAGRAPH.CENTER
-
-            # 解析 HTML 并转换为 docx 段落
-            # 按块级元素分割
-            blocks = re.split(r'(</?(?:p|h[1-6]|div|br|img)[^>]*>)', html_content)
-            current_text = ''
-
-            for block in blocks:
-                if not block.strip():
-                    continue
-
-                # 图片处理
-                img_match = re.match(r'<img[^>]+src="([^"]+)"', block)
-                if img_match:
-                    # 先输出当前累积的文本
-                    if current_text.strip():
-                        para = doc.add_paragraph()
-                        self._add_formatted_runs(para, current_text)
-                        current_text = ''
-
-                    src = img_match.group(1)
-                    # 处理 base64 图片
-                    if src.startswith('data:image'):
-                        try:
-                            header, encoded = src.split(',', 1)
-                            img_data = base64.b64decode(encoded)
-                            import tempfile
-                            tmp = tempfile.NamedTemporaryFile(delete=False, suffix='.png')
-                            tmp.write(img_data)
-                            tmp.close()
-                            doc.add_picture(tmp.name, width=Inches(5))
-                            os.unlink(tmp.name)
-                        except Exception as e:
-                            # 单张图片失败不该毁掉整篇导出：记录原因后降级为文字占位
-                            applog.get_logger().warning(
-                                'DOCX 导出内嵌图片失败（%s）：%s', src[:80], e)
-                            doc.add_paragraph(f'[图片: {src[:50]}...]')
-                    elif src.startswith('file:///'):
-                        # Windows 下 file:///C:/... 需先 unquote 再剥掉根斜杠，否则空格路径失效
-                        import urllib.parse
-                        local_path = urllib.parse.unquote(src.replace('file:///', '')).lstrip('/')
-                        if os.path.exists(local_path):
-                            try:
-                                doc.add_picture(local_path, width=Inches(5))
-                            except Exception:
-                                doc.add_paragraph(f'[图片: {os.path.basename(local_path)}]')
-                    continue
-
-                # 换行
-                if block == '<br>' or block == '<br/>' or block == '<br />':
-                    current_text += '\n'
-                    continue
-
-                # 段落结束
-                if block in ('</p>', '</div>', '</h1>', '</h2>', '</h3>'):
-                    if current_text.strip():
-                        para = doc.add_paragraph()
-                        self._add_formatted_runs(para, current_text)
-                        current_text = ''
-                    continue
-
-                # 累积文本
-                if not (block.startswith('<') and block.endswith('>')):
-                    current_text += block
-
-            # 输出剩余的文本
-            if current_text.strip():
-                para = doc.add_paragraph()
-                self._add_formatted_runs(para, current_text)
-
-            doc.save(save_path)
+            text = html_to_text(html_content)
+            with open(save_path, 'w', encoding='utf-8') as f:
+                f.write(text)
             return True
-        except Exception as e:
-            print(f"DOCX 导出失败: {e}")
+        except Exception:
+            applog.get_logger().exception('TXT 导出失败')
             return False
 
-    def _add_formatted_runs(self, para, html_text):
-        """解析内联格式并添加到段落"""
-        import re
-
-        from docx.shared import Pt
-
-        # 分割标签和文本
-        parts = re.split(r'(</?(?:b|strong|i|em|u|span)[^>]*>)', html_text)
-        bold = False
-        italic = False
-        underline = False
-        font_size = None
-
-        for part in parts:
-            if not part: continue
-            if part in ('<b>', '<strong>'): bold = True; continue
-            if part in ('</b>', '</strong>'): bold = False; continue
-            if part in ('<i>', '<em>'): italic = True; continue
-            if part in ('</i>', '</em>'): italic = False; continue
-            if part in ('<u>'): underline = True; continue
-            if part in ('</u>'): underline = False; continue
-            if part.startswith('<span'):
-                # 提取 font-size 样式
-                size_match = re.search(r'font-size:\s*(\d+)px', part)
-                if size_match:
-                    font_size = int(size_match.group(1))
-                continue
-            if part == '</span>': font_size = None; continue
-            if part.startswith('<'): continue
-
-            # 纯文本：添加 run
-            clean = re.sub(r'\s+', ' ', part)
-            if not clean.strip(): continue
-            run = para.add_run(clean)
-            run.bold = bold
-            run.italic = italic
-            run.underline = underline
-            if font_size:
-                run.font.size = Pt(font_size * 0.75)  # px → pt 近似
-            else:
-                run.font.size = Pt(11)
+    def _export_docx(self, title, html_content, save_path):
+        """HTML → Word 的转换在 docx_export.py（为什么不再按正则切块，见那里的说明）"""
+        try:
+            html_to_docx(title, html_content, save_path)
+            return True
+        except Exception:
+            applog.get_logger().exception('DOCX 导出失败')
+            return False
 
     def _export_xlsx(self, title, html_content, save_path):
-        """导出为 Excel，有表格时按表格导出，保留加粗/斜体/颜色等格式"""
+        """HTML → Excel 的转换在 xlsx_export.py（为什么不再按正则找表格，见那里的说明）"""
         try:
-            import re
-
-            from openpyxl import Workbook
-            from openpyxl.cell.rich_text import CellRichText, TextBlock
-            from openpyxl.cell.text import InlineFont
-            from openpyxl.styles import Alignment, Border, Font, PatternFill, Side
-
-            wb = Workbook()
-            ws = wb.active
-            ws.title = title[:31]
-
-            table_pattern = re.compile(r'<table>(.*?)</table>', re.DOTALL)
-            tables = table_pattern.findall(html_content)
-
-            def _parse_inline(cell_html):
-                """解析单元格 HTML，返回 (纯文本, Font列表) 用于创建 CellRichText。
-                如果无需特殊格式则返回 (纯文本, None)。"""
-                segments = re.split(r'(<(?:b|strong|i|em|u|/b|/strong|/i|/em|/u|span[^>]*|/span)>)', cell_html)
-                has_format = False
-                result_segments = []
-                bold = False
-                italic = False
-                underline = False
-                color = None
-                for seg in segments:
-                    if not seg: continue
-                    if seg in ('<b>', '<strong>'): bold = True; has_format = True; continue
-                    if seg in ('</b>', '</strong>'): bold = False; continue
-                    if seg in ('<i>', '<em>'): italic = True; has_format = True; continue
-                    if seg in ('</i>', '</em>'): italic = False; continue
-                    if seg == '<u>': underline = True; has_format = True; continue
-                    if seg == '</u>': underline = False; continue
-                    if seg.startswith('<span'):
-                        has_format = True
-                        cm = re.search(r'color:\s*([^;"]+)', seg)
-                        if cm: color = cm.group(1).strip()
-                        continue
-                    if seg == '</span>': color = None; continue
-                    if seg.startswith('<'): continue
-                    clean = re.sub(r'\s+', ' ', seg)
-                    if not clean.strip(): continue
-                    font_kw = {'rFont': None, 'sz': 11.0}
-                    if bold: font_kw['b'] = True
-                    if italic: font_kw['i'] = True
-                    if underline: font_kw['u'] = 'single'
-                    if color:
-                        c = color.lstrip('#')
-                        if len(c) == 6:
-                            font_kw['color'] = 'FF' + c
-                    result_segments.append(TextBlock(InlineFont(**font_kw), clean))
-                if not result_segments:
-                    return ('', None)
-                if not has_format:
-                    return (''.join(s.text for s in result_segments), None)
-                return (None, result_segments)
-
-            # 防止公式注入
-            def _sanitize(v):
-                if v and v[0] in '=+-@':
-                    return "'" + v
-                return v
-
-            if tables:
-                thin_border = Border(
-                    left=Side(style='thin'), right=Side(style='thin'),
-                    top=Side(style='thin'), bottom=Side(style='thin')
-                )
-                header_fill = PatternFill(start_color='E8EFFF', end_color='E8EFFF', fill_type='solid')
-                header_font = Font(bold=True, size=11)
-                body_font = Font(size=11)
-
-                row_idx = 1
-                for table_html in tables:
-                    rows = re.findall(r'<tr>(.*?)</tr>', table_html, re.DOTALL)
-                    for tr in rows:
-                        cells = re.findall(r'<t[dh]>(.*?)</t[dh]>', tr, re.DOTALL)
-                        for col_idx, cell_html in enumerate(cells, 1):
-                            plain, rich = _parse_inline(cell_html)
-                            is_header = (row_idx == 1)
-                            # 判断该行是否在 thead 中（通过检查原始 HTML）
-                            if not is_header and row_idx > 1:
-                                thead_match = re.search(r'<thead>(.*?)</thead>', table_html, re.DOTALL)
-                                if thead_match:
-                                    thead_rows = len(re.findall(r'<tr>', thead_match.group(1), re.DOTALL))
-                                    if row_idx <= thead_rows:
-                                        is_header = True
-
-                            if rich:
-                                cell = ws.cell(row=row_idx, column=col_idx)
-                                cell.value = CellRichText(*rich)
-                            else:
-                                value = _sanitize(plain.strip())
-                                cell = ws.cell(row=row_idx, column=col_idx, value=value)
-                            cell.border = thin_border
-                            cell.alignment = Alignment(vertical='center', wrap_text=True)
-                            if is_header:
-                                cell.font = header_font
-                                cell.fill = header_fill
-                            else:
-                                cell.font = body_font
-                        row_idx += 1
-                    row_idx += 1
-
-                for col in ws.columns:
-                    max_length = 0
-                    col_letter = col[0].column_letter
-                    for cell in col:
-                        if cell.value:
-                            val = str(cell.value)
-                            max_length = max(max_length, len(val))
-                    ws.column_dimensions[col_letter].width = min(max_length + 4, 40)
-            else:
-                text = re.sub(r'<br\s*/?>', '\n', html_content)
-                text = re.sub(r'</p>', '\n', text)
-                text = re.sub(r'<[^>]+>', '', text)
-                lines = [l.strip() for l in text.split('\n') if l.strip()]
-                for i, line in enumerate(lines, 1):
-                    ws.cell(row=i, column=1, value=line).font = Font(size=11)
-                ws.column_dimensions['A'].width = 80
-
-            wb.save(save_path)
+            html_to_xlsx(title, html_content, save_path)
             return True
-        except Exception as e:
-            print(f"XLSX 导出失败: {e}")
+        except Exception:
+            applog.get_logger().exception('XLSX 导出失败')
             return False
 
     def read_file_base64(self, file_path):

@@ -443,6 +443,68 @@ class TestSavedSearches:
         assert [r['name'] for r in api.saved_searches_list()] == ['一', '二']
 
 
+class TestSavedSearchesFollowRenames:
+    """视图里写死的是名字（`tag:旧名`、`notebook:旧名`）。以前标签、笔记本改名后视图不跟着改，
+    点开就什么都搜不到；标签合并之后同样如此。"""
+
+    @staticmethod
+    def queries(api):
+        return [r['query'] for r in api.saved_searches_list()]
+
+    def test_tag_rename_rewrites_whole_words_only(self, api):
+        tid = api.tags_create('项目')['id']
+        api.tags_create('项目/甲')
+        for q in ('tag:项目', 'TAG:项目 todo:open', '-tag:项目 苹果', 'tag:项目/甲', 'tag:项目二',
+                  '项目 title:项目', 'notebook:项目'):
+            api.saved_search_create('', q)
+        r = api.tags_rename(tid, '工作')
+        assert r['ok'] and r['views'] == 3
+        assert self.queries(api) == ['tag:工作', 'TAG:工作 todo:open', '-tag:工作 苹果', 'tag:项目/甲',
+                                     'tag:项目二', '项目 title:项目', 'notebook:项目'], \
+            '只换 tag: 后面整个词是旧名的；子标签、别的前缀、自由文本都不动'
+
+    def test_renamed_view_still_finds_the_notes(self, api):
+        tid = api.tags_create('数学')['id']
+        nid = md_note(api, '甲\n')
+        api.note_tags_set(nid, [tid])
+        api.saved_search_create('数学笔记', 'tag:数学')
+        assert api.saved_searches_list()[0]['count'] == 1
+        api.tags_rename(tid, '高数')
+        assert api.saved_searches_list()[0]['count'] == 1, '改名后视图照样搜得到'
+
+    def test_tag_merge_points_views_at_the_target(self, api):
+        src = api.tags_create('旧名')['id']
+        dst = api.tags_create('新名')['id']
+        api.saved_search_create('', 'tag:旧名')
+        r = api.tags_merge(src, dst)
+        assert r['ok'] and r['views'] == 1
+        assert self.queries(api) == ['tag:新名']
+
+    def test_notebook_rename_rewrites_both_spellings(self, api):
+        nb = api.notebooks_create('原神')['id']
+        for q in ('notebook:原神', 'nb:原神 苹果', '-NB:原神', 'tag:原神'):
+            api.saved_search_create('', q)
+        r = api.notebooks_update(nb, {'name': '星穹铁道'})
+        assert r['ok'] and r['views'] == 3
+        assert self.queries(api) == ['notebook:星穹铁道', 'nb:星穹铁道 苹果', '-NB:星穹铁道', 'tag:原神']
+        assert api.notebooks_update(nb, {'color': '#5E7DA8'})['views'] == 0, '没改名就不动视图'
+
+    def test_new_name_with_whitespace_leaves_views_alone(self, api):
+        """查询按空白分词、没有引号：`tag:新 名` 会被拆成两个词，不如不改"""
+        tid = api.tags_create('甲')['id']
+        api.saved_search_create('', 'tag:甲')
+        r = api.tags_rename(tid, '新 名')
+        assert r['ok'] and r['views'] == 0
+        assert self.queries(api) == ['tag:甲']
+
+    def test_regex_characters_in_names_are_literal(self, api):
+        tid = api.tags_create('c++')['id']
+        api.saved_search_create('', 'tag:c++')
+        api.saved_search_create('', 'tag:ccc')
+        assert api.tags_rename(tid, 'C$1')['views'] == 1
+        assert self.queries(api) == ['tag:C$1', 'tag:ccc']
+
+
 # ---------------- 界面提示 ⟷ 解析器（文档不能和实现分叉） ----------------
 
 class TestTodoHintMatchesParser:

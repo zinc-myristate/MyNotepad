@@ -530,9 +530,18 @@ export async function markdownExportHtml(text, noteId) {
   const html = propsTableHtml(split.props) + renderMarkdown(text, { noteId });
   const tmp = document.createElement('div');
   tmp.innerHTML = html;
-  // 导出文件没带 KaTeX 的样式表，SVG 的裁切全没了：根号那个 width="400em" 的 SVG 会把页面
-  // 撑到 6400px 宽。公式在导出里靠 MathML 显示（浏览器原生支持），用不到这些 SVG
-  tmp.querySelectorAll('.katex svg').forEach((svg) => svg.remove());
+  // 待办的勾选框是预览样式画出来的空 <span>，导出文件里没有这份样式：写成文字（DOCX、TXT 里也看得见）
+  for (const box of Array.from(tmp.querySelectorAll('.md-task-box'))) {
+    const li = box.closest('li');
+    const done = li.classList.contains('md-task-done');
+    box.remove();
+    (li.querySelector(':scope > p') || li).prepend(done ? '☑ ' : '☐ ');
+    li.style.listStyleType = 'none';
+    if (done) {
+      li.style.textDecoration = 'line-through';
+      li.style.color = '#999';
+    }
+  }
   for (const img of Array.from(tmp.querySelectorAll('img[data-md-src]'))) {
     try {
       const abs = await resolveAssetPath(img.getAttribute('data-md-src'), noteId);

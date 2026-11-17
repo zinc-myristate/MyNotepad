@@ -12,6 +12,7 @@
 import base64
 import json
 import os
+import re
 import threading
 import time
 
@@ -823,51 +824,6 @@ def test_katex_output_still_goes_through_dompurify(tmp_path, monkeypatch):
     assert not leaked, 'KaTeX 这条路放过了白名单外的属性：%r' % leaked
 
 
-@pytest.mark.e2e
-def test_exported_formulas_do_not_carry_katex_svg(tmp_path, monkeypatch):
-    """导出和预览共用渲染入口，但导出文件没带 KaTeX 的样式表，所以 SVG 不能跟过去。
-
-    根号的 `<svg width="400em">` 没了裁切，HTML 导出会被撑到 6400px 宽；
-    DOCX 的分块正则还会把 `<path` 当成 `<p` 切开，吞掉根号后面的文字。
-    """
-    ns = load_app_partial(monkeypatch, tmp_path)
-    import backend
-    backend.api.notes_create()
-    source = '段尾公式 $\\sqrt{c}+d$\n\n$$\\frac{a}{\\sqrt{b}}$$\n'
-    html_path = str(tmp_path / 'formula.html')
-    docx_path = str(tmp_path / 'formula.docx')
-
-    def actions(window, result):
-        _wait_editor_ready(window)
-        # 动态 import 拿到的是应用正在用的同一个模块实例
-        window.evaluate_js(
-            "(function () {"
-            "  import('./js/app/14-markdown-render.js')"
-            "    .then(function (m) { return m.markdownExportHtml(%s, null); })"
-            "    .then(function (html) { window.__exported = html; },"
-            "          function (e) { window.__exported = 'ERROR ' + e; });"
-            "  return 1;"
-            "})()" % json.dumps(source))
-        wait_for_js(window, "typeof window.__exported === 'string'")
-        html = window.evaluate_js("window.__exported")
-        result['html'] = html
-        backend.api.export_note('公式', html, 'html', html_path)
-        backend.api.export_note('公式', html, 'docx', docx_path)
-        window.load_url('file:///' + html_path.replace('\\', '/'))
-        wait_for_js(window, "location.protocol === 'file:' && !!document.querySelector('math')")
-        result['page_width'] = window.evaluate_js("document.documentElement.scrollWidth")
-        result['view_width'] = window.evaluate_js("window.innerWidth")
-
-    r = _run(ns, actions, wait_before=0)
-    assert 'error' not in r, r.get('error')
-    assert '<math' in r['html'], '导出里的公式靠 MathML 显示，不能一起丢掉'
-    assert '<svg' not in r['html'], 'KaTeX 的 SVG 跟进了导出'
-    assert r['page_width'] <= r['view_width'], '导出的 HTML 被撑宽了：%r' % r['page_width']
-    from docx import Document
-    text = '\n'.join(p.text for p in Document(docx_path).paragraphs)
-    assert '段尾公式' in text and '+d' in text, 'DOCX 丢了公式后半段的文字：%r' % text
-
-
 # ---------------- e2e：块级公式落在容器里 ----------------
 #
 # `$$` 换成占位符时曾经前后都垫空行，好让它自成一段。可空行在 Markdown 里是"这一块到此为止"，
@@ -1014,3 +970,159 @@ def test_block_math_opening_a_table_row(tmp_path, monkeypatch):
     ]
     want = [block for c in cases for block in c[1]]
     assert _preview_skeleton(tmp_path, monkeypatch, cases) == want
+
+
+# 以前的 DOCX 转换按正则把 HTML 拍平：下面这些整块消失过（只含一个公式的段落、以加粗或公式结尾的
+# 列表项后面的项、表格、缩进代码、有序列表、h4–h6 后面的段落），`<li>`、`<a href>`、`&nbsp;` 原样写进正文
+_DOCX_NOTE = '\n'.join([
+    '---', 'title: 属性标题', 'tags: [甲, 乙]', '---',
+    '# 一级标题 $h$',
+    '',
+    '$$\\frac{a}{\\sqrt{b}}$$',
+    '',
+    '- 行内 $x^2$',
+    '- 第二项',
+    '- **粗体收尾**',
+    '- 第三项',
+    '  - 嵌套 *斜体*',
+    '',
+    '1. 有序一',
+    '2. 有序二',
+    '',
+    '- [ ] 待办未做',
+    '- [x] 待办已做',
+    '',
+    '| 表头甲 | 表头乙 |',
+    '|---|:-:|',
+    '| 格子 $y_1$ | **加粗格** |',
+    '',
+    '    缩进代码第一行',
+    '    缩进代码第二行',
+    '',
+    '```python',
+    'def 函数(x):',
+    '    return x  # 注释',
+    '```',
+    '',
+    '> 引用 <u>下划线</u>',
+    '',
+    '---',
+    '',
+    '#### 四级标题',
+    '##### 五级标题',
+    '###### 六级标题',
+    '',
+    '普通 ~~删除~~ `行内代码` H<sub>2</sub>O [链接文字](https://example.com) [[另一篇|别名]] a &lt; b &amp; c  ',
+    '硬换行之后&nbsp;&nbsp;两个空格',
+    '',
+    '段中公式 $$\\int_0^1 f$$ 之后',
+    '',
+    '$$',
+    '\\begin{aligned}',
+    'a &= b \\\\',
+    'c &= d',
+    '\\end{aligned}',
+    '$$',
+    '',
+    '![图注](attachments/x/missing.png)',
+    '',
+    '<details><summary>摘要文字</summary>',
+    '',
+    '详情文字',
+    '',
+    '</details>',
+])
+
+# 导出 HTML 里有哪些字：浏览器的文本节点（公式除外），加上每个公式的 TeX 源码。
+# 公式不按 .katex-html 的字算：那是排版用的，分母排在分子前面、根号是 SVG，拆不出能读的文字
+_EXPORT_TEXT_JS = r"""
+(function (html) {
+  var box = document.createElement('div');
+  box.innerHTML = html;
+  var formulas = Array.prototype.filter.call(box.querySelectorAll('.katex'), function (k) {
+    return !k.parentElement.closest('.katex');
+  }).map(function (k) {
+    var tex = k.querySelector('annotation[encoding="application/x-tex"]');
+    return {tex: tex ? tex.textContent : null, display: !!k.closest('.katex-display')};
+  });
+  var texts = [];
+  var walker = document.createTreeWalker(box, NodeFilter.SHOW_TEXT);
+  while (walker.nextNode()) {
+    if (walker.currentNode.parentElement.closest('.katex, svg')) continue;
+    var text = walker.currentNode.nodeValue.replace(/\s+/g, ' ').trim();
+    if (text) texts.push(text);
+  }
+  return JSON.stringify({texts: texts, formulas: formulas});
+})(%s)
+"""
+
+_TAG_LEAK = re.compile(r'</?(?:p|div|li|ul|ol|table|thead|tbody|tr|td|th|span|a|strong|em|s|code|pre|sub|'
+                       r'u|hr|br|img|blockquote|details|summary|h[1-6]|math|svg)\b|&(?:lt|gt|amp|nbsp|#\d+);')
+
+
+def _docx_text(doc):
+    """DOCX 里的全部文字，按文档顺序，表格逐格展开"""
+    def walk(container):
+        for item in container.iter_inner_content():
+            if hasattr(item, 'rows'):
+                for row in item.rows:
+                    for cell in row.cells:
+                        yield from walk(cell)
+            else:
+                yield item.text
+    return '\n'.join(walk(doc))
+
+
+@pytest.mark.e2e
+def test_docx_export_keeps_every_piece_of_text(tmp_path, monkeypatch):
+    """导出 HTML 里的每一段字都要进 DOCX，公式写 TeX 源码，正文里不能有标签和没还原的实体。
+
+    "有哪些字"让浏览器去数（真实渲染器的输出、真实的 DOM），不在测试里手抄一份清单：
+    渲染器以后多包一层、换一种结构，这里照样知道该有哪些字。
+    """
+    ns = load_app_partial(monkeypatch, tmp_path)
+    import backend
+    backend.api.notes_create()
+    docx_path = str(tmp_path / 'all.docx')
+
+    def actions(window, result):
+        _wait_editor_ready(window)
+        window.evaluate_js(
+            "(function () {"
+            "  import('./js/app/14-markdown-render.js')"
+            "    .then(function (m) { return m.markdownExportHtml(%s, null); })"
+            "    .then(function (html) { window.__exported = html; },"
+            "          function (e) { window.__exported = 'ERROR ' + e; });"
+            "  return 1;"
+            "})()" % json.dumps(_DOCX_NOTE))
+        wait_for_js(window, "typeof window.__exported === 'string'")
+        html = window.evaluate_js("window.__exported")
+        result['html'] = html
+        result['expected'] = json.loads(window.evaluate_js(_EXPORT_TEXT_JS % json.dumps(html)))
+        result['ok'] = backend.api.export_note('全部', html, 'docx', docx_path)
+
+    r = _run(ns, actions, wait_before=0)
+    assert 'error' not in r, r.get('error')
+    assert not r['html'].startswith('ERROR'), r['html']
+    assert r['ok'] is True
+    from docx import Document
+    doc = Document(docx_path)
+    raw = _docx_text(doc)
+
+    def norm(s):
+        return re.sub(r'\s+', ' ', s).strip()
+
+    text = norm(raw)
+    expected = r['expected']
+    assert len(expected['texts']) > 30 and len(expected['formulas']) == 6, expected
+    missing = [t for t in expected['texts'] if norm(t) not in text]
+    assert not missing, 'DOCX 丢了这些字：%r\n全文：%r' % (missing, raw)
+    for f in expected['formulas']:
+        assert f['tex'], '导出的公式没带 TeX 源码：%r' % f
+        piece = ('$$%s$$' if f['display'] else '$%s$') % norm(f['tex'])
+        assert piece in text, 'DOCX 里没有公式 %r：%r' % (piece, raw)
+    assert not _TAG_LEAK.search(raw), '标签或实体进了正文：%r' % _TAG_LEAK.findall(raw)
+    assert '[图片: 图注]' in raw, '放不进去的图要留一行字'
+    # 结构也要对：表格是 Word 表格，代码块的换行还在
+    assert len(doc.tables) == 2, '属性表和正文的表格都应当是 Word 表格'
+    assert '缩进代码第一行\n缩进代码第二行' in raw and 'def 函数(x):\n    return x  # 注释' in raw

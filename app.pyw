@@ -473,6 +473,9 @@ class AppApi:
         # 投影：两个调用点都只读 note.id（08 日历今日笔记、28 捕获菜单今日日记）
         return _ack(self.backend.daily_note_open())
     def capture_image(self, src_path, title=None, body=None):
+        # 源路径来自页面：先核对（_source_allowed），不认就什么都不访问
+        if not _source_allowed(src_path):
+            return None
         # 投影：前端只读 note.id（29-ocr「存为新笔记」）
         return _ack(self.backend.capture_image(src_path, title, body))
 
@@ -567,6 +570,9 @@ class AppApi:
 
     # 文件操作
     def file_copy_to_note(self, source_path, note_id, file_type):
+        # 源路径来自页面：只认对话框选过的、附件、临时文件（_source_allowed），不认就什么都不访问
+        if not _source_allowed(source_path):
+            return None
         return self.backend.file_copy_to_note(source_path, note_id, file_type)
     def file_open(self, file_path):
         return self.backend.file_open(file_path)
@@ -576,8 +582,9 @@ class AppApi:
         return desktop.open_external_url(url)
 
     # 文件对话框
-    def pick_image(self): return pick_image_file()
-    def pick_attachment(self): return pick_attachment_file()
+    # 选中的路径记下来：页面随后把它交回 file_copy_to_note 时才认（_source_allowed）
+    def pick_image(self): return _remember_pick(pick_image_file())
+    def pick_attachment(self): return _remember_pick(pick_attachment_file())
     def pick_background(self):
         path = pick_background_file()
         if not path:
@@ -1488,35 +1495,46 @@ def _resolve_window_geometry(backend=None):
 # 原来它们写在标记之后 —— `api.ocr_release()` 直接 NameError（e2e 日志里实测刷了 8 次），
 # 于是"临时图用完就删"这条契约**从来没被真正验证过**。
 
-# 用户在「识别图片…」对话框里亲手选过的图（规范成 abspath + normcase 的写法）。
-_ocr_picked = set()
+# 用户在文件对话框里亲手选过的文件（规范成 abspath + normcase 的写法）：
+# 插入图片、插入附件、「识别图片…」三个对话框共用，见 _source_allowed。
+_picked = set()
 
 
-def _ocr_pick_image():
-    """「识别图片…」的文件对话框。选中的路径记下来，`_ocr_recognize` 才认它。"""
-    path = pick_image_file()
+def _remember_pick(path):
+    """对话框选中的路径记下来，页面之后把它交回来时才认（见 _source_allowed）"""
     if path:
         try:
-            _ocr_picked.add(os.path.normcase(os.path.abspath(path)))
+            _picked.add(os.path.normcase(os.path.abspath(path)))
         except (ValueError, OSError):
             pass
     return path
 
 
-def _ocr_recognize(path, lang=None):
-    """识别前先核对路径：只认附件、自己造的临时图、用户在对话框里亲手选的那几张。
+def _source_allowed(path):
+    """页面交回来的源文件路径：只认附件、自己造的临时文件、用户在对话框里亲手选过的那几个。
 
-    路径来自前端。右键识别笔记里的图片时，它取自正文（富文本图片和附件卡片的
-    `data-stored-path`），不可信：`ocr.recognize` 上来就 `os.path.isfile`，路径写成网络共享的
-    地址时会真的连过去。对话框选出来的图可以在任何地方（包括用户自己的网络共享），所以不能一刀
-    切掉，改成"选过的才认"。
+    路径来自页面，不可信。右键识别笔记里的图片时它取自正文（富文本图片和附件卡片的
+    `data-stored-path`）；复制进附件、存成新笔记时，拿到路径就 `isfile`、复制，写成网络共享的
+    地址（`\\\\主机\\共享\\x`）会真的连过去。对话框选出来的文件可以在任何地方（包括用户自己的
+    网络共享），所以不能一刀切掉，改成"选过的才认"。
+    全程先按字符串判断：选过的集合比的是 abspath（纯字符串运算），resolve_under 也是先拒绝再访问。
     """
     try:
-        picked = isinstance(path, str) and os.path.normcase(os.path.abspath(path)) in _ocr_picked
+        if isinstance(path, str) and os.path.normcase(os.path.abspath(path)) in _picked:
+            return True
     except (ValueError, OSError):
-        picked = False
-    if not picked and not _backend_mod.resolve_under(path, _backend_mod.ATTACH_DIR,
-                                                     tempfile.gettempdir()):
+        return False
+    return _backend_mod.resolve_under(path, _backend_mod.ATTACH_DIR, tempfile.gettempdir()) is not None
+
+
+def _ocr_pick_image():
+    """「识别图片…」的文件对话框。选中的路径记下来，`_ocr_recognize` 才认它。"""
+    return _remember_pick(pick_image_file())
+
+
+def _ocr_recognize(path, lang=None):
+    """识别前先核对路径（_source_allowed）：`ocr.recognize` 上来就 `os.path.isfile`。"""
+    if not _source_allowed(path):
         return {'ok': False,
                 'error': '只能识别笔记里的图片、截图、剪贴板图片，或者通过「识别图片…」选择的图片'}
     return ocr.recognize(path, lang)

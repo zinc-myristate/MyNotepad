@@ -988,10 +988,65 @@ function refreshScopeExportLabels() {
   }
 }
 
-// 导出前把外置图片引用解析回 data URI（占位图/file:// 直通会导致导出文件破图；html/docx/xlsx 共用）
-async function resolveExportImages(htmlContent) {
+const LIST_SYMBOLS = { bullet: '•', checked: '☑', unchecked: '☐' };
+
+// Quill 2 的列表都是一个扁平的 <ol>，每项靠 data-list（bullet / ordered / checked / unchecked）和
+// ql-indent-N 区分，符号、编号、缩进全由编辑器的 CSS 计数器画（quill.snow.css 的 list-0~9）。
+// 导出文件里没有这份 CSS，浏览器只会把每一项都编成 1. 2. 3.，待办也看不出勾没勾，
+// 所以照同样的规则把符号算出来写成文字（DOCX、TXT 里也看得见），缩进和划线写成内联样式。
+// 规则：同一层的有序项接着编号，中间夹着别的列表项也不断；段落和标题让编号重新开始；
+// 出现更浅一层的项时，更深层重新开始。各层依次用 1. a. i.
+function writeListMarkers(root) {
+  let counters = [];
+  for (const block of root.children) {
+    if (/^(P|H[1-6])$/.test(block.tagName)) counters = [];
+    if (block.tagName !== 'OL') continue;
+    for (const li of block.querySelectorAll(':scope > li[data-list]')) {
+      const type = li.getAttribute('data-list');
+      const level = Number((/\bql-indent-(\d+)/.exec(li.className) || [])[1] || 0);
+      counters.length = Math.min(counters.length, level + 1);
+      let marker = LIST_SYMBOLS[type];
+      if (type === 'ordered') {
+        counters[level] = (counters[level] || 0) + 1;
+        marker = listNumber(counters[level], level % 3) + '.';
+      }
+      if (!marker) continue;
+      li.prepend(marker + ' ');
+      li.style.listStyleType = 'none';
+      if (level) li.style.marginLeft = 3 * level + 'em';
+      if (type === 'checked') {     // 与编辑器里一样：做完的划掉、变灰
+        li.style.textDecoration = 'line-through';
+        li.style.color = '#999';
+      }
+    }
+  }
+}
+
+/** 第 n 项的编号，style 0 / 1 / 2 对应 1 / a / i（Quill 各层轮流用这三种） */
+function listNumber(n, style) {
+  if (style === 0) return String(n);
+  let out = '';
+  if (style === 1) {
+    for (; n > 0; n = Math.floor((n - 1) / 26)) out = String.fromCharCode(97 + (n - 1) % 26) + out;
+    return out;
+  }
+  for (const [value, digits] of [[1000, 'm'], [900, 'cm'], [500, 'd'], [400, 'cd'], [100, 'c'], [90, 'xc'],
+    [50, 'l'], [40, 'xl'], [10, 'x'], [9, 'ix'], [5, 'v'], [4, 'iv'], [1, 'i']]) {
+    for (; n >= value; n -= value) out += digits;
+  }
+  return out;
+}
+
+// 富文本的导出 HTML（html/docx/txt/xlsx 共用）：
+//   1) 去掉编辑器自己的控件：代码块的语言下拉框、列表项前的占位（.ql-ui）、附件卡片的删除按钮。
+//      导出文件里没有编辑器的样式，它们会原样显示成能点的下拉框和按钮，TXT 里还会多出一串语言名；
+//   2) 列表的符号和编号写成文字（见 writeListMarkers）；
+//   3) 把外置图片引用解析回 data URI（占位图/file:// 直通会导致导出文件破图）。
+async function quillExportHtml(htmlContent) {
   const tmp = document.createElement('div');
   tmp.innerHTML = htmlContent;
+  tmp.querySelectorAll('.ql-ui, .attachment-remove').forEach((el) => el.remove());
+  writeListMarkers(tmp);
   for (const img of [...tmp.querySelectorAll('img')]) {
     const path = img.getAttribute('data-stored-path');
     const src = img.getAttribute('src') || '';
@@ -1086,7 +1141,7 @@ $$('.export-option').forEach(btn => {
     if (state.noteFormat === 'md') {
       htmlContent = await markdownExportHtml(getMarkdownContent(), state.activeNoteId);
     } else {
-      htmlContent = state.quill ? await resolveExportImages(state.quill.root.innerHTML) : '';
+      htmlContent = state.quill ? await quillExportHtml(state.quill.root.innerHTML) : '';
     }
 
     if (format === 'pdf') {

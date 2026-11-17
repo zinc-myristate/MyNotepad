@@ -180,17 +180,11 @@ export async function loadNotebookBar() {
   dropdown.appendChild(allItem);
 }
 
-// 快速捕获和今日日记是按名字找这两本的（后端 _find_or_create_notebook），改了名下次会另建一本
-const NOTEBOOK_FOUND_BY_NAME = {
-  '收件箱': '快速捕获按名字找「收件箱」：改名后，下次捕获会另建一个「收件箱」。',
-  '日记': '今日日记按名字找「日记」：改名后，下次写日记会另建一个「日记」。',
-};
-
-/** 改笔记本名。规矩在后端（notebooks_update）：去首尾空白、不能为空、不能和别的笔记本重名 */
+/** 改笔记本名。规矩在后端（notebooks_update）：去首尾空白、不能为空、不能和别的笔记本重名。
+ *  「收件箱」「日记」后端按 id 找（_find_or_create_notebook），改了名捕获和日记照样落在这一本。 */
 async function renameNotebook(nb) {
   const name = await showInputDialog({
     title: '重命名笔记本',
-    message: NOTEBOOK_FOUND_BY_NAME[nb.name] || '',
     defaultValue: nb.name,
     okText: '重命名',
   });
@@ -201,6 +195,10 @@ async function renameNotebook(nb) {
     return;
   }
   await loadNotebookBar();
+  // 视图和搜索框里写死的 `notebook:旧名` 跟着换（视图后端已经改好，这里刷新并改搜索框）
+  window.dispatchEvent(new CustomEvent('saved-searches-changed', {
+    detail: { keys: ['notebook', 'nb'], from: nb.name, to: r.notebook.name },
+  }));
   showToast('已重命名为「' + r.notebook.name + '」', { type: 'success' });
 }
 
@@ -253,7 +251,12 @@ $('#btn-new-notebook-sidebar').addEventListener('click', async () => {
     okText: '创建'
   });
   if (!name || !name.trim()) return;
-  await window.pywebview.api.notebooks_create(name.trim());
+  // 规矩在后端（notebooks_create）：不能为空、不能和已有的笔记本重名，不合规时返回 {ok:false, error}
+  const r = await window.pywebview.api.notebooks_create(name.trim());
+  if (!r || !r.id) {
+    showToast('新建失败：' + ((r && r.error) || '未知原因'), { type: 'warn' });
+    return;
+  }
   loadNotebookBar();
 });
 

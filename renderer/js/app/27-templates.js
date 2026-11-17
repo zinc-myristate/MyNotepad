@@ -20,6 +20,7 @@ let _activeId = null;
 let _visible = false;
 let _saveTimer = null;
 let _previewTimer = null;
+let _previewSeq = 0;       // 预览请求的序号：先发的请求可能后回来，只认最后一次
 let _savedTimer = null;
 let _pending = false;      // 有未落库的改动
 
@@ -71,6 +72,8 @@ function fillEditor(tpl) {
 async function refreshPreview() {
   const pre = $('#tpl-preview');
   if (!pre) return;
+  // 序号在第一个 await 之前领：切模板、连着改标题时，晚回来的旧预览不能盖掉新的
+  const seq = ++_previewSeq;
   if (!_activeId) { pre.textContent = ''; return; }
   // 标题留空时按**模板名**渲染，与「用模板新建」的实际行为一致（那个输入框的占位文案
   // 就写着"留空 = 用模板名当标题"）；否则预览里 `{{title}}` 会是空的，看着像坏掉了
@@ -79,8 +82,10 @@ async function refreshPreview() {
   const title = typed || (tpl && tpl.name) || '';
   try {
     const text = await api().template_render(_activeId, title);
+    if (seq !== _previewSeq) return;
     pre.textContent = text || '（空模板）';
   } catch (e) {
+    if (seq !== _previewSeq) return;
     pre.textContent = '（预览失败）';
   }
 }

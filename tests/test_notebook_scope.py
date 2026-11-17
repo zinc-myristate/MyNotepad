@@ -178,10 +178,11 @@ class TestNotebookRename:
         assert r == {'ok': False, 'error': '已有同名的笔记本'}
         assert sorted(n['name'] for n in api.notebooks_list()) == ['原神', '日记']
 
-    def test_existing_duplicates_can_still_be_edited(self, api):
-        """新建时不查重，存量库里可能已有重名的：名字没变就不查重，否则那一本连颜色都改不了"""
+    def test_existing_duplicates_can_still_be_edited(self, api, backend_mod):
+        """以前新建时不查重，存量库里可能已有重名的：名字没变就不查重，否则那一本连颜色都改不了"""
         a = api.notebooks_create('原神')['id']
-        api.notebooks_create('原神')
+        backend_mod.conn.execute("INSERT INTO notebooks (id, name, sort_order) VALUES ('legacy', '原神', 9)")
+        backend_mod.conn.commit()
         r = api.notebooks_update(a, {'name': '原神', 'color': '#5E7DA8'})
         assert r['ok'] and r['notebook']['color'] == '#5E7DA8'
         assert api.notebooks_update(a, {'name': '原神·旧'})['ok']
@@ -193,13 +194,49 @@ class TestNotebookRename:
         assert api.notebooks_update(nb, None)['ok'] is False
         assert [n['id'] for n in api.notebooks_list()] == [nb]
 
-    def test_capture_after_renaming_inbox_creates_a_new_one(self, api):
-        """快速捕获按名字找「收件箱」：改名后再捕获会另建一本（界面改名时会提示这一点）"""
+    def test_create_follows_the_same_rules(self, api):
+        """新建和改名同一套规矩：去首尾空白、不能为空、不能重名（以前新建不查重、改名却查）"""
+        r = api.notebooks_create('  原神 ')
+        assert r['id'] and r['name'] == '原神'
+        assert api.notebooks_create('原神') == {'ok': False, 'error': '已有同名的笔记本'}
+        for bad in ('', '   ', None, 42):
+            assert api.notebooks_create(bad) == {'ok': False, 'error': '笔记本名称不能为空'}, bad
+        assert [n['name'] for n in api.notebooks_list()] == ['原神']
+
+
+# ----- 收件箱 / 日记：按记下的 id 找，改了名也还是那一本 -----
+
+class TestSpecialNotebooks:
+    def test_capture_and_diary_follow_their_notebook_after_rename(self, api):
+        """以前按名字找：把「收件箱」改名成「待整理」，下次捕获就另建一个「收件箱」"""
         inbox = api.notebook_id_by_name('收件箱')
         assert api.notebooks_update(inbox, {'name': '待整理'})['ok']
-        api.capture_text('改名后捕获的第一条')
-        names = sorted(n['name'] for n in api.notebooks_list())
-        assert names == ['待整理', '收件箱']
+        note = api.capture_text('改名后捕获的第一条')
+        assert api.notes_get(note['id'])['notebook_id'] == inbox
+
+        diary = api.daily_note_open()['notebook_id']
+        assert api.notebooks_update(diary, {'name': '日志'})['ok']
+        api.notes_delete(api.daily_note_open()['id'])           # 让今天的日记重新建一篇
+        assert api.daily_note_open()['notebook_id'] == diary
+        assert sorted(n['name'] for n in api.notebooks_list()) == ['待整理', '日志']
+
+    def test_existing_inbox_is_adopted(self, api, backend_mod):
+        """升级前就有的「收件箱」：第一次捕获时认下它，记住它的 id"""
+        nb = api.notebooks_create('收件箱')['id']
+        note = api.capture_text('第一条')
+        assert api.notes_get(note['id'])['notebook_id'] == nb
+        row = backend_mod.conn.execute("SELECT value FROM settings WHERE key = 'inbox_notebook_id'").fetchone()
+        assert row[0] == nb
+
+    def test_deleted_inbox_is_created_again(self, api):
+        """记下的那一本被删了：回到按名字找，找不到再建"""
+        inbox = api.notebook_id_by_name('收件箱')
+        api.notebooks_delete(inbox)
+        note = api.capture_text('删掉之后')
+        again = api.notes_get(note['id'])['notebook_id']
+        assert again and again != inbox
+        assert [n['name'] for n in api.notebooks_list()] == ['收件箱']
+        assert api.capture_text('再来一条') and api.notebook_id_by_name('收件箱') == again
 
 
 # ----- 其它创建入口的归属 -----

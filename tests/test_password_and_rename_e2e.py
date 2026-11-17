@@ -7,6 +7,9 @@
 · 笔记本以前只能新建和删除：下拉里每一行加了改名按钮（F2 也行），规矩在后端 notebooks_update。
 · 标签、视图的改名对话框传的是 `value`，而 showInputDialog 认的是 `defaultValue`：对话框弹出来是空的。
   视图菜单传了 `cancelText: '删除'`，showConfirmAsync 不认，按钮上写的仍是「取消」，点下去却是删除流程。
+· 视图菜单后来改成了普通的菜单（重命名 / 删除）：拿确认框当二选一用时，Esc 走的是删除那一支。
+· 标签、笔记本改名后，视图和搜索框里写死的 `tag:旧名` / `notebook:旧名` 跟着换。
+· 「收件箱」「日记」改成按 id 找，改名对话框不再提醒"改了名会另建一本"。
 """
 import json
 import os
@@ -88,6 +91,114 @@ def test_dialog_calls_only_pass_parameters_the_dialog_reads():
                 offences.append('%s：%s 不认 %s' % (name, m.group(1), sorted(unknown)))
     assert calls >= 20, '对话框调用数量异常少（%d）：是不是解析错了' % calls
     assert not offences, '\n'.join(offences)
+
+
+# ---------------- 真窗口：Ctrl+P 里的密码命令 ----------------
+
+def _command(window, text):
+    """Ctrl+P → 输入命令 → 回车"""
+    window.evaluate_js("key('p', {ctrlKey: true, on: document})")
+    assert wait_for_js(window, 'document.activeElement.id', 'quick-switch-input')
+    window.evaluate_js("var i = document.getElementById('quick-switch-input'); i.value = %s;"
+                       "i.dispatchEvent(new Event('input', {bubbles: true}));" % json.dumps(text))
+    assert wait_for_js(window, "document.querySelectorAll('#quick-switch-list [data-cmd]').length", 1)
+    title = window.evaluate_js("document.querySelector('#quick-switch-list .qs-title').textContent")
+    window.evaluate_js("key('Enter', {on: document.getElementById('quick-switch-input')})")
+    return title
+
+
+@pytest.mark.e2e
+def test_command_panel_opens_the_password_panel(tmp_path, monkeypatch):
+    """以前改密码只能点列表行上的钥匙按钮（鼠标悬停才看得见），命令面板里没有入口"""
+    ns = load_app_partial(monkeypatch, tmp_path)
+    import backend
+    locked = backend.api.notes_create()
+    backend.api.notes_update(locked['id'], {'title': '加密', 'content': '秘密正文'})
+    assert backend.api.note_set_password(locked['id'], 'old-pass-1')
+    backend.api.note_lock(locked['id'])
+    plain = backend.api.notes_create()          # 后建的排在最前：启动时打开的是它
+    backend.api.notes_update(plain['id'], {'title': '普通', 'content': '普通正文'})
+    verify_panel = "document.getElementById('password-verify-panel').style.display"
+
+    def actions(window, result):
+        assert wait_for_js(window, 'window.__app?.state.activeNoteId', plain['id'])
+        window.evaluate_js(KEY)
+        result['plain_title'] = _command(window, '>密码')
+        assert wait_for_js(window, PASSWORD_PANEL, 'flex')
+        result['plain_panel'] = window.evaluate_js(
+            "[document.getElementById('password-panel-title').textContent,"
+            " getComputedStyle(document.getElementById('password-current')).display]")
+        window.evaluate_js("key('Escape')")
+        assert wait_for_js(window, PASSWORD_PANEL, 'none')
+
+        # 已加密的笔记：先解锁打开它，命令打开的是「修改密码」，要先输当前密码
+        window.evaluate_js("document.querySelector('#note-list [data-note-id=\"%s\"]').click()" % locked['id'])
+        assert wait_for_js(window, verify_panel, 'flex')
+        _set(window, 'password-verify-input', 'old-pass-1')
+        _click(window, 'btn-verify-password')
+        assert wait_for_js(window, verify_panel, 'none')
+        assert wait_for_js(window, 'window.__app?.state.activeNoteId', locked['id'])
+        result['locked_title'] = _command(window, '>密码')
+        assert wait_for_js(window, PASSWORD_PANEL, 'flex')
+        result['locked_panel'] = window.evaluate_js(
+            "[document.getElementById('password-panel-title').textContent,"
+            " getComputedStyle(document.getElementById('password-current')).display !== 'none']")
+
+    result = _run(ns, actions, wait_before=0, wait_after=0)
+    assert 'error' not in result, result
+    assert result['plain_title'] == '给当前笔记设置密码', result
+    assert result['plain_panel'] == ['设置密码', 'none'], result
+    assert result['locked_title'] == '修改当前笔记的密码', result
+    assert result['locked_panel'] == ['修改密码', True], result
+
+
+# ---------------- 真窗口：改名之后视图和搜索框跟着换 ----------------
+
+@pytest.mark.e2e
+def test_renaming_a_tag_keeps_views_and_the_search_box_in_step(tmp_path, monkeypatch):
+    """视图和搜索框里写死的是名字：以前标签改名后，正在看的视图一下子什么都搜不到"""
+    ns = load_app_partial(monkeypatch, tmp_path)
+    import backend
+    tid = backend.api.tags_create('项目', '#888888')['id']
+    note = backend.api.notes_create()
+    backend.api.notes_update(note['id'], {'title': '带标签的笔记', 'content': '正文'})
+    backend.api.note_tags_set(note['id'], [tid])
+    other = backend.api.notes_create()
+    backend.api.notes_update(other['id'], {'title': '没有标签', 'content': '正文'})
+    backend.api.saved_search_create('项目笔记', 'tag:项目')
+    visible = "[...document.querySelectorAll('#note-list .note-item')].map(e => e.dataset.noteId)"
+
+    def actions(window, result):
+        assert wait_for_js(window, 'Boolean(window.__app && !document.querySelector(".note-skeleton"))')
+        assert wait_for_js(window, "Boolean(document.querySelector('[data-ss] .ss-name'))")
+        window.evaluate_js("document.querySelector('[data-ss] .ss-name').click()")
+        assert wait_for_js(window, 'window.__app.state.searchQuery', 'tag:项目')
+        assert wait_for_js(window, visible + '.length', 1)
+
+        _click(window, 'btn-tag-manager')
+        assert wait_for_js(window, "Boolean(document.querySelector('[data-rename-tag]'))")
+        window.evaluate_js("document.querySelector('[data-rename-tag]').click()")
+        assert wait_for_js(window, INPUT_DIALOG, 'flex')
+        _clear_toast(window)
+        _set(window, 'input-dialog-input', '工作')
+        _click(window, 'btn-input-ok')
+        result['toast'] = wait_for_js(window, TOAST, '已重命名为「工作」')
+        result['search'] = wait_for_js(window, "document.getElementById('search-input').value", 'tag:工作')
+        result['query'] = wait_for_js(window, 'window.__app.state.searchQuery', 'tag:工作')
+        result['visible'] = json.loads(wait_for_js(
+            window, 'JSON.stringify(%s)' % visible, json.dumps([note['id']])))
+        result['view'] = wait_for_js(
+            window, "document.querySelector('[data-ss]').getAttribute('title')", 'tag:工作')
+        result['active'] = wait_for_js(
+            window, "document.querySelector('[data-ss]').classList.contains('active')", True)
+
+    result = _run(ns, actions, wait_before=0, wait_after=0)
+    assert 'error' not in result, result
+    assert result['toast'] == '已重命名为「工作」', result
+    assert result['search'] == 'tag:工作' and result['query'] == 'tag:工作', result
+    assert result['visible'] == [note['id']], '改名后搜索结果不该变：%s' % result
+    assert result['view'] == 'tag:工作' and result['active'] is True, result
+    assert [r['query'] for r in backend.api.saved_searches_list()] == ['tag:工作']
 
 
 # ---------------- 真窗口：改密码 ----------------
@@ -245,7 +356,15 @@ def test_rename_notebook_tag_and_view_dialogs(tmp_path, monkeypatch):
         rename(window, '星穹铁道', '工作')
         result['duplicate'] = wait_for_js(window, TOAST, '重命名失败：已有同名的笔记本')
 
-        # F2 打开同一个对话框；收件箱带提示，Esc 什么都不改
+        # 新建笔记本守同样的规矩（以前新建不查重，建出两个「工作」）
+        _clear_toast(window)
+        _click(window, 'btn-new-notebook-sidebar')
+        assert wait_for_js(window, INPUT_DIALOG, 'flex')
+        _set(window, 'input-dialog-input', ' 工作 ')
+        _click(window, 'btn-input-ok')
+        result['create_dup'] = wait_for_js(window, TOAST, '新建失败：已有同名的笔记本')
+
+        # F2 打开同一个对话框；收件箱按 id 找，不再带"改了名会另建一本"的提示；Esc 什么都不改
         open_dropdown(window)
         window.evaluate_js("(%s).focus(); key('F2')" % (item % json.dumps('收件箱')))
         assert wait_for_js(window, INPUT_DIALOG, 'flex')
@@ -270,17 +389,27 @@ def test_rename_notebook_tag_and_view_dialogs(tmp_path, monkeypatch):
         window.evaluate_js("key('Escape')")
         assert wait_for_js(window, INPUT_DIALOG, 'none')
 
-        # 视图菜单：取消按钮写的是「删除」，选「重命名」后对话框带上原名
+        # 视图菜单：普通的菜单。Esc 只把它收起来、焦点回到「…」；选「重命名」后对话框带上原名
         window.evaluate_js("document.querySelector('[data-ss-menu]').click()")
-        assert wait_for_js(window, "document.getElementById('confirm-dialog').style.display", 'flex')
-        result['view_buttons'] = window.evaluate_js(
-            "[document.getElementById('btn-confirm-ok').textContent,"
-            " document.getElementById('btn-confirm-cancel').textContent]")
-        _click(window, 'btn-confirm-ok')
+        assert wait_for_js(window, "Boolean(document.querySelector('.ss-menu'))")
+        result['view_menu'] = window.evaluate_js(
+            "[...document.querySelectorAll('.ss-menu [role=menuitem]')].map(b => b.textContent.trim())"
+            ".concat([document.activeElement.textContent.trim(),"
+            " document.querySelector('[data-ss-menu]').getAttribute('aria-expanded')])")
+        window.evaluate_js("key('Escape')")
+        assert wait_for_js(window, "!document.querySelector('.ss-menu')")
+        result['view_esc'] = window.evaluate_js(
+            "[document.getElementById('confirm-dialog').style.display === 'flex',"
+            " document.activeElement.matches('[data-ss-menu]'),"
+            " document.querySelector('[data-ss-menu]').getAttribute('aria-expanded')]")
+        window.evaluate_js("document.querySelector('[data-ss-menu]').click()")
+        assert wait_for_js(window, "Boolean(document.querySelector('.ss-menu'))")
+        window.evaluate_js("document.querySelector('.ss-menu [data-ss-act=rename]').click()")
         assert wait_for_js(window, INPUT_DIALOG, 'flex')
         result['view'] = window.evaluate_js(INPUT_VALUE)
         window.evaluate_js("key('Escape')")
         assert wait_for_js(window, INPUT_DIALOG, 'none')
+        result['view_focus'] = wait_for_js(window, "document.activeElement.matches('[data-ss-menu]')", True)
 
         # 共用的确认框：下一个调用方没传 cancelText，按钮要写回「取消」
         open_dropdown(window)
@@ -296,10 +425,13 @@ def test_rename_notebook_tag_and_view_dialogs(tmp_path, monkeypatch):
     assert result['renamed'] == '已重命名为「星穹铁道」', result
     assert result['focus_back'] == 'btn-notebook-select', '对话框关掉后焦点要回到笔记本按钮：%s' % result
     assert result['duplicate'] == '重命名失败：已有同名的笔记本', result
-    assert result['inbox'][0] == '收件箱' and '另建一个「收件箱」' in result['inbox'][1], result
+    assert result['create_dup'] == '新建失败：已有同名的笔记本', result
+    assert result['inbox'] == ['收件箱', ''], '收件箱按 id 找，改名不用再提醒：%s' % result
     assert result['label'] == '崩坏', result
     assert result['tag'] == '项目/甲', '标签改名对话框要带上原名：%s' % result
-    assert result['view_buttons'] == ['重命名', '删除'] and result['view'] == '我的视图', result
+    assert result['view_menu'] == ['重命名', '删除', '重命名', 'true'], result
+    assert result['view_esc'] == [False, True, 'false'], 'Esc 只收菜单、不进删除流程，焦点回到「…」：%s' % result
+    assert result['view'] == '我的视图' and result['view_focus'] is True, result
     assert result['delete_cancel'] == '取消', result
     assert sorted(n['name'] for n in backend.api.notebooks_list()) == ['崩坏', '工作', '收件箱']
     assert backend.api.notes_list(genshin)[0]['title'] == '原神里的笔记', '改名不能动笔记的归属'

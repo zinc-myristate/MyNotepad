@@ -10,6 +10,7 @@ import { createNewNote } from './03-notes.js';
 import { openTodoPanel } from './18-todo-panel.js';
 import { convertActiveNote, syncFormatBadge } from './15-note-format.js';
 import { reloadActiveNote } from './03-notes.js';
+import { openPasswordPanel } from './07-formula-security-dnd.js';
 
 function click(id) {
   const el = document.getElementById(id);
@@ -20,6 +21,12 @@ function click(id) {
 /** 当前笔记是 Markdown 还是富文本（决定"转格式"命令的文案） */
 function formatLabel() {
   return state.noteFormat === 'md' ? '转为富文本' : '转为 Markdown';
+}
+
+/** 当前笔记有没有密码（决定"密码"命令的文案）。列表里每篇都带着 has_password */
+function passwordLabel() {
+  const note = state.notes.find((n) => n.id === state.activeNoteId);
+  return note && note.has_password ? '修改当前笔记的密码' : '给当前笔记设置密码';
 }
 
 const COMMANDS = [
@@ -57,6 +64,14 @@ const COMMANDS = [
     run: () => click('btn-theme') },
   { id: 'tags', title: '管理标签', run: () => click('btn-tag-manager') },
   { id: 'lock', title: '锁定当前笔记', run: () => click('btn-lock') },
+  // 以前改密码只能点列表行上的钥匙按钮（鼠标悬停才出现）。和那个按钮打开的是同一个面板：
+  // 已有密码时要先输当前密码，规矩全在面板和后端里
+  { id: 'password', title: '设置或修改密码', keywords: 'password encrypt 密码 加密 改密码',
+    dynamicTitle: passwordLabel,
+    run: async () => {
+      if (!state.activeNoteId) { showToast('请先选择一篇笔记', { type: 'warn' }); return; }
+      await openPasswordPanel('set');
+    } },
   { id: 'focus-search', title: '聚焦搜索框', hint: 'Ctrl+F',
     run: () => { const el = $('#search-input'); if (el) { el.focus(); el.select(); } } },
   { id: 'save-search', title: '把当前搜索保存为视图', keywords: 'saved search view',

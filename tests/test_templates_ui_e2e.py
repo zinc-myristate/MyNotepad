@@ -142,6 +142,50 @@ def test_templates_drawer_preview_autosave_and_actions(tmp_path, monkeypatch):
 
 
 @pytest.mark.e2e
+def test_template_preview_ignores_a_late_reply(tmp_path, monkeypatch):
+    """预览以前没有请求序号：先改的标题如果预览请求回来得晚，会盖掉后改的标题的预览。
+    这里让第一次渲染请求晚 1 秒回来，必然出现"旧回复后到"，最后显示的必须是后改的那个"""
+    ns = load_app_partial(monkeypatch, tmp_path)
+    import backend
+    backend.api.template_create('会议记录', '# {{title}}\n')
+    backend.api.notes_create()
+    preview = "document.getElementById('tpl-preview').textContent"
+
+    def actions(window, result):
+        wait_for_js(window, "!!(window.__app && window.__app.state.activeNoteId)")
+        _click(window, '#btn-capture')
+        wait_for_js(window, "!!document.querySelector('#cap-tpl-manage')")
+        _click(window, '#cap-tpl-manage')
+        wait_for_js(window, "!!document.querySelector('#tpl-list .tpl-chip')")
+        _click(window, '#tpl-list .tpl-chip')
+        wait_for_js(window, preview + ".includes('# 会议记录')")
+        window.evaluate_js(
+            "(function () {"
+            "  var api = window.pywebview.api, real = api.template_render, calls = 0;"
+            "  api.template_render = function (id, title) {"
+            "    var reply = real.call(api, id, title);"
+            "    calls += 1;"
+            "    window.__renderCalls = calls;"
+            "    return calls === 1 ? reply.then(function (v) {"
+            "      return new Promise(function (r) { setTimeout(function () { r(v); }, 1000); }); }) : reply;"
+            "  };"
+            "})()")
+        _type(window, '#tpl-title', '先改的标题')
+        wait_for_js(window, "window.__renderCalls === 1", True)
+        _type(window, '#tpl-title', '后改的标题')
+        result['newer'] = wait_for_js(window, preview + ".includes('# 后改的标题')", True)
+        time.sleep(1.5)                                  # 等第一次的回复晚到
+        result['calls'] = window.evaluate_js('window.__renderCalls')
+        result['final'] = window.evaluate_js(preview)
+
+    r = _run(ns, actions, wait_before=0)
+    assert 'error' not in r, r.get('error')
+    assert r['newer'] is True and r['calls'] == 2, r
+    assert '# 后改的标题' in r['final'] and '先改的标题' not in r['final'], \
+        '晚到的旧预览盖掉了新的：%r' % r['final']
+
+
+@pytest.mark.e2e
 def test_templates_drawer_mutually_exclusive_with_other_drawers(tmp_path, monkeypatch):
     """三个右侧抽屉互斥：开了链接抽屉再开模板，链接必须自己关掉。"""
     ns = load_app_partial(monkeypatch, tmp_path)
