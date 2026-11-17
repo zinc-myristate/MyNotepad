@@ -517,6 +517,30 @@ def test_overlay_that_fails_to_show_stays_under_the_watchdog(capture):
     assert capture.main.calls == ['hide', 'show', 'restore']
 
 
+def test_overlay_whose_bridge_cannot_be_registered_is_destroyed(capture):
+    """窗口建出来了、登记桥接方法时才出错：这次截图算失败，那个隐藏的窗口也要收掉。
+
+    它没进会话，页面也调不到桥，不收的话没有人会再去关它。
+    """
+    ns = capture.ns
+
+    def create_window(*args, **kwargs):
+        def expose(*funcs):
+            raise RuntimeError('登记失败')
+
+        overlay = _FakeWindow()
+        overlay.expose = expose
+        capture.overlays.append(overlay)
+        return overlay
+
+    ns['webview'] = SimpleNamespace(create_window=create_window)
+    assert ns['_capture_begin']('note-1') is False
+    assert capture.overlays[0].calls == ['destroy'], '建到一半的覆盖窗没有销毁'
+    assert capture.main.calls == ['hide', 'show', 'restore'], '主窗要放回来'
+    assert not os.path.exists(capture.shots[0]), '临时图没删'
+    assert ns['_capture']['window'] is None and ns['_capture']['watchdog'] is None
+
+
 def test_watchdog_leaves_room_for_slow_startup_and_never_blocks_exit(capture):
     """到点太早，慢机器就截不了图：要盖住 pywebview 等窗口的 20 秒和页面等桥接的 10 秒。"""
     ns = capture.ns

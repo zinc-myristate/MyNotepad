@@ -131,9 +131,15 @@ html, body {
 }
 
 /* ====== 4 种主题 ====== */
+/* 主题变量只挂在 <body> 上，所以选择器要写 :where(body)[data-theme="…"]。
+   主题面板里的六张卡片也带 data-theme（JS 靠它知道点的是哪个主题）：选择器不限定元素的话，
+   每张卡片都会套上"自己那个主题"的变量，「深色」卡片的浅色字压在浅色弹窗上就看不见了，
+   深色主题下另外四张反过来也一样；边框颜色各不相同，看着还像各有各的选中态。
+   用 :where() 是为了不加优先级：和原来的 [data-theme="…"] 一样是 (0,1,0)，层叠顺序一点不变。
+   workspace.css 里覆盖白色主题的那一块同理。 */
 
 /* 经典白 — 奶油白底 + 鼠尾草绿 */
-[data-theme="white"] {
+:where(body)[data-theme="white"] {
   --bg-primary: #FCFAF7;
   --bg-secondary: #F6F3EF;
   --bg-sidebar: #F0EDE8;
@@ -171,7 +177,7 @@ html, body {
 }
 
 /* 米黄色 — 象牙纸色 + 浓茶色 */
-[data-theme="cream"] {
+:where(body)[data-theme="cream"] {
   --bg-primary: #FBF6ED;
   --bg-secondary: #F5EDDC;
   --bg-sidebar: #EDE3CE;
@@ -209,7 +215,7 @@ html, body {
 }
 
 /* 淡粉色 — 玫瑰花瓣 + 暖灰赭石 */
-[data-theme="pink"] {
+:where(body)[data-theme="pink"] {
   --bg-primary: #FBF5F4;
   --bg-secondary: #F6EBE9;
   --bg-sidebar: #EDDDD9;
@@ -247,7 +253,7 @@ html, body {
 }
 
 /* 淡蓝色 — 钢笔墨水蓝 + 雾灰底面 */
-[data-theme="blue"] {
+:where(body)[data-theme="blue"] {
   --bg-primary: #F4F7FA;
   --bg-secondary: #ECF1F6;
   --bg-sidebar: #DEE5EE;
@@ -289,7 +295,7 @@ html, body {
      · --accent-dark 在浅色主题里是「更深的强调色」且**当文字用**，深色下必须变亮；
      · --accent-light 在浅色主题里是「更浅的强调色」且**当底色用**，深色下必须变暗。
    两者都反转，选中态/标签底/悬浮文字才不会出现深底深字。 */
-[data-theme="dark"] {
+:where(body)[data-theme="dark"] {
   --bg-primary: #1E1F22;
   --bg-secondary: #26272B;
   --bg-sidebar: #191A1D;
@@ -2035,11 +2041,29 @@ body[data-theme="dark"] {
   background: var(--accent-soft);
   box-shadow: var(--active-shadow);
 }
+/* 当前主题右上角打一个勾：只靠边框和底色，在色差小的主题里不够一眼看出来 */
+.theme-option { position: relative; }
+.theme-option.active::before,
+.theme-option.active::after {
+  content: '';
+  position: absolute;
+  top: 8px;
+  right: 8px;
+  width: 16px;
+  height: 16px;
+  border-radius: 50%;
+}
+.theme-option.active::before { background: var(--accent-solid); }
+.theme-option.active::after {
+  background: var(--on-accent);
+  -webkit-mask: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24' fill='none' stroke='%23000' stroke-width='3' stroke-linecap='round' stroke-linejoin='round'%3E%3Cpolyline points='6 12.5 10.5 17 18 8'/%3E%3C/svg%3E") center / 10px 10px no-repeat;
+  mask: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24' fill='none' stroke='%23000' stroke-width='3' stroke-linecap='round' stroke-linejoin='round'%3E%3Cpolyline points='6 12.5 10.5 17 18 8'/%3E%3C/svg%3E") center / 10px 10px no-repeat;
+}
 .theme-swatch {
   width: 72px;
   height: 48px;
   border-radius: var(--radius-sm);
-  border: 1px solid rgba(0,0,0,0.06);
+  border: 1px solid var(--border-color);    /* 跟着当前主题走：深色主题下「深色」色卡也要看得出轮廓 */
   box-shadow: var(--shadow-xs);
 }
 

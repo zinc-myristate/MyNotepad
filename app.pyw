@@ -510,8 +510,8 @@ class AppApi:
 
     # 第 11 轮：图片文字识别（OCR）。识别本身在 ocr.py，这里只做桥接与临时文件管理
     def ocr_languages(self): return ocr.languages_info()
-    def ocr_recognize(self, path, lang=None): return ocr.recognize(path, lang)
-    def ocr_pick_image(self): return pick_image_file()
+    def ocr_recognize(self, path, lang=None): return _ocr_recognize(path, lang)
+    def ocr_pick_image(self): return _ocr_pick_image()
     def ocr_clipboard_image(self): return _ocr_clipboard_image()
     def ocr_release(self, path): return _ocr_release(path)
 
@@ -570,6 +570,10 @@ class AppApi:
         return self.backend.file_copy_to_note(source_path, note_id, file_type)
     def file_open(self, file_path):
         return self.backend.file_open(file_path)
+
+    def open_url(self, url):
+        """笔记里的网页 / 邮件链接交给系统默认程序打开；只认 http、https、mailto、tel"""
+        return desktop.open_external_url(url)
 
     # 文件对话框
     def pick_image(self): return pick_image_file()
@@ -1009,17 +1013,17 @@ BRIDGE_MAIN = (
     'notes_duplicate', 'notes_get', 'notes_list', 'notes_move_many', 'notes_purge', 'notes_purge_all',
     'notes_reorder', 'notes_resolve_link', 'notes_restore', 'notes_search', 'notes_table',
     'notes_trash_list', 'notes_update', 'ocr_clipboard_image', 'ocr_languages', 'ocr_pick_image',
-    'ocr_recognize', 'ocr_release', 'pick_and_preview_icon', 'pick_attachment', 'pick_background',
-    'pick_image', 'read_file_base64', 'reminder_complete', 'reminder_create', 'reminder_delete',
-    'reminder_get', 'reminder_list', 'reminder_list_all', 'reminder_snooze', 'reminder_update',
-    'reminder_update_next_repeat', 'reminders_check', 'restore_default_icon', 'restore_delta_backup',
-    'save_temp_image', 'saved_search_create', 'saved_search_delete', 'saved_search_update',
-    'saved_searches_list', 'set_autostart', 'set_capture_hotkey_enabled', 'set_hotkey_enabled',
-    'set_tray_enabled', 'settings_get', 'settings_get_all', 'settings_set', 'startup_notice',
-    'tags_create', 'tags_delete', 'tags_list', 'tags_merge', 'tags_rename', 'template_create',
-    'template_delete', 'template_render', 'template_update', 'templates_list', 'todo_toggle',
-    'todos_list', 'update_icon_preview', 'versions_create', 'versions_delete', 'versions_delete_all',
-    'versions_get', 'versions_list', 'versions_restore',
+    'ocr_recognize', 'ocr_release', 'open_url', 'pick_and_preview_icon', 'pick_attachment',
+    'pick_background', 'pick_image', 'read_file_base64', 'reminder_complete', 'reminder_create',
+    'reminder_delete', 'reminder_get', 'reminder_list', 'reminder_list_all', 'reminder_snooze',
+    'reminder_update', 'reminder_update_next_repeat', 'reminders_check', 'restore_default_icon',
+    'restore_delta_backup', 'save_temp_image', 'saved_search_create', 'saved_search_delete',
+    'saved_search_update', 'saved_searches_list', 'set_autostart', 'set_capture_hotkey_enabled',
+    'set_hotkey_enabled', 'set_tray_enabled', 'settings_get', 'settings_get_all', 'settings_set',
+    'startup_notice', 'tags_create', 'tags_delete', 'tags_list', 'tags_merge', 'tags_rename',
+    'template_create', 'template_delete', 'template_render', 'template_update', 'templates_list',
+    'todo_toggle', 'todos_list', 'update_icon_preview', 'versions_create', 'versions_delete',
+    'versions_delete_all', 'versions_get', 'versions_list', 'versions_restore',
 )
 BRIDGE_CAPTURE_OVERLAY = ('capture_commit', 'capture_overlay_info', 'capture_overlay_ready')
 BRIDGE_CAPTURE_MINI = ('capture_mini_close', 'capture_mini_submit')
@@ -1046,6 +1050,39 @@ def expose_bridge(window, bridge, names):
 
 
 api = AppApi(backend_api)
+
+
+def harden_new_window_requests():
+    """页面请求开新窗口时（target=_blank、window.open、中键或 Ctrl 点链接），只放行网页、邮件、电话链接。
+
+    pywebview 默认把请求里的地址原样交给 `webbrowser.open`，在 Windows 上就是 `os.startfile`：
+    页面里的脚本 `window.open('ms-settings:privacy')` 不经任何确认就把系统设置打开了（实测），
+    `search-ms:` 和各个程序自己注册的协议也一样，地址里的参数由页面说了算。浏览器在这一步会先问
+    用户。`file:` 地址到不了这里，WebView2 自己就拦了（也是实测）。桥接白名单管不到这条路
+    （它不经过桥），所以单独收口：换成和 `open_url` 同一个校验（desktop.open_external_url），
+    只放行网页、邮件、电话链接。
+
+    要在建窗之前调用：EdgeChrome 在 WebView2 初始化完成时才订阅 NewWindowRequested，订阅的是
+    那时从类上取到的方法。换不成（pywebview 改了内部结构）就保持原样并留一条日志，不影响启动。
+    """
+    try:
+        from webview.platforms import edgechromium
+
+        def on_new_window_request(self, sender, args):
+            args.set_Handled(True)
+            desktop.open_external_url(str(args.get_Uri()))
+
+        if not callable(getattr(edgechromium.EdgeChrome, 'on_new_window_request', None)):
+            raise AttributeError('EdgeChrome.on_new_window_request 不存在')
+        edgechromium.EdgeChrome.on_new_window_request = on_new_window_request
+        return True
+    except Exception:
+        try:
+            import applog
+            applog.get_logger().exception("没能接管新窗口请求，沿用 pywebview 的默认处理")
+        except Exception:
+            pass
+        return False
 
 # 关窗兜底处理器工厂（app.pyw 底部与 E2E 测试共用）。
 # 注意死锁陷阱：closing 事件在 UI 线程同步执行，而 evaluate_js 的 JS 回调也需要
@@ -1446,10 +1483,44 @@ def _resolve_window_geometry(backend=None):
 
 
 # ====== OCR 临时文件辅助（第 11 轮）======
-# ⚠️ 这三个函数必须留在「创建窗口」标记**之前**：无头测试（conftest.load_app_partial）
+# ⚠️ 这几个函数必须留在「创建窗口」标记**之前**：无头测试（conftest.load_app_partial）
 # 只 exec 标记前的部分，而 AppApi 的 ocr_clipboard_image / ocr_release 就在标记前调用它们。
 # 原来它们写在标记之后 —— `api.ocr_release()` 直接 NameError（e2e 日志里实测刷了 8 次），
 # 于是"临时图用完就删"这条契约**从来没被真正验证过**。
+
+# 用户在「识别图片…」对话框里亲手选过的图（规范成 abspath + normcase 的写法）。
+_ocr_picked = set()
+
+
+def _ocr_pick_image():
+    """「识别图片…」的文件对话框。选中的路径记下来，`_ocr_recognize` 才认它。"""
+    path = pick_image_file()
+    if path:
+        try:
+            _ocr_picked.add(os.path.normcase(os.path.abspath(path)))
+        except (ValueError, OSError):
+            pass
+    return path
+
+
+def _ocr_recognize(path, lang=None):
+    """识别前先核对路径：只认附件、自己造的临时图、用户在对话框里亲手选的那几张。
+
+    路径来自前端。右键识别笔记里的图片时，它取自正文（富文本图片和附件卡片的
+    `data-stored-path`），不可信：`ocr.recognize` 上来就 `os.path.isfile`，路径写成网络共享的
+    地址时会真的连过去。对话框选出来的图可以在任何地方（包括用户自己的网络共享），所以不能一刀
+    切掉，改成"选过的才认"。
+    """
+    try:
+        picked = isinstance(path, str) and os.path.normcase(os.path.abspath(path)) in _ocr_picked
+    except (ValueError, OSError):
+        picked = False
+    if not picked and not _backend_mod.resolve_under(path, _backend_mod.ATTACH_DIR,
+                                                     tempfile.gettempdir()):
+        return {'ok': False,
+                'error': '只能识别笔记里的图片、截图、剪贴板图片，或者通过「识别图片…」选择的图片'}
+    return ocr.recognize(path, lang)
+
 
 def _temp_png(tag):
     """临时 PNG 的规范命名：系统临时目录 + `mynotepad_` 前缀。
@@ -1722,6 +1793,20 @@ def _cleanup_files(*paths):
             pass
 
 
+def _discard_window(win):
+    """销毁一个建到一半就失败的窗口。
+
+    窗口建出来了、登记桥接方法时才出错的话，它既没进会话，页面也调不到桥：覆盖窗是隐藏的，
+    迷你窗没法自己关掉，都不会再有人去收。
+    """
+    if win is None:
+        return
+    try:
+        win.destroy()
+    except Exception:
+        pass
+
+
 def _capture_begin(note_id=None):
     """开始一次截图。返回 True 表示覆盖窗已创建（失败时主窗原样恢复）。"""
     if _capture['window'] is not None:
@@ -1749,6 +1834,7 @@ def _capture_begin(note_id=None):
     scale = _dpi_scale()
     geo = {'width': max(200, int(screen[2] / scale)), 'height': max(100, int(screen[3] / scale)),
            'x': int(screen[0] / scale), 'y': int(screen[1] / scale)}
+    overlay = None
     try:
         overlay = webview.create_window(
             _CAPTURE_TITLE, _OVERLAY_HTML,
@@ -1758,6 +1844,7 @@ def _capture_begin(note_id=None):
         # 紧跟着登记：页面先加载完也不要紧，expose 会在页面里补建这几个函数（overlay.js 等的就是它们）
         expose_bridge(overlay, api, BRIDGE_CAPTURE_OVERLAY)
     except Exception:
+        _discard_window(overlay)
         _cleanup_files(full)
         if was_visible:
             _show_window()
@@ -2009,6 +2096,7 @@ def _mini_open():
     w, h = 560, 168
     x = int(work[0] + max(0, (work[2] - w) // 2))
     y = int(work[1] + max(0, work[3] // 4))          # 靠上四分之一：离视线近，又不压住中间
+    win = None
     try:
         win = webview.create_window(
             _MINI_TITLE, _MINI_HTML,
@@ -2017,6 +2105,7 @@ def _mini_open():
             focus=True, shadow=True, background_color='#000000')
         expose_bridge(win, api, BRIDGE_CAPTURE_MINI)
     except Exception:
+        _discard_window(win)
         try:
             import applog
             applog.get_logger().exception("创建迷你捕获窗失败")
@@ -2208,6 +2297,7 @@ window.events.closing += make_closing_handler(
     should_hide=_tray_is_enabled)
 
 # 启动
+harden_new_window_requests()
 if os.path.exists(icon_path):
     webview.start(debug=False, icon=icon_path)
 else:

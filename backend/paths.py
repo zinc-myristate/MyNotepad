@@ -50,10 +50,58 @@ def safe_join(base, *parts):
 
 
 def _is_under(path, base):
-    """`path` 是否在 `base` 内（都用 realpath 比较）。用于"先 realpath 再判定"的场合。"""
+    """`path` 是否在 `base` 内（都用 realpath 比较）。用于"先 realpath 再判定"的场合。
+
+    ⚠️ 只能用在**自己拼出来的**路径上。来自前端 / 正文的完整路径要用 `resolve_under`：
+    这里上来就 realpath，传进来的是 `\\\\主机\\共享\\…` 时，比较之前就已经连过去了。
+    """
     try:
         real = os.path.realpath(os.path.normpath(path))
         base_real = os.path.realpath(base)
         return real == base_real or real.startswith(base_real + os.sep)
     except (ValueError, OSError, TypeError):
         return False
+
+
+def _lexically_under(path, base):
+    """只比字符串：`path` 是不是 `base` 本身或它下面的路径。两边都应该是绝对路径。"""
+    path, base = os.path.normcase(path), os.path.normcase(base)
+    return path == base or path.startswith(base.rstrip('\\/') + os.sep)
+
+
+def resolve_under(path, *bases):
+    """核对一个来自前端 / 正文的**完整路径**确实落在某个允许目录里，返回它的真实路径；不是就返回 None。
+
+    `safe_join` 管的是"目录 + 几个文件名"，这里管的是别人直接给的一整条路径（富文本图片和附件卡片
+    把绝对路径存在正文里，前端原样传回来）。三道，顺序不能换：
+
+    ① 字符串级拒绝：不是字符串、空串、带控制字符。
+    ② 词法包含：`abspath` 之后必须落在某个允许目录里。`abspath` 走的是 GetFullPathName，只做
+       字符串运算，不访问磁盘也不访问网络，所以 `\\\\主机\\共享\\x.png` 这样的路径到这里就被拒了，
+       后面的 realpath 根本碰不到它。允许目录按 `abspath` 和 `realpath` 两种写法都认：后端交给前端的
+       路径有的是拼出来的（临时目录可能是 8.3 短名），有的过了 realpath。
+    ③ realpath 之后再确认一次：挡允许目录里的符号链接、目录联接指到外面。
+
+    盘符之后还有冒号的也拒绝（NTFS 备用数据流 `file.txt:ads`）。
+    """
+    if not isinstance(path, str) or not path or any(ord(c) < 32 for c in path):
+        return None
+    roots = []
+    try:
+        full = os.path.abspath(path)
+        for base in bases:
+            if base:
+                roots.append((os.path.abspath(base), os.path.realpath(base)))
+    except (ValueError, OSError, TypeError):
+        return None
+    if ':' in os.path.splitdrive(full)[1]:
+        return None
+    if not any(_lexically_under(full, form) for pair in roots for form in pair):
+        return None
+    try:
+        real = os.path.realpath(full)
+    except (ValueError, OSError, TypeError):
+        return None
+    if not any(_lexically_under(real, base_real) for _base_abs, base_real in roots):
+        return None
+    return real

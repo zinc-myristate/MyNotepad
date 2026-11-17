@@ -9,7 +9,7 @@
   --workspace-ease: cubic-bezier(.2, .8, .2, 1);
 }
 
-[data-theme="white"] {
+:where(body)[data-theme="white"] {
   --bg-primary: #FAFBFA;
   --bg-secondary: #F3F5F3;
   --bg-sidebar: #F3F5F3;

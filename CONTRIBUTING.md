@@ -64,6 +64,11 @@ CI（`.github/workflows/ci.yml`）会跑同样的三步，**e2e 失败会直接�
 6. 加了新面板？显隐只走 `openPanel` / `closePanel`（直接写 `style.display` 会让整个界面卡在 inert，
    `tests/test_frontend_modules.py` 有静态守卫）；关闭时要清理或还原东西的，给取消按钮标
    `data-panel-cancel`，这样 ×、`Esc`、点遮罩走的都是同一条路。
+7. 桥接方法收到的是**路径**或**地址**？它们来自页面，有的直接取自笔记正文，不可信。
+   完整路径用 `backend.resolve_under(路径, 允许的目录…)`，"目录 + 文件名"用 `safe_join`：两个都是
+   先判断、再访问文件系统。拿到路径直接 `os.path.realpath` / `os.path.isfile` 的话，一条
+   `\\主机\共享\…` 就会让程序连出去。要交给系统打开的地址走 `desktop.open_external_url`
+   （只认网页、邮件、电话），不要直接 `os.startfile`。
 
 ## 发版清单（维护者）
 

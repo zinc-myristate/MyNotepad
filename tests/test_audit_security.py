@@ -5,6 +5,7 @@
 而是把踩过的坑钉住 —— 这类问题一旦回来，症状往往是静默的数据泄漏或数据损坏，
 靠人工点界面很难发现。
 """
+import base64
 import os
 
 import pytest
@@ -88,6 +89,244 @@ class TestFileCopyToNote:
         got = api.file_copy_to_note(str(src), nid, 'file')
         assert got.get('filename', '').startswith('file_')
         assert os.path.sep not in got['filename']
+
+
+# 1×1 透明 PNG
+_PNG = base64.b64decode(
+    'iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mP8z8DwHwAFAAH/q842iQAAAABJRU5ErkJggg==')
+
+# 指向别的机器的路径的几种写法
+_REMOTE_PATHS = [
+    '\\\\attacker\\share\\x.png',               # UNC
+    '//attacker/share/x.png',                   # UNC（正斜杠）
+    '\\\\attacker\\share\\..\\share\\x.png',    # UNC + 穿越
+    '\\\\?\\UNC\\attacker\\share\\x.png',       # 设备路径写法的 UNC
+    '\\\\.\\pipe\\x',                           # 设备路径
+]
+
+
+def _looks_remote(path):
+    return isinstance(path, str) and os.path.normpath(path).startswith('\\\\')
+
+
+@pytest.fixture
+def remote_touches(monkeypatch):
+    """会真去访问文件系统的那几个 os.path 函数，只要收到网络路径就记下来，而且**不真的去连**。
+
+    realpath / isfile / exists 是旧代码拿着不可信路径最先调的三个。记到东西就说明校验放在了
+    访问之后；替身直接返回，所以就算回归了，跑测试也不会真的往外发连接。
+    """
+    seen = []
+    for name, fallback in (('realpath', lambda p: p), ('isfile', lambda p: False),
+                           ('exists', lambda p: False), ('isdir', lambda p: False)):
+        real = getattr(os.path, name)
+
+        def spy(path, *args, _real=real, _fallback=fallback, _name=name, **kwargs):
+            if _looks_remote(path):
+                seen.append((_name, path))
+                return _fallback(path)
+            return _real(path, *args, **kwargs)
+
+        monkeypatch.setattr(os.path, name, spy)
+    return seen
+
+
+def _junction(link, target):
+    """建一个目录联接（不需要管理员权限）；建不了就跳过这条用例。"""
+    import subprocess
+    done = subprocess.run(['cmd', '/c', 'mklink', '/J', str(link), str(target)],
+                          capture_output=True)
+    if done.returncode != 0 or not os.path.isdir(link):
+        pytest.skip('这台机器建不了目录联接')
+
+
+class TestFullPathsFromThePage:
+    """前端直接交来的**整条路径**：富文本图片和附件卡片把绝对路径存在正文里，前端原样传回。
+
+    历史缺陷：`read_file_base64` / `file_open` 上来就 `os.path.realpath(传进来的路径)`，之后才
+    比较它在不在允许目录里；`ocr_recognize` 上来就 `os.path.isfile`。这几个调用遇到
+    `\\\\主机\\共享\\x.png` 会真的连过去（实测一个不存在的主机名要等 2 秒多，abspath 是 0 毫秒）：
+    一次对外的 SMB 连接，会泄露 NetNTLM 响应。富文本图片的路径取自正文（NoteImageBlot 的
+    storedPath），**打开笔记就会调到 read_file_base64**，不需要点击；往富文本里粘贴一段带
+    `data-stored-path` 的 HTML 就能造出这样的正文。
+
+    现在统一走 `resolve_under`：先用只做字符串运算的 abspath 判断在不在允许目录里，在才 realpath。
+    """
+
+    def test_resolve_under_accepts_what_the_backend_hands_out(self, backend_mod, tmp_path):
+        base = tmp_path / 'base'
+        (base / 'sub').mkdir(parents=True)
+        inside = base / 'sub' / 'a.png'
+        inside.write_bytes(_PNG)
+        real = os.path.realpath(str(inside))
+
+        assert backend_mod.resolve_under(str(inside), str(base)) == real
+        assert backend_mod.resolve_under(str(inside).replace('\\', '/'), str(base)) == real
+        assert backend_mod.resolve_under(str(inside).upper(), str(base)) == real, 'Windows 路径不分大小写'
+        assert backend_mod.resolve_under(str(base), str(base)) == os.path.realpath(str(base))
+        # 几个允许目录里中了一个就行；空的目录名跳过
+        assert backend_mod.resolve_under(str(inside), '', str(tmp_path / 'other'), str(base)) == real
+
+    def test_resolve_under_rejects_everything_else(self, backend_mod, tmp_path):
+        base = tmp_path / 'base'
+        base.mkdir()
+        (tmp_path / 'outside.png').write_bytes(_PNG)
+        (base / 'a.png').write_bytes(_PNG)
+        bad = _REMOTE_PATHS + [
+            str(tmp_path / 'outside.png'),              # 真有这个文件，但不在允许目录里
+            str(base / '..' / 'outside.png'),           # 借允许目录的名字穿越出去
+            str(base) + '-evil\\a.png',                 # 只是名字以允许目录开头
+            'a.png', 'base\\a.png',                     # 相对路径（相对的是进程当前目录）
+            str(base / 'a.png') + ':stream',            # NTFS 备用数据流
+            str(base / 'a.png') + '\x00', 'a\nb',       # 控制字符
+            str(base) + '\\a\x01.png',                  # 控制字符（落在允许目录里的也不认）
+            'file://attacker/share/x.png', 'https://example.com/a.png',
+            '', None, 42, b'bytes', ['list'],
+        ]
+        for path in bad:
+            assert backend_mod.resolve_under(path, str(base)) is None, '必须拒绝：%r' % (path,)
+        assert backend_mod.resolve_under(str(base / 'a.png')) is None, '一个允许目录都没给'
+
+    def test_resolve_under_never_touches_the_filesystem_for_outside_paths(
+            self, backend_mod, tmp_path, remote_touches):
+        for path in _REMOTE_PATHS:
+            assert backend_mod.resolve_under(path, str(tmp_path)) is None
+        assert remote_touches == [], '网络路径在被拒绝之前就已经被访问过了：%r' % remote_touches
+
+    def test_resolve_under_follows_links_before_the_final_check(self, backend_mod, tmp_path):
+        """允许目录本身是联接：两种写法的路径都认。允许目录里的联接指到外面：不认。"""
+        real_base, outside = tmp_path / 'real_base', tmp_path / 'outside'
+        real_base.mkdir()
+        outside.mkdir()
+        (real_base / 'a.png').write_bytes(_PNG)
+        (outside / 'secret.png').write_bytes(_PNG)
+        link_base = tmp_path / 'link_base'
+        _junction(link_base, real_base)
+        _junction(real_base / 'escape', outside)
+        try:
+            want = os.path.realpath(str(real_base / 'a.png'))
+            assert backend_mod.resolve_under(str(link_base / 'a.png'), str(link_base)) == want
+            assert backend_mod.resolve_under(str(real_base / 'a.png'), str(link_base)) == want
+            assert backend_mod.resolve_under(str(link_base / 'escape' / 'secret.png'),
+                                             str(link_base)) is None, '联接把路径带出了允许目录'
+        finally:
+            os.rmdir(real_base / 'escape')              # 只摘掉联接本身，不动它指向的目录
+            os.rmdir(link_base)
+
+    # ----- read_file_base64：打开笔记就会调到 -----
+
+    def test_read_file_base64_still_serves_app_files(self, api, backend_mod, tmp_path, monkeypatch):
+        import tempfile
+        nid = api.notes_create()['id']
+        src = tmp_path / 'pic.png'
+        src.write_bytes(_PNG)
+        stored = api.file_copy_to_note(str(src), nid, 'image')['storedPath']
+        assert api.read_file_base64(stored).startswith('data:image/png;base64,')
+        assert api.read_file_base64(stored.replace('\\', '/')), '正斜杠写法也要认'
+        assert api.read_file_base64(api.attachments_get_path(nid, os.path.basename(stored)))
+
+        backgrounds = tmp_path / 'backgrounds'
+        backgrounds.mkdir()
+        (backgrounds / 'bg.png').write_bytes(_PNG)
+        assert api.read_file_base64(str(backgrounds / 'bg.png')), '数据目录里的背景图'
+
+        temp = tmp_path / 'systemp'
+        temp.mkdir()
+        monkeypatch.setattr(tempfile, 'tempdir', str(temp))
+        (temp / 'mynotepad_shot_1.png').write_bytes(_PNG)
+        assert api.read_file_base64(os.path.join(tempfile.gettempdir(), 'mynotepad_shot_1.png')), \
+            '自己造的临时图（截图、剪贴板）'
+
+    def test_read_file_base64_refuses_outside_and_database_files(self, api, backend_mod, tmp_path,
+                                                                 monkeypatch):
+        import tempfile
+        temp = tmp_path / 'systemp'
+        temp.mkdir()
+        monkeypatch.setattr(tempfile, 'tempdir', str(temp))     # 否则 tmp_path 整个都在系统临时目录里
+        windir = os.environ.get('SystemRoot', 'C:\\Windows')
+        assert api.read_file_base64(os.path.join(windir, 'win.ini')) is None
+        assert api.read_file_base64(os.path.join(PROJECT_ROOT, 'README.md')) is None
+        assert api.read_file_base64(backend_mod.DB_PATH) is None, '数据库文件不许读'
+        assert api.read_file_base64(os.path.join(str(temp), '..', 'notes.db')) is None
+        for bad in (None, 42, '', 'attachments/x.png'):
+            assert api.read_file_base64(bad) is None
+
+    def test_read_file_base64_never_touches_a_remote_path(self, api, remote_touches):
+        for path in _REMOTE_PATHS:
+            assert api.read_file_base64(path) is None
+        assert remote_touches == [], '打开笔记就会连出去：%r' % remote_touches
+
+    # ----- file_open：双击附件卡片 -----
+
+    def test_file_open_opens_attachments_only(self, api, backend_mod, tmp_path, launched):
+        nid = api.notes_create()['id']
+        src = tmp_path / 'doc.txt'
+        src.write_text('hi', encoding='utf-8')
+        stored = api.file_copy_to_note(str(src), nid, 'file')['storedPath']
+
+        assert api.file_open(stored) is True
+        assert launched == [os.path.realpath(stored)]
+
+        del launched[:]
+        windir = os.environ.get('SystemRoot', 'C:\\Windows')
+        refused = [
+            os.path.join(windir, 'System32', 'calc.exe'),       # 附件目录之外的程序
+            str(src),                                           # 数据目录里、但不在附件目录里
+            backend_mod.ATTACH_DIR,                             # 目录本身
+            os.path.join(backend_mod.ATTACH_DIR, nid, 'missing.txt'),
+            os.path.join(backend_mod.ATTACH_DIR, '..', 'notes.db'),
+            'https://example.com', 'file:///C:/Windows/System32/calc.exe', '', None, 42,
+        ]
+        for path in refused:
+            assert api.file_open(path) is False, '不该打开：%r' % (path,)
+        assert launched == []
+
+    def test_file_open_never_touches_a_remote_path(self, api, remote_touches, launched):
+        for path in _REMOTE_PATHS:
+            assert api.file_open(path) is False
+        assert remote_touches == [], '双击附件卡片会连出去：%r' % remote_touches
+        assert launched == []
+
+    # ----- ocr_recognize：右键图片「识别文字」 -----
+
+    def test_ocr_only_reads_app_images_and_picked_files(self, app_ns, tmp_path, monkeypatch,
+                                                        remote_touches):
+        import tempfile
+
+        import ocr
+        seen = []
+        monkeypatch.setattr(ocr, 'recognize', lambda path, lang=None: seen.append(path) or {'ok': True})
+        api, backend = app_ns['api'], app_ns['_backend_mod']
+        temp = tmp_path / 'systemp'
+        temp.mkdir()
+        monkeypatch.setattr(tempfile, 'tempdir', str(temp))
+
+        nid = backend.api.notes_create()['id']
+        src = tmp_path / 'pic.png'
+        src.write_bytes(_PNG)
+        stored = backend.api.file_copy_to_note(str(src), nid, 'image')['storedPath']
+        shot = os.path.join(tempfile.gettempdir(), 'mynotepad_shot_1.png')
+        open(shot, 'wb').write(_PNG)
+        for path in (stored, shot):
+            assert api.ocr_recognize(path, 'zh-Hans-CN') == {'ok': True}
+        assert seen == [stored, shot]
+
+        # 别处的图：用户没在对话框里选过就不认，选过才认（对话框给的是正斜杠写法）
+        picked = str(src).replace('\\', '/')
+        refused = api.ocr_recognize(picked)
+        assert refused['ok'] is False and '识别图片' in refused['error']
+        app_ns['pick_image_file'] = lambda: picked
+        assert api.ocr_pick_image() == picked
+        assert api.ocr_recognize(picked) == {'ok': True}
+        assert api.ocr_recognize(str(src)) == {'ok': True}, '同一个文件换种写法也认'
+        app_ns['pick_image_file'] = lambda: None                # 对话框点了取消
+        assert api.ocr_pick_image() is None
+
+        del seen[:]
+        for path in _REMOTE_PATHS + [None, 42, '']:
+            assert api.ocr_recognize(path)['ok'] is False
+        assert seen == [], '没通过校验的路径不该交给识别引擎'
+        assert remote_touches == [], '右键识别会连出去：%r' % remote_touches
 
 
 # ====== 加密笔记的明文不许经派生索引泄漏 ======

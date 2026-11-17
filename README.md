@@ -52,7 +52,7 @@
 | Markdown 栈 | markdown-it（渲染）+ CodeMirror 5（源码编辑）+ DOMPurify（消毒）+ highlight.js（代码高亮），全部离线自带、无 CDN |
 | 加密 | `cryptography`（AES-256-GCM） |
 | 打包 | PyInstaller（`MyNotepad.spec`） |
-| 测试 | pytest（810 单测 + 130 无头 E2E）、ruff |
+| 测试 | pytest（894 单测 + 139 无头 E2E）、ruff |
 
 ## 快速开始
 
@@ -96,8 +96,8 @@ python build.py                     # 推荐：关实例 → 备份 data → PyI
 ## 测试
 
 ```bash
-py -3.14 -m pytest                 # 810 单测（自动隔离临时数据目录）
-py -3.14 -m pytest -m e2e          # 130 无头 pywebview 端到端（真开窗口，约 20 分钟）
+py -3.14 -m pytest                 # 894 单测（自动隔离临时数据目录）
+py -3.14 -m pytest -m e2e          # 139 无头 pywebview 端到端（真开窗口，约 20 分钟）
 python -m ruff check .             # 代码检查（配置见 pyproject.toml）
 ```
 
@@ -168,6 +168,8 @@ SQLite 删除或改写大字段后**不会**把空间还给文件系统——图
 - **编辑**：左边写源码、右边实时预览（滚动同步）；窄窗口自动只留源码一栏
 - **工具栏**：H1-H3 / 加粗 / 斜体 / 删除线 / 行内代码 / 列表 / 待办 / 引用 / 代码块 / 表格 / 分割线 /
   链接 / 图片 / 附件 / 公式（快捷键 Ctrl+B / Ctrl+I / Ctrl+K / Ctrl+`）
+- **预览里的链接**：网页和邮件链接点一下，用系统默认的浏览器或邮件程序打开；附件链接打开附件。
+  别的地址（本地程序、网络共享、其它协议）不会被打开
 - **格式徽标**（标题栏右侧）：显示当前是 `MD` 还是 `富文本`，点一下就能互转
   - 富文本 → Markdown：颜色/字号/字体/下划线写成**内嵌 HTML**（我们和 Obsidian 都能显示），
     分割线变 `<hr class="divider-N">`，贴纸变 emoji；**转换前自动留历史版本 + 原始富文本备份**

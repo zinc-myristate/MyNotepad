@@ -14,7 +14,7 @@
 // 公式是消毒之后才放进文档的，所以只能插进文本节点（见 insertMath）：不和任何 HTML 拼字符串，
 // 它的输出也就到不了属性里。
 
-import { state } from './01-core.js';
+import { state, showToast } from './01-core.js';
 import { slugify, splitFrontMatter, normalizeMathDelims } from '../shared/utils.js';
 
 const MATH_BLOCK = /\$\$([\s\S]+?)\$\$/g;
@@ -36,6 +36,8 @@ const MATH_HOLE_RE = /\u0000MDHOLE(\d+)\u0000/g;
 const CONTAINER_HEAD = /^(?:[ \t]*(?:>|(?:[*+-]|\d{1,9}[.)])(?=[ \t])))*[ \t]*/;
 // 分隔表格格子的竖线。转义的 `\|` 是格子里的字，markdown-it 也不拿它分格
 const CELL_PIPE = /(?<!\\)\|/;
+// 预览里能点开的链接：网页和邮件（消毒也只给这两种留 href）。真正的闸在后端 desktop.safe_external_url
+const EXTERNAL_LINK = /^(?:https?:\/\/|mailto:)/i;
 
 const ALLOWED_TAGS = [
   'p', 'br', 'hr', 'h1', 'h2', 'h3', 'h4', 'h5', 'h6',
@@ -255,8 +257,10 @@ function installSanitizer() {
       if (/^attachments\//i.test(href)) {
         node.setAttribute('data-md-attach', href);
         node.removeAttribute('href');
-      } else if (!/^(https?:|mailto:|file:)/i.test(href)) {
-        node.removeAttribute('href');       // javascript:/vbscript: 等一律不给
+      } else if (!/^(https?:|mailto:)/i.test(href)) {
+        // javascript:/vbscript:/file: 等一律不给。file: 本来就过不了 DOMPurify 自己的协议检查，
+        // 这里不再写着放行它：点开链接最后是交给系统打开的，本地文件不在能打开的范围里
+        node.removeAttribute('href');
       }
     }
   });
@@ -540,17 +544,28 @@ export async function markdownExportHtml(text, noteId) {
   return tmp.innerHTML;
 }
 
-/** 预览区里的链接点击：交给系统默认程序打开（http/https/本地文件都支持） */
+/**
+ * 预览区里的链接点击：网页和邮件链接交给系统默认程序打开（后端 open_url 再按协议校验一遍）。
+ *
+ * 以前一律交给 file_open，而它只认附件目录里的文件：网页链接点了没有任何反应。
+ * 附件链接没有 href（消毒时换成了 data-md-attach），由 hydrateMarkdownAssets 接管，不走这里；
+ * 双链也没有 href（见 25-links.js）。别的地址不打开，给一句提示，不再是"点了没反应"。
+ */
 export function bindPreviewLinks(root) {
   if (!root || root.dataset.mdLinksBound === '1') return;
   root.dataset.mdLinksBound = '1';
   root.addEventListener('click', async (ev) => {
     const a = ev.target.closest && ev.target.closest('a[href]');
     if (!a) return;
-    ev.preventDefault();
-    try {
-      await window.pywebview.api.file_open(a.getAttribute('href'));
-    } catch (e) { /* 忽略 */ }
+    ev.preventDefault();       // 不拦的话整个窗口会跳到那个地址去
+    const href = (a.getAttribute('href') || '').trim();
+    let opened = false;
+    if (EXTERNAL_LINK.test(href)) {
+      try {
+        opened = await window.pywebview.api.open_url(href);
+      } catch (e) { opened = false; }
+    }
+    if (!opened) showToast('这个链接打不开：只支持网页和邮件链接', { type: 'warn' });
   });
 }
 

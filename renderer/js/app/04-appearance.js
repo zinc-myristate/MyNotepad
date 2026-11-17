@@ -74,9 +74,7 @@ function applyTheme(themeName) {
   }
 
   // 更新主题面板的选中状态（按用户选择高亮，而不是解析结果）
-  $$('.theme-option').forEach(opt => {
-    opt.classList.toggle('active', opt.dataset.theme === themeName);
-  });
+  markActiveThemeOption(themeName);
 
   // 主题一变，自适应界面层必须**重算**，而不是消失：
   //   · --bg-editor 跟着换了，而它是"图没盖满处"的采样底色（当成白底会把上下两条界面行判反）；
@@ -272,8 +270,15 @@ dom.btnTheme.addEventListener('click', () => {
 });
 
 function updateThemePanelUI() {
+  markActiveThemeOption(state.currentTheme);
+}
+
+/** 主题面板里标出当前选的那一张：样式上打勾，读屏靠 aria-pressed（两处调用共用） */
+function markActiveThemeOption(themeName) {
   $$('.theme-option').forEach(opt => {
-    opt.classList.toggle('active', opt.dataset.theme === state.currentTheme);
+    const active = opt.dataset.theme === themeName;
+    opt.classList.toggle('active', active);
+    opt.setAttribute('aria-pressed', active ? 'true' : 'false');
   });
 }
 

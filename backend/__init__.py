@@ -2527,15 +2527,15 @@ class Api:
         }
 
     def file_open(self, file_path):
-        """安全检查：规范路径后验证在附件目录内"""
-        try:
-            real = os.path.realpath(os.path.normpath(file_path))
-        except (ValueError, TypeError):
-            return False
-        att_real = os.path.realpath(ATTACH_DIR)
-        if not real.startswith(att_real + os.sep) and real != att_real:
-            return False
-        if not os.path.isfile(real):
+        """用系统默认程序打开一个附件。只认附件目录里的文件。
+
+        路径来自前端，其中富文本附件卡片的那一条直接取自正文（`data-stored-path`），不可信。
+        先判断在不在附件目录里，再碰文件系统（`resolve_under`）：以前上来就 realpath，
+        传进来的是 `\\\\主机\\共享\\…` 时，比较之前就已经连过去了。
+        网页链接不走这里，走 `open_url`。
+        """
+        real = resolve_under(file_path, ATTACH_DIR)
+        if not real or not os.path.isfile(real):
             return False
         os.startfile(real)
         return True
@@ -3714,29 +3714,20 @@ class Api:
             return False
 
     def read_file_base64(self, file_path):
-        """读取文件为 base64。仅允许附件目录、数据目录和系统临时目录中的文件。"""
-        # 规范化路径
-        try:
-            real_path = os.path.realpath(os.path.normpath(file_path))
-        except (ValueError, TypeError):
-            return None
-        # 白名单：只允许以下目录中的文件
-        allowed_dirs = [
-            os.path.realpath(ATTACH_DIR),
-            os.path.realpath(DATA_DIR),
-            os.path.realpath(tempfile.gettempdir()),
-        ]
-        # 也允许 EXE_DIR 下的 resources 目录（用于背景图片）
-        resources_dir = os.path.realpath(os.path.join(_EXE_DIR, "resources"))
-        allowed_dirs.append(resources_dir)
-        # 检查文件是否在白名单目录内
-        allowed = any(real_path.startswith(d + os.sep) or real_path == d for d in allowed_dirs)
-        if not allowed:
-            return None
+        """读取文件为 base64。仅允许附件目录、数据目录、系统临时目录和 resources 目录中的文件。
+
+        路径来自前端，其中富文本图片的那一条直接取自正文（NoteImageBlot 的 `storedPath`），
+        而且**打开笔记就会调到这里**，不需要点击。所以先判断在不在允许目录里，再碰文件系统
+        （`resolve_under`）：以前上来就 realpath，正文里的路径写成 `\\\\主机\\共享\\x.png`，
+        打开那篇笔记就会连过去（对外的 SMB 连接，会泄露 NetNTLM 响应）。
+        """
         # 拒绝路径遍历
-        if '..' in file_path.replace('\\', '/'):
+        if not isinstance(file_path, str) or '..' in file_path.replace('\\', '/'):
             return None
-        if not os.path.isfile(real_path):
+        # 白名单：附件、数据目录、系统临时目录，以及 EXE_DIR 下的 resources（背景图片）
+        real_path = resolve_under(file_path, ATTACH_DIR, DATA_DIR, tempfile.gettempdir(),
+                                  os.path.join(_EXE_DIR, "resources"))
+        if not real_path or not os.path.isfile(real_path):
             return None
         # 禁止读取数据库文件
         if real_path.endswith(('.db', '.db-wal', '.db-shm', '.sqlite', '.sqlite3')):
@@ -3763,7 +3754,7 @@ def _format_size(size):
 # 路径包含性校验（唯一入口）已抽到 backend/paths.py —— 那些参数全来自信任边界之外，
 # 集中一处才不会又漏一处（历史上有过三处漏校验）。这里 re-export 保持既有调用点与
 # 外部（测试 / app.pyw）的引用不变。模块内的其它代码直接用导入进来的名字。
-from .paths import _REJECT_PATH_CHARS, _is_under, _safe_path_part, safe_join  # noqa: F401
+from .paths import _REJECT_PATH_CHARS, _is_under, _safe_path_part, resolve_under, safe_join  # noqa: F401
 
 # ====== 线程安全 ======
 # pywebview 的每个 JS API 调用运行在独立线程，全局 conn 与 crypto.unlocked_deks 需要串行化保护。

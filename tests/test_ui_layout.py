@@ -148,6 +148,23 @@ class TestStaticUI:
                     '--accent-dark', '--accent-light', '--glass-sidebar', '--tag-text'):
             assert var in block, '深色主题缺少 %s' % var
 
+    def test_theme_variables_apply_to_body_only(self):
+        """主题变量块要限定在 <body> 上，而且不能因此抬高优先级。
+
+        主题面板的六张卡片也带 data-theme。选择器写成不限定元素的 `[data-theme="dark"]` 时，
+        每张卡片都套上"自己那个主题"的变量：「深色」卡片的浅色字压在浅色弹窗上看不见，深色主题下
+        另外四张反过来也一样，边框颜色还各不相同。用 `:where(body)` 是因为它不加优先级，
+        和原来一样是 (0,1,0)；写成 `body[…]` 会压过后面那些靠顺序覆盖它的规则。
+        """
+        workspace = open(os.path.join(PROJECT_ROOT, 'renderer', 'workspace.css'), encoding='utf-8').read()
+        for name, css in (('style.css', _style()), ('workspace.css', workspace)):
+            bare = re.findall(r'^\[data-theme="[a-z]+"\]\s*\{', css, re.M)
+            assert not bare, '%s 里的主题变量块没限定在 body 上：%s' % (name, bare)
+        scoped = re.findall(r'^:where\(body\)\[data-theme="([a-z]+)"\]\s*\{', _style(), re.M)
+        assert sorted(scoped) == ['blue', 'cream', 'dark', 'pink', 'white']
+        assert re.search(r'^:where\(body\)\[data-theme="white"\]\s*\{', workspace, re.M), \
+            'workspace.css 覆盖白色主题的那一块要用同一个选择器，否则优先级对不上'
+
     def test_dark_theme_inverts_accent_pair(self):
         """--accent-dark 当文字用、--accent-light 当底色用，深色下两者必须反转"""
         css = _style()
@@ -413,6 +430,82 @@ def test_system_theme_resolves_to_concrete(tmp_path, monkeypatch):
     val = conn.execute("SELECT value FROM settings WHERE key='theme'").fetchone()
     conn.close()
     assert val and val[0] == 'system', '应保存用户的「跟随系统」选择而不是解析结果'
+
+
+# 主题面板里每张卡片：名称与它身后底色的对比度、选中标记、边框颜色。
+# 底色要自己叠：卡片本身是透明的，选中那张有一层半透明的底，一直叠到第一个不透明的祖先为止。
+THEME_CARDS = r"""JSON.stringify((() => {
+  const parse = (c) => {
+    const m = c.match(/[\d.]+/g).map(Number);
+    return { r: m[0], g: m[1], b: m[2], a: m.length > 3 ? m[3] : 1 };
+  };
+  const over = (top, under) => ({
+    r: top.r * top.a + under.r * (1 - top.a), g: top.g * top.a + under.g * (1 - top.a),
+    b: top.b * top.a + under.b * (1 - top.a), a: 1 });
+  const backdrop = (el) => {
+    const layers = [];
+    for (let n = el; n && n.nodeType === 1; n = n.parentElement) {
+      const c = parse(getComputedStyle(n).backgroundColor);
+      if (c.a > 0) layers.push(c);
+      if (c.a >= 1) break;
+    }
+    let base = { r: 255, g: 255, b: 255, a: 1 };
+    for (let i = layers.length - 1; i >= 0; i--) base = over(layers[i], base);
+    return base;
+  };
+  const lin = (v) => { v /= 255; return v <= 0.03928 ? v / 12.92 : Math.pow((v + 0.055) / 1.055, 2.4); };
+  const lum = (c) => 0.2126 * lin(c.r) + 0.7152 * lin(c.g) + 0.0722 * lin(c.b);
+  const ratio = (a, b) => (Math.max(lum(a), lum(b)) + 0.05) / (Math.min(lum(a), lum(b)) + 0.05);
+  return [].map.call(document.querySelectorAll('.theme-option'), (opt) => {
+    const label = opt.querySelector('span');
+    const bg = backdrop(label);
+    const mark = getComputedStyle(opt, '::before');
+    return {
+      theme: opt.dataset.theme,
+      contrast: Math.round(ratio(over(parse(getComputedStyle(label).color), bg), bg) * 100) / 100,
+      active: opt.classList.contains('active'),
+      pressed: opt.getAttribute('aria-pressed'),
+      marked: mark.content !== 'none' && parse(mark.backgroundColor).a > 0,
+      border: getComputedStyle(opt).borderTopColor,
+    };
+  });
+})())"""
+
+
+@pytest.mark.e2e
+def test_theme_panel_is_readable_and_marks_only_the_current_theme(tmp_path, monkeypatch):
+    """五套主题下逐个打开主题面板：六张卡片的名称都要看得清，只有当前主题带选中标记。
+
+    历史缺陷：卡片各自套着"自己那个主题"的变量。浅色主题下「深色」两个字是浅色的，压在浅色
+    弹窗上对比度只有 1.1 左右；深色主题下另外四张反过来。边框也各是各的颜色，分不清哪张是选中的。
+    """
+    ns = load_app_partial(monkeypatch, tmp_path)
+    themes = ['white', 'cream', 'pink', 'blue', 'dark']
+
+    def actions(window, result):
+        for theme in themes:
+            window.evaluate_js(
+                "document.querySelector('.theme-option[data-theme=\"%s\"]').click()" % theme)
+            wait_for_js(window, "document.body.getAttribute('data-theme')", expected=theme)
+            window.evaluate_js("document.getElementById('btn-theme').click()")
+            wait_for_js(window, "getComputedStyle(document.getElementById('theme-panel')).display",
+                        expected='flex')
+            result[theme] = json.loads(window.evaluate_js(THEME_CARDS))
+
+    res = _run(ns, actions)
+    assert 'error' not in res, res
+    for theme in themes:
+        cards = res[theme]
+        assert [c['theme'] for c in cards] == themes + ['system']
+        for card in cards:
+            assert card['contrast'] >= 4.5, \
+                '%s 主题下「%s」卡片的名称看不清：对比度 %.2f' % (theme, card['theme'], card['contrast'])
+        assert [c['theme'] for c in cards if c['active']] == [theme]
+        assert [c['theme'] for c in cards if c['marked']] == [theme], '只有当前主题打勾'
+        assert [c['pressed'] for c in cards] == ['true' if c['theme'] == theme else 'false'
+                                                 for c in cards]
+        others = {c['border'] for c in cards if not c['active']}
+        assert len(others) == 1, '没选中的卡片边框颜色应该一样，现在是 %s' % sorted(others)
 
 
 SIDEBAR_PAIR = r"""JSON.stringify((() => {

@@ -15,6 +15,20 @@ APP_PYW = os.path.join(PROJECT_ROOT, 'app.pyw')
 APP_SPLIT_MARKER = '# ====== 创建窗口 ======'
 
 
+@pytest.fixture(autouse=True)
+def launched(monkeypatch):
+    """跑测试时绝不真的把东西交给系统打开：浏览器、邮件客户端、附件的默认程序都算。
+
+    `os.startfile` 是这些路的共同出口（backend.file_open、desktop.open_external_url，还有
+    pywebview 自己处理新窗口请求时走的 webbrowser.open）。这里换成只记账，对所有用例生效；
+    要看交出去了什么的用例把这个 fixture 写进参数，拿到的就是那份记录。
+    """
+    calls = []
+    monkeypatch.setattr(os, 'startfile', lambda target, *args, **kwargs: calls.append(target),
+                        raising=False)
+    return calls
+
+
 def _purge_backend_modules():
     """把 `backend` 与**它的全部子模块**从 sys.modules 里清掉。
 

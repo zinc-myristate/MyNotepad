@@ -16,8 +16,10 @@
   · 测试环境（MYNOTEPAD_DATA_DIR）不碰注册表，行为与单实例互斥量一致。
 """
 import os
+import re
 import sys
 import threading
+from urllib.parse import urlsplit
 
 TRAY_TITLE = '我的记事本'
 _RUN_KEY = r'Software\Microsoft\Windows\CurrentVersion\Run'
@@ -70,6 +72,57 @@ def set_autostart(enabled):
     except Exception:
         pass
     return autostart_enabled()
+
+
+# ====== 打开外部链接 ======
+# 页面交过来的地址（笔记里的链接、target=_blank、window.open）最后都落到 os.startfile，也就是
+# ShellExecute：给它什么它就"打开"什么，本地程序、网络共享上的文件都照开。
+# 所以只放行网页、邮件和电话链接，别的一律不理。
+
+EXTERNAL_URL_MAX = 2048
+_URL_BAD_CHARS = re.compile(r'[\x00-\x20\x7f"<>\\^`]')
+_TEL_RE = re.compile(r'[0-9+*#().-]{1,40}')
+
+
+def safe_external_url(url):
+    """能交给系统打开的地址原样返回（去掉首尾空白），其余返回 None。
+
+    只认网页（http / https）、邮件（mailto）和电话（tel，富文本编辑器的链接允许它）。
+
+    空白、控制字符、引号、尖括号、反斜杠一律拒绝：它们不该出现在地址里（该写成 %XX），留着只会给
+    "协议处理程序怎么拆命令行"这类问题留口子。浏览器还会把 http 地址里的反斜杠当成斜杠，
+    反斜杠开头的"主机名"看着不像网址，打开的却是它。
+    """
+    if not isinstance(url, str):
+        return None
+    url = url.strip()
+    if not url or len(url) > EXTERNAL_URL_MAX or _URL_BAD_CHARS.search(url):
+        return None
+    scheme, sep, rest = url.partition(':')
+    scheme = scheme.lower()
+    if scheme in ('http', 'https'):
+        try:
+            host = urlsplit(url).hostname
+        except ValueError:
+            return None
+        return url if rest.startswith('//') and host else None
+    if scheme == 'mailto':
+        return url if sep and rest and not rest.startswith('/') else None
+    if scheme == 'tel':
+        return url if _TEL_RE.fullmatch(rest) else None
+    return None
+
+
+def open_external_url(url):
+    """用系统默认程序打开网页、邮件或电话链接。不认的地址什么都不做，返回 False。"""
+    target = safe_external_url(url)
+    if not target:
+        return False
+    try:
+        os.startfile(target)
+    except OSError:
+        return False
+    return True
 
 
 # ====== 托盘图标 ======
