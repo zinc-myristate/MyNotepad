@@ -109,7 +109,7 @@ class TestExportToFile:
         api.notes_update(nid, {'title': '带图的笔记', 'content': body})
 
         out = str(tmp_path / 'note.md')
-        assert api.export_note_markdown(nid, out) is True
+        assert api.export_note_markdown(nid, out) == {'ok': True}
         text = open(out, encoding='utf-8').read()
         assert text.startswith('# 带图的笔记'), text[:40]
         assert 'note.assets/' + info['filename'] in text
@@ -121,7 +121,7 @@ class TestExportToFile:
         api.notes_update(nid, {'title': '机密', 'content': delta({'insert': '秘密'}, {'insert': '\n'})})
         api.note_set_password(nid, 'pass123456')
         api.note_lock(nid)
-        assert api.export_note_markdown(nid, str(tmp_path / 'x.md')) is False
+        assert api.export_note_markdown(nid, str(tmp_path / 'x.md')) == {'ok': False, 'error': '加密笔记需先解锁'}
         assert not os.path.exists(str(tmp_path / 'x.md'))
 
     def test_encrypted_unlocked_exports_plaintext(self, api, tmp_path):
@@ -129,11 +129,11 @@ class TestExportToFile:
         api.notes_update(nid, {'title': '机密', 'content': delta({'insert': '秘密内容'}, {'insert': '\n'})})
         api.note_set_password(nid, 'pass123456')
         out = str(tmp_path / 'x.md')
-        assert api.export_note_markdown(nid, out) is True
+        assert api.export_note_markdown(nid, out) == {'ok': True}
         assert '秘密内容' in open(out, encoding='utf-8').read()
 
     def test_missing_note(self, api, tmp_path):
-        assert api.export_note_markdown('nope', str(tmp_path / 'x.md')) is False
+        assert api.export_note_markdown('nope', str(tmp_path / 'x.md')) == {'ok': False, 'error': '笔记不存在'}
 
 
 class TestImport:
@@ -196,12 +196,12 @@ class TestRoundTrip:
         """导出 → 导入 → 再导出，Markdown 应该基本稳定（格式不退化）"""
         note = api.import_markdown(md)
         f1 = str(tmp_path / 'a.md')
-        assert api.export_note_markdown(note['id'], f1)
+        assert api.export_note_markdown(note['id'], f1) == {'ok': True}
         first = open(f1, encoding='utf-8').read()
 
         note2 = api.import_markdown(first, title='二次导入')
         f2 = str(tmp_path / 'b.md')
-        assert api.export_note_markdown(note2['id'], f2)
+        assert api.export_note_markdown(note2['id'], f2) == {'ok': True}
         second = open(f2, encoding='utf-8').read()
 
         # 第二次导出的正文（去掉标题行）应与第一次一致

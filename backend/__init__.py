@@ -4,6 +4,7 @@
 """
 import base64
 import csv
+import errno
 import functools
 import hashlib
 import hmac
@@ -447,6 +448,47 @@ def _chunked(items, size=SQL_CHUNK):
     items = list(items or [])
     for i in range(0, len(items), size):
         yield items[i:i + size]
+
+
+def _file_error_text(exc, reading=False):
+    """导出（写文件）或导入（`reading`，读文件）失败时给用户看的原因。
+
+    异常本身的文字是英文（`[Errno 13] Permission denied: '…'`），还带着整条路径，不直接给人看；
+    原样的异常由调用方写进 error.log。不是读写文件出的错（转换出了 bug、写数据库失败）时，说去那里看。
+    """
+    if isinstance(exc, PermissionError):
+        # Windows 上文件被别的程序独占着（Word、Excel 开着它）也是这个错，和没有权限分不出来
+        return '文件可能正在别的程序里打开，或者' + ('没有读取它的权限' if reading else '这个位置不允许写入')
+    if isinstance(exc, FileNotFoundError):
+        return (('找不到这个文件' if reading else '找不到保存的位置')
+                + '（可能被移走了，或者 U 盘、网络盘断开了）')
+    if getattr(exc, 'errno', None) == errno.ENOSPC:
+        return '磁盘空间不够'
+    if isinstance(exc, OSError):
+        return ('读取' if reading else '写入') + '文件时出错，详细原因记在 error.log 里'
+    return ('导入' if reading else '导出') + '时出错，详细原因记在 error.log 里'
+
+
+def _discard_partial(path):
+    """删掉写到一半的 zip。它的名字看着就是一份备份，打开却是坏的，留着比没有更糟。
+    只在 zip 已经建出来以后调用：打开就失败时目标文件没被动过（可能是一份旧备份），不能删"""
+    try:
+        os.remove(path)
+    except OSError:
+        pass
+
+
+def _scope_clause(notebook_id=None, tag_id=None):
+    """按笔记本 / 标签导出的范围：WHERE 子句和参数。导出前数篇数（scope_note_count）和真正导出
+    （export_notes_zip）用的是这同一份，口径不会分叉。标签就是这个标签本身，不含子标签"""
+    where, params = ["deleted_at IS NULL"], []
+    if notebook_id:
+        where.append("notebook_id = ?")
+        params.append(notebook_id)
+    if tag_id:
+        where.append("id IN (SELECT note_id FROM note_tags WHERE tag_id = ?)")
+        params.append(tag_id)
+    return " AND ".join(where), params
 
 
 _SCOPE_FLAGS = {'pinned': 'n.is_pinned = 1', 'favorite': 'n.is_favorite = 1',
@@ -2246,12 +2288,14 @@ class Api:
     def export_table_csv(self, note_ids, save_path):
         """表格 → CSV（utf-8-sig：带 BOM，Excel 双击打开中文不乱码）。
 
-        属性列取所有行的键并集（排序后），加密笔记的属性列留空。返回写入的行数。
+        属性列取所有行的键并集（排序后），加密笔记的属性列留空。
+        返回 {'ok': True, 'count': 写入的行数}（没有行时 count 为 0，什么都不写）或 {'ok': False, 'error': 原因}。
+        以前出错返回 None，桥接原样交给页面，页面当成按了「取消」：CSV 正在 Excel 里开着、写不进去时一声不吭。
         """
         try:
             rows = self.notes_table(note_ids)
             if not rows:
-                return 0
+                return {'ok': True, 'count': 0}
             keys = sorted({k for r in rows for k in (r.get('props') or {})})
             with open(save_path, 'w', encoding='utf-8-sig', newline='') as fh:
                 writer = csv.writer(fh)
@@ -2265,10 +2309,10 @@ class Api:
                         v = (r.get('props') or {}).get(k, '')
                         vals.append('/'.join(str(x) for x in v) if isinstance(v, list) else v)
                     writer.writerow(vals)
-            return len(rows)
-        except Exception:
+            return {'ok': True, 'count': len(rows)}
+        except Exception as exc:
             applog.get_logger().exception("导出表格 CSV 失败")
-            return None
+            return {'ok': False, 'error': _file_error_text(exc)}
 
     def metrics_bulk(self, note_ids=None):
         """批量指标（表格视图用；不传就全部）。
@@ -3298,7 +3342,11 @@ class Api:
 
     def export_all_to_zip(self, save_path):
         """一键全库导出：sqlite backup API 快照 notes.db + attachments/ + backgrounds/ 归档为 zip。
-        snapshot 页级一致（遇写入自动重启），归档内容与备份包同构，可直接替换 data/ 目录恢复。"""
+        snapshot 页级一致（遇写入自动重启），归档内容与备份包同构，可直接替换 data/ 目录恢复。
+
+        返回 {'ok': True} 或 {'ok': False, 'error': 原因}。写到一半失败时删掉那个不完整的 zip。
+        """
+        created = False
         try:
             import zipfile
             tmp = tempfile.mkdtemp(prefix='mynotepad_export_')
@@ -3306,15 +3354,25 @@ class Api:
                 snap = os.path.join(tmp, 'notes.db')
                 self._snapshot_db(snap)
                 with zipfile.ZipFile(save_path, 'w', zipfile.ZIP_DEFLATED) as zf:
+                    created = True
                     zf.write(snap, 'notes.db')
                     self._zip_dir(zf, ATTACH_DIR, 'attachments')
                     self._zip_dir(zf, os.path.join(DATA_DIR, 'backgrounds'), 'backgrounds')
-                return True
+                return {'ok': True}
             finally:
                 shutil.rmtree(tmp, ignore_errors=True)
-        except Exception:
+        except Exception as exc:
             applog.get_logger().exception("全库导出失败")
-            return False
+            if created:
+                _discard_partial(save_path)
+            return {'ok': False, 'error': _file_error_text(exc)}
+
+    def scope_note_count(self, notebook_id=None, tag_id=None):
+        """按笔记本 / 标签导出前先数一下：一篇都没有就不弹保存对话框（桥接 export_scope 用）。
+        不能让页面按列表自己数：列表在标签筛选下是"标签 × 当前笔记本"，导出标签却是这个标签的全部笔记"""
+        conn = _ctx_conn()   # 只读连接（上下文解析）：见 _ctx_conn 的说明
+        clause, params = _scope_clause(notebook_id, tag_id)
+        return conn.execute("SELECT COUNT(*) FROM notes WHERE " + clause, params).fetchone()[0]
 
     def export_notes_zip(self, save_path, notebook_id=None, tag_id=None):
         """按范围导出为一个**可当库打开**的 zip（笔记 + 标签 + 附件 + 背景图）。
@@ -3324,21 +3382,16 @@ class Api:
         这样导出的包与全库备份同构——解压后替换 data/ 就是一个只含这些笔记的记事本，
         而不是一堆需要手工整理的散文件。
 
-        返回导出的笔记数；无匹配返回 0；出错返回 None。
+        返回 {'ok': True, 'count': 导出的笔记数}（范围里没有笔记时 count 为 0，什么都不写）
+        或 {'ok': False, 'error': 原因}。写到一半失败时删掉那个不完整的 zip。
         """
-        where, params = ["deleted_at IS NULL"], []
-        if notebook_id:
-            where.append("notebook_id = ?")
-            params.append(notebook_id)
-        if tag_id:
-            where.append("id IN (SELECT note_id FROM note_tags WHERE tag_id = ?)")
-            params.append(tag_id)
-        clause = " AND ".join(where)
+        clause, params = _scope_clause(notebook_id, tag_id)
+        created = False
         try:
             ids = [r['id'] for r in conn.execute(
                 "SELECT id FROM notes WHERE " + clause, params).fetchall()]
             if not ids:
-                return 0
+                return {'ok': True, 'count': 0}
             import zipfile
             tmp = tempfile.mkdtemp(prefix='mynotepad_export_')
             try:
@@ -3361,6 +3414,7 @@ class Api:
                 finally:
                     c.close()
                 with zipfile.ZipFile(save_path, 'w', zipfile.ZIP_DEFLATED) as zf:
+                    created = True
                     zf.write(snap, 'notes.db')
                     for nid in ids:                      # 只打包这些笔记的附件目录
                         self._zip_dir(zf, os.path.join(ATTACH_DIR, nid),
@@ -3384,12 +3438,14 @@ class Api:
                                 '恢复方法：退出「我的记事本」，把这里的 notes.db、attachments/、\n'
                                 'backgrounds/ 覆盖到程序目录的 data/ 下即可（建议先备份原 data/）。\n'
                                 % (len(ids), '按笔记本' if notebook_id else '按标签'))
-                return len(ids)
+                return {'ok': True, 'count': len(ids)}
             finally:
                 shutil.rmtree(tmp, ignore_errors=True)
-        except Exception:
+        except Exception as exc:
             applog.get_logger().exception("按范围导出失败")
-            return None
+            if created:
+                _discard_partial(save_path)
+            return {'ok': False, 'error': _file_error_text(exc)}
 
     def export_note_markdown(self, note_id, save_path):
         """导出单篇为 Markdown：图片复制到同级 `<文件名>.assets/` 并写成相对路径。
@@ -3397,20 +3453,26 @@ class Api:
         为什么要复制图片：正文里的图片存在 attachments/<note_id>/ 下，只写绝对路径的 .md
         换台机器就全断图；复制到同级目录后整个文件夹可以整体带走。
         加密笔记只在已解锁时可导出（与复制笔记同一条规则）。
+
+        返回 {'ok': True} 或 {'ok': False, 'error': 原因}。以前只回 True / False，前端拿到 False
+        一律提示"加密笔记需要先解锁"，文件写不进去时也这么说。
         """
         conn = _ctx_conn()   # 只读连接（上下文解析）：见 _ctx_conn 的说明
         try:
             row = conn.execute("SELECT * FROM notes WHERE id = ? AND deleted_at IS NULL",
                                (note_id,)).fetchone()
             if not row:
-                return False
+                return {'ok': False, 'error': '笔记不存在'}
             note = dict(row)
             content = note.get('content') or ''
             if note.get('password_hash'):
                 dek = crypto.unlocked_deks.get(note_id)
                 if dek is None:
-                    return False
-                content = _decrypt_content(dek, content, note_id) or ''
+                    return {'ok': False, 'error': '加密笔记需先解锁'}
+                content = _decrypt_content(dek, content, note_id)
+                if content is None:
+                    # 以前 `or ''` 接着往下走：写出一个只有标题的文件，还提示导出成功
+                    return {'ok': False, 'error': '正文无法解密，没有导出'}
             base = os.path.splitext(save_path)[0]
             assets_dir = base + '.assets'
             used = {}
@@ -3435,10 +3497,10 @@ class Api:
                 if not md.lstrip().startswith('#'):
                     f.write('# %s\n\n' % title)     # 标题补成一级标题，导出即可读
                 f.write(md)
-            return True
-        except Exception:
+            return {'ok': True}
+        except Exception as exc:
             applog.get_logger().exception("Markdown 导出失败")
-            return False
+            return {'ok': False, 'error': _file_error_text(exc)}
 
     def import_markdown(self, md_text, title=None, notebook_id=None):
         """把 Markdown 文本导入为一篇新笔记（**原样保存，不做转换**），返回新笔记。
@@ -3469,17 +3531,22 @@ class Api:
             return None
 
     def export_note(self, title, html_content, format_type, save_path):
-        """导出笔记为指定格式"""
-        if format_type == 'html':
-            return self._export_html(title, html_content, save_path)
-        elif format_type == 'txt':
-            return self._export_txt(html_content, save_path)
-        elif format_type == 'docx':
-            return self._export_docx(title, html_content, save_path)
-        elif format_type == 'xlsx':
-            return self._export_xlsx(title, html_content, save_path)
-        else:
-            return False
+        """导出笔记为 HTML / TXT / Word / Excel，返回 {'ok': True} 或 {'ok': False, 'error': 原因}。
+
+        以前返回 True / False（HTML 写不进去时直接抛异常），前端也不看返回值：导出了不提示，
+        Word 文件正在 Word 里开着、写不进去也不提示，HTML 写不进去时把英文的异常原文弹出来。
+        """
+        writers = {'html': self._export_html, 'txt': self._export_txt,
+                   'docx': self._export_docx, 'xlsx': self._export_xlsx}
+        writer = writers.get(format_type) if isinstance(format_type, str) else None
+        if writer is None:
+            return {'ok': False, 'error': '不支持导出成这种格式'}
+        try:
+            writer(title, html_content, save_path)
+        except Exception as exc:
+            applog.get_logger().exception('导出 %s 失败', format_type)
+            return {'ok': False, 'error': _file_error_text(exc)}
+        return {'ok': True}
 
     def _katex_export_css(self):
         """KaTeX 的样式表，字体内嵌成 data URI：导出文件拷到别的机器、断网打开都不走样。
@@ -3534,37 +3601,24 @@ class Api:
             f.write(template)
         return True
 
-    def _export_txt(self, html_content, save_path):
+    # 下面四个写文件的出了错一律往外抛，由 export_note 记日志、换成给人看的原因
+
+    def _export_txt(self, title, html_content, save_path):
         """HTML → 纯文本在 xlsx_export.py（和 XLSX 同一套"按行写"）。
 
         以前是正则删标签：公式写成三份字连在一起，`&lt;` 原样留着，标题和下一段连成一行。
         """
-        try:
-            text = html_to_text(html_content)
-            with open(save_path, 'w', encoding='utf-8') as f:
-                f.write(text)
-            return True
-        except Exception:
-            applog.get_logger().exception('TXT 导出失败')
-            return False
+        text = html_to_text(html_content)        # 先转换再打开：转换出错时原来的文件不会被清空
+        with open(save_path, 'w', encoding='utf-8') as f:
+            f.write(text)
 
     def _export_docx(self, title, html_content, save_path):
         """HTML → Word 的转换在 docx_export.py（为什么不再按正则切块，见那里的说明）"""
-        try:
-            html_to_docx(title, html_content, save_path)
-            return True
-        except Exception:
-            applog.get_logger().exception('DOCX 导出失败')
-            return False
+        html_to_docx(title, html_content, save_path)
 
     def _export_xlsx(self, title, html_content, save_path):
         """HTML → Excel 的转换在 xlsx_export.py（为什么不再按正则找表格，见那里的说明）"""
-        try:
-            html_to_xlsx(title, html_content, save_path)
-            return True
-        except Exception:
-            applog.get_logger().exception('XLSX 导出失败')
-            return False
+        html_to_xlsx(title, html_content, save_path)
 
     def read_file_base64(self, file_path):
         """读取文件为 base64。仅允许附件目录、数据目录、系统临时目录和 resources 目录中的文件。
@@ -3607,7 +3661,14 @@ def _format_size(size):
 # 路径包含性校验（唯一入口）已抽到 backend/paths.py —— 那些参数全来自信任边界之外，
 # 集中一处才不会又漏一处（历史上有过三处漏校验）。这里 re-export 保持既有调用点与
 # 外部（测试 / app.pyw）的引用不变。模块内的其它代码直接用导入进来的名字。
-from .paths import _REJECT_PATH_CHARS, _is_under, _safe_path_part, resolve_under, safe_join  # noqa: F401
+from .paths import (  # noqa: F401
+    _REJECT_PATH_CHARS,
+    _is_under,
+    _safe_path_part,
+    resolve_under,
+    safe_filename,
+    safe_join,
+)
 
 # ====== 线程安全 ======
 # pywebview 的每个 JS API 调用运行在独立线程，全局 conn 与 crypto.unlocked_deks 需要串行化保护。
@@ -3836,7 +3897,7 @@ _READONLY_METHODS = frozenset((
     'attachments_list', 'attachments_get_path', 'file_get_note_attachment_path',
     'file_open', 'file_pick_background_path', 'read_file_base64', 'save_temp_image',
     # 导出（内部快照走 backup API，不写主库）
-    'export_all_to_zip', 'export_note', 'export_note_markdown', 'export_table_csv',
+    'export_all_to_zip', 'export_note', 'export_note_markdown', 'export_table_csv', 'scope_note_count',
     # 日志
     'log_error',
 ))

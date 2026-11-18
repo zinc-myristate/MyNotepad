@@ -33,7 +33,7 @@ FORMULA = ('<span class="katex"><span class="katex-mathml"><math><semantics><mro
 
 def _export_text(api, tmp_path, html, name='out.html'):
     path = str(tmp_path / name)
-    assert api.export_note('标题', html, 'html', path) is True
+    assert api.export_note('标题', html, 'html', path) == {'ok': True}
     with open(path, encoding='utf-8') as f:
         return f.read()
 
@@ -84,11 +84,11 @@ def test_txt_and_xlsx_put_list_items_on_their_own_lines(api, tmp_path):
             '<li data-list="checked" style="list-style-type: none; text-decoration: line-through;">☑ 待办</li>'
             '</ol><p>段落</p>')
     txt = str(tmp_path / 'out.txt')
-    assert api.export_note('标题', html, 'txt', txt) is True
+    assert api.export_note('标题', html, 'txt', txt) == {'ok': True}
     with open(txt, encoding='utf-8') as f:
         assert f.read() == '• 项目一\n☑ 待办\n\n段落'
     xlsx = str(tmp_path / 'out.xlsx')
-    assert api.export_note('标题', html, 'xlsx', xlsx) is True
+    assert api.export_note('标题', html, 'xlsx', xlsx) == {'ok': True}
     assert [cell.value for cell in load_workbook(xlsx).active['A']] == ['• 项目一', '☑ 待办', '段落']
 
 

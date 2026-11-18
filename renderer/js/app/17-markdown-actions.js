@@ -62,10 +62,23 @@ function insertBlock(cm, text) {
 }
 
 /**
+ * 附件在正文里的写法：图片写成图片，别的写成附件链接（后端的 md→delta 转换器靠链接文字开头的那个符号认附件）。
+ * @param {string} kind 'image' 写成图片，其余写成附件链接
+ * @param {{path?: string, name?: string}} payload 相对路径（attachments/<笔记 id>/<文件名>）+ 显示名
+ */
+function assetMarkdown(kind, payload) {
+  const path = payload.path || 'attachments/';
+  return kind === 'image'
+    ? `![${payload.name || ''}](${path})`
+    : `[📎 ${payload.name || '附件'}](${path})`;
+}
+
+/**
  * 执行一个 Markdown 插入动作。
  * @param {string} action bold|italic|strike|code|math|h1|h2|h3|ul|ol|todo|quote|
- *                        codeblock|divider|table|link|image|attachment
- * @param {{path?: string, name?: string}} [payload] image/attachment 用（相对路径 + 显示名）
+ *                        codeblock|divider|table|link|image|attachment|assets
+ * @param {{path?: string, name?: string, items?: Array<{kind: string, path: string, name: string}>}} [payload]
+ *        image/attachment 用相对路径 + 显示名；assets 用 items（每个文件一项，kind 为 image 或 file）
  */
 export function applyMarkdownAction(action, payload = {}) {
   const cm = _cm();
@@ -93,7 +106,13 @@ export function applyMarkdownAction(action, payload = {}) {
     case 'divider': insertBlock(cm, '\n<hr class="divider-1">\n'); break;
     case 'table': insertBlock(cm, TABLE_TEMPLATE); break;
     case 'image':
-      doc.replaceSelection(`![${payload.name || ''}](${payload.path || 'attachments/'})`);
+    case 'attachment':
+      doc.replaceSelection(assetMarkdown(action, payload));
+      break;
+    // 粘贴、拖进来的几个文件（32-paste-drop.js）：一个一行，图片写成图片，别的写成附件链接
+    case 'assets':
+      if (payload.at) doc.setCursor(payload.at);                  // 拖放的落点
+      doc.replaceSelection((payload.items || []).map((item) => assetMarkdown(item.kind, item)).join('\n'));
       break;
     // 图片 + 紧跟其后的文字（第 11 轮 OCR：图在上、识别出的文字在下）
     case 'image-text': {
@@ -102,9 +121,6 @@ export function applyMarkdownAction(action, payload = {}) {
       insertBlock(cm, '\n' + img + (text ? '\n\n' + text : '') + '\n');
       break;
     }
-    case 'attachment':
-      doc.replaceSelection(`[📎 ${payload.name || '附件'}](${payload.path || 'attachments/'})`);
-      break;
     // 模板 / 其它模块送进来的一整段 Markdown：也走「另起一段」，
     // 否则从列表项里插入会被解析成列表内容（与表格同一个坑）
     case 'insert-text':

@@ -226,7 +226,7 @@ def test_export_table_csv(tmp_path, api, backend_mod):
     a = _md(api, '甲', FM_DOC)
     b = _md(api, '乙', '没有属性\n')
     out = os.path.join(str(tmp_path), 't.csv')
-    assert api.export_table_csv([a, b], out) == 2
+    assert api.export_table_csv([a, b], out) == {'ok': True, 'count': 2}
     raw = open(out, 'rb').read()
     assert raw.startswith(b'\xef\xbb\xbf'), 'CSV 必须带 BOM，否则 Excel 打开中文乱码'
     with open(out, encoding='utf-8-sig', newline='') as fh:
@@ -241,7 +241,7 @@ def test_export_table_csv(tmp_path, api, backend_mod):
 
 def test_export_table_csv_empty(api, tmp_path):
     out = os.path.join(str(tmp_path), 'empty.csv')
-    assert api.export_table_csv([], out) == 0
+    assert api.export_table_csv([], out) == {'ok': True, 'count': 0}
     assert not os.path.exists(out), '没有数据就不该留下一个空文件'
 
 

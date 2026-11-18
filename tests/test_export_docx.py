@@ -43,7 +43,7 @@ def katex(tex, display=False, svg=True):
 def export(api, tmp_path, html, name='out.docx', title='标题'):
     from docx import Document
     path = str(tmp_path / name)
-    assert api.export_note(title, html, 'docx', path) is True
+    assert api.export_note(title, html, 'docx', path) == {'ok': True}
     return Document(path)
 
 
@@ -408,8 +408,9 @@ def test_characters_xml_does_not_allow_do_not_break_export(api, tmp_path):
     assert blocks(doc) == ['标题', 'abcd']
 
 
-def test_failed_export_returns_false(api, tmp_path):
-    assert api.export_note('标题', '<p>x</p>', 'docx', str(tmp_path)) is False     # 路径是个目录
+def test_failed_export_says_why(api, tmp_path):
+    assert api.export_note('标题', '<p>x</p>', 'docx', str(tmp_path)) == {     # 路径是个目录
+        'ok': False, 'error': '文件可能正在别的程序里打开，或者这个位置不允许写入'}
 
 
 # ---------------- e2e：富文本的真实 innerHTML ----------------
@@ -467,7 +468,7 @@ def test_rich_text_note_exports_every_block(tmp_path, monkeypatch):
 
     r = _run(ns, actions, wait_before=0)
     assert 'error' not in r, r.get('error')
-    assert r['ok'] is True
+    assert r['ok'] == {'ok': True}
     from docx import Document
     got = [b.replace('\t', ' ') if isinstance(b, str) else b for b in blocks(Document(path))[1:]]
     assert got == [

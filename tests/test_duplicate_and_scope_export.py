@@ -147,8 +147,7 @@ class TestScopeExport:
 
     def test_export_by_notebook(self, api, seeded, tmp_path):
         out = str(tmp_path / 'nb.zip')
-        n = api.export_notes_zip(out, notebook_id=seeded['nb1'])
-        assert n == 2
+        assert api.export_notes_zip(out, notebook_id=seeded['nb1']) == {'ok': True, 'count': 2}
         names, db = self._zip_db(out, tmp_path)
         c = sqlite3.connect('file:%s?mode=ro' % db, uri=True)
         titles = sorted(r[0] for r in c.execute("SELECT title FROM notes").fetchall())
@@ -158,7 +157,7 @@ class TestScopeExport:
 
     def test_export_by_tag(self, api, seeded, tmp_path):
         out = str(tmp_path / 'tag.zip')
-        assert api.export_notes_zip(out, tag_id=seeded['tag']) == 1
+        assert api.export_notes_zip(out, tag_id=seeded['tag']) == {'ok': True, 'count': 1}
         _, db = self._zip_db(out, tmp_path)
         c = sqlite3.connect('file:%s?mode=ro' % db, uri=True)
         assert [r[0] for r in c.execute("SELECT title FROM notes").fetchall()] == ['C1']
@@ -189,17 +188,30 @@ class TestScopeExport:
 
     def test_empty_scope_returns_zero(self, api, seeded, tmp_path):
         out = str(tmp_path / 'empty.zip')
-        assert api.export_notes_zip(out, notebook_id='nope') == 0
+        assert api.export_notes_zip(out, notebook_id='nope') == {'ok': True, 'count': 0}
         assert not os.path.exists(out), '没有笔记就不该产出空包'
+
+    def test_count_before_the_dialog_matches_the_export(self, api, seeded, tmp_path):
+        """桥接靠 scope_note_count 决定要不要弹保存对话框：它数出来的必须和真正导出的一样多"""
+        api.notes_delete(seeded['a'])                                   # 回收站里的不算
+        scopes = [(seeded['nb1'], None), (seeded['nb2'], None), (None, seeded['tag']),
+                  (seeded['nb1'], seeded['tag']), (seeded['nb2'], seeded['tag']), ('nope', None), (None, 'nope')]
+        counts = []
+        for i, (notebook_id, tag_id) in enumerate(scopes):
+            count = api.scope_note_count(notebook_id=notebook_id, tag_id=tag_id)
+            result = api.export_notes_zip(str(tmp_path / ('%d.zip' % i)), notebook_id=notebook_id, tag_id=tag_id)
+            assert result == {'ok': True, 'count': count}, (notebook_id, tag_id)
+            counts.append(count)
+        assert counts == [1, 1, 1, 1, 0, 0, 0]
 
     def test_trashed_notes_excluded(self, api, seeded, tmp_path):
         api.notes_delete(seeded['a'])
         out = str(tmp_path / 'nb.zip')
-        assert api.export_notes_zip(out, notebook_id=seeded['nb1']) == 1
+        assert api.export_notes_zip(out, notebook_id=seeded['nb1']) == {'ok': True, 'count': 1}
 
     def test_full_export_still_works(self, api, seeded, tmp_path):
         """改造 export_all_to_zip（抽出 _snapshot_db/_zip_dir）后行为不能变"""
         out = str(tmp_path / 'all.zip')
-        assert api.export_all_to_zip(out) is True
+        assert api.export_all_to_zip(out) == {'ok': True}
         with zipfile.ZipFile(out) as zf:
             assert 'notes.db' in zf.namelist()

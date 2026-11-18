@@ -371,6 +371,19 @@ export function showToast(msg, { type = 'info', duration = 2500 } = {}) {
   }, duration);
 }
 
+// 导出 / 导入之后的提示。桥接的约定（app.pyw 的 `_saved`）：null 是在文件对话框里按了「取消」，
+// 什么都不说；{ok: true} 说 done；没做成时把后端给的原因说出来（原因要读一会儿，显示 5 秒）。
+// 以前取消和失败都是 null：要么按「取消」也报"导出失败"，要么写不进去也一声不吭
+export function showResultToast(r, done, failed = '导出失败') {
+  if (!r) return false;
+  if (r.ok) {
+    showToast(done, { type: 'success' });
+    return true;
+  }
+  showToast(failed + '：' + (r.error || '未知原因'), { type: 'error', duration: 5000 });
+  return false;
+}
+
 // ====== 编辑器 UI 显隐 ======
 export function showEditorUI() {
   const isMd = state.noteFormat === 'md';

@@ -13,10 +13,51 @@ note_id、OCR 的图片路径）—— 所以收成一个模块、一个入口�
 
 本模块**不依赖 backend 包内的任何东西**（只有 stdlib），所以可以被任何子模块安全导入 ——
 这是刻意的：路径安全是底层工具，不该有依赖方向上的纠缠。
+
+另有 `safe_filename`：把笔记标题变成保存对话框里的默认文件名。它不做校验、不访问文件系统，
+只保证名字本身在 Windows 上能用。
 """
 import os
+import re
 
 _REJECT_PATH_CHARS = ('\\', '/', ':')      # 路径分隔符、盘符、NTFS 备用数据流（file.txt:ads）
+
+# ── 保存对话框的默认文件名 ──────────────────────────────────────────────
+# Windows 文件名里不许出现的九个字符，换成长得一样的全角字符：标题「2026/11/18 会议」导出时
+# 默认叫「2026／11／18 会议.html」，读起来还是原来的标题（换成下划线也能用，只是像乱码）。
+# 原样交给对话框的后果（实测）：有 `/` `\` 时提示"路径不存在"（当成了文件夹），
+# 有 `?` `*` 时按「保存」没反应（当成了筛选条件），其余几个提示文件名无效。
+_FULLWIDTH = str.maketrans({'<': '＜', '>': '＞', ':': '：', '"': '＂', '/': '／',
+                            '\\': '＼', '|': '｜', '?': '？', '*': '＊'})
+# 换行、制表符这类换成空格；其余控制字符去掉。另外去掉两类看不见的字符：
+# 改变文字方向的控制符（U+202A–202E、U+2066–2069，能让「笔记\u202eftd.html」显示成「笔记lmth.dtf」），
+# 落单的代理项（页面上的字符串可以有，Tk 把它交给 Windows 时会报错）
+_FILENAME_SPACE = re.compile('[\t\n\x0b\x0c\r\u2028\u2029]')
+_FILENAME_DROP = re.compile('[\x00-\x08\x0e-\x1f\x7f-\x9f\u202a-\u202e\u2066-\u2069\ud800-\udfff]')
+# DOS 设备名：Windows 10 上「CON.html」「nul .txt」都指设备，写进去的东西就没了
+# （本机 Windows 11 26300 上已经是普通文件）。与 ntpath.isreserved 同一张表，另加微软文档列出的 COM0 / LPT0
+_RESERVED_STEMS = frozenset(
+    {'CON', 'PRN', 'AUX', 'NUL', 'CONIN$', 'CONOUT$'}
+    | {prefix + digit for prefix in ('COM', 'LPT') for digit in '0123456789\xb9\xb2\xb3'})
+
+
+def safe_filename(name, fallback='未命名笔记', limit=120):
+    """笔记标题 → 保存对话框的默认文件名（不含扩展名，调用方自己接）。
+
+    九个不许用的字符换成全角，控制字符去掉，首尾空白去掉，最长 `limit` 个字（再接上扩展名也不会
+    超过 Windows 单个文件名 255 的上限），结尾的点和空格去掉（Windows 会悄悄去掉它们），
+    设备名前面加 `_`。什么都不剩时用 `fallback`。
+    """
+    if not isinstance(name, str):
+        name = ''
+    name = _FILENAME_SPACE.sub(' ', name)
+    name = _FILENAME_DROP.sub('', name)
+    name = re.sub(r'[\s.]+$', '', name.translate(_FULLWIDTH).strip()[:limit])
+    # 设备名要等截断之后再判：「CON」后面跟一长串空格，截完才成了设备名。加了 `_` 不能超过 limit，
+    # 不然再清理一遍会少一个字
+    if name.partition('.')[0].rstrip(' ').upper() in _RESERVED_STEMS:
+        name = re.sub(r'[\s.]+$', '', '_' + name[:limit - 1])
+    return name or fallback
 
 
 def _safe_path_part(part):

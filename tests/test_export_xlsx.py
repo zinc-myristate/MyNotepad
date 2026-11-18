@@ -14,7 +14,7 @@ from test_export_docx import PNG_1PX, katex, quill_li
 def sheet(api, tmp_path, html, title='标题'):
     from openpyxl import load_workbook
     path = str(tmp_path / 'out.xlsx')
-    assert api.export_note(title, html, 'xlsx', path) is True
+    assert api.export_note(title, html, 'xlsx', path) == {'ok': True}
     return load_workbook(path, rich_text=True).active
 
 
@@ -33,7 +33,7 @@ def cells(ws):
 
 def txt(api, tmp_path, html):
     path = str(tmp_path / 'out.txt')
-    assert api.export_note('标题', html, 'txt', path) is True
+    assert api.export_note('标题', html, 'txt', path) == {'ok': True}
     with open(path, encoding='utf-8') as f:
         return f.read()
 
@@ -176,9 +176,10 @@ def test_empty_note(api, tmp_path):
     assert txt(api, tmp_path, '') == ''
 
 
-def test_failed_export_returns_false(api, tmp_path):
-    assert api.export_note('标题', '<p>x</p>', 'xlsx', str(tmp_path)) is False     # 路径是个目录
-    assert api.export_note('标题', '<p>x</p>', 'txt', str(tmp_path)) is False
+def test_failed_export_says_why(api, tmp_path):
+    failed = {'ok': False, 'error': '文件可能正在别的程序里打开，或者这个位置不允许写入'}
+    assert api.export_note('标题', '<p>x</p>', 'xlsx', str(tmp_path)) == failed     # 路径是个目录
+    assert api.export_note('标题', '<p>x</p>', 'txt', str(tmp_path)) == failed
 
 
 # ---------------- TXT ----------------

@@ -467,6 +467,7 @@ THEME_CARDS = r"""JSON.stringify((() => {
       pressed: opt.getAttribute('aria-pressed'),
       marked: mark.content !== 'none' && parse(mark.backgroundColor).a > 0,
       border: getComputedStyle(opt).borderTopColor,
+      hovered: opt.matches(':hover'),
     };
   });
 })())"""
@@ -504,7 +505,9 @@ def test_theme_panel_is_readable_and_marks_only_the_current_theme(tmp_path, monk
         assert [c['theme'] for c in cards if c['marked']] == [theme], '只有当前主题打勾'
         assert [c['pressed'] for c in cards] == ['true' if c['theme'] == theme else 'false'
                                                  for c in cards]
-        others = {c['border'] for c in cards if not c['active']}
+        # 测试窗口是真窗口：鼠标正好停在哪张卡片上，那张就是悬停的主题色边框（2026-11-18 全量跑时
+        # 红过一次，单跑两次都过），不算
+        others = {c['border'] for c in cards if not c['active'] and not c['hovered']}
         assert len(others) == 1, '没选中的卡片边框颜色应该一样，现在是 %s' % sorted(others)
 
 

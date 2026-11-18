@@ -419,6 +419,21 @@ def _save_ack(note):
     return {k: note[k] for k in _SAVE_ACK_FIELDS if k in note}
 
 
+# 导出 / 导入的桥接方法都守同一个约定：在文件对话框里按「取消」返回 None（页面什么都不说），
+# 做成了返回 {'ok': True, ...}，没做成返回 {'ok': False, 'error': 原因}。以前取消和失败都返回 None，
+# 页面分不出来：要么按「取消」也报错，要么写不进去也一声不吭。
+# 粘贴、拖进笔记的文件（file_add_to_note）：内容经桥接以 base64 传过来，所以有上限。页面在读文件之前就按这个数判，
+# 改的话 32-paste-drop.js 的 MAX_DROP_BYTES 一起改（tests/test_paste_drop.py 对照两边）
+_DROP_MAX_BYTES = 50 * 1024 * 1024
+
+
+def _saved(result, save_path):
+    """后端导出的结果交给页面：写出了文件就带上路径（count 为 0 时什么都没写，不带）"""
+    if isinstance(result, dict) and result.get('ok') and result.get('count') != 0:
+        return dict(result, path=save_path)
+    return result
+
+
 # 扩展 API，添加文件对话框功能
 class AppApi:
     def __init__(self, backend):
@@ -519,21 +534,18 @@ class AppApi:
     def ocr_release(self, path): return _ocr_release(path)
 
     def export_table_csv(self, note_ids=None):
-        """导出表格为 CSV（对话框在这一层，写文件在后端——与其它导出同一条规矩）"""
-        try:
-            import tkinter.filedialog
-            from datetime import datetime
-            save_path = tkinter.filedialog.asksaveasfilename(
-                title="导出表格为 CSV",
-                defaultextension='.csv',
-                filetypes=[('CSV 表格', '*.csv')],
-                initialfile=f"笔记表格-{datetime.now():%Y%m%d-%H%M%S}.csv")
-            if not save_path:
-                return None
-            return self.backend.export_table_csv(note_ids, save_path)
-        except Exception as exc:
-            applog.get_logger().exception("导出 CSV 失败")
-            return {'error': str(exc)}
+        """导出表格为 CSV（对话框在这一层，写文件在后端——与其它导出同一条规矩）。
+        返回值的约定见 `_saved` 上面的说明；导出了带 count（行数）"""
+        import tkinter.filedialog
+        from datetime import datetime
+        save_path = tkinter.filedialog.asksaveasfilename(
+            title="导出表格为 CSV",
+            defaultextension='.csv',
+            filetypes=[('CSV 表格', '*.csv')],
+            initialfile=f"笔记表格-{datetime.now():%Y%m%d-%H%M%S}.csv")
+        if not save_path:
+            return None
+        return _saved(self.backend.export_table_csv(note_ids, save_path), save_path)
 
     # 正文格式（Delta ↔ Markdown）双轨：查询状态 / 转换 / 还原原始富文本
     def note_format_info(self, note_id): return self.backend.note_format_info(note_id)
@@ -574,6 +586,44 @@ class AppApi:
         if not _source_allowed(source_path):
             return None
         return self.backend.file_copy_to_note(source_path, note_id, file_type)
+
+    def file_add_to_note(self, note_id, name, data, file_type):
+        """粘贴、拖进笔记的文件存成这篇笔记的附件，返回值和 file_copy_to_note 一样。
+
+        WebView2 里拿不到拖进来的文件的路径（`file.path` 是 Electron 的属性），页面只能把内容读出来交给这里：
+        `data` 是 base64。先用原来的文件名写进一个临时文件夹（附件卡片和链接上显示的就是这个名字），
+        交给 file_copy_to_note，再把临时文件夹删掉。以前粘贴的图片走 save_temp_image，传的是一个数字一个字节的
+        JSON 数组，而且用完一直留在系统临时目录里。
+        内容要经桥接传过来，所以有上限；更大的文件用工具栏的「附件」按钮（走文件对话框，只传路径）。
+        """
+        import re
+        import shutil
+        if file_type not in ('image', 'file') or not isinstance(data, str) or not isinstance(name, str):
+            return {'error': '参数不对'}
+        if len(data) > (_DROP_MAX_BYTES + 2) // 3 * 4:          # 先按 base64 的长度判，不用解出来
+            return {'error': '「%s」超过 %d MB，请用工具栏的「附件」按钮添加' % (name, _DROP_MAX_BYTES >> 20)}
+        try:
+            raw = base64.b64decode(data, validate=True)
+        except ValueError:
+            return {'error': '「%s」的内容没读全，请重新拖进来' % name}
+        stem, ext = os.path.splitext(name)
+        if not re.fullmatch(r'\.[A-Za-z0-9]{1,10}', ext):
+            stem, ext = name, ''
+        # 名字来自页面：换掉 Windows 不认的字符，扩展名单独留着（截断时别把它截掉）
+        safe = _backend_mod.safe_filename(stem, fallback='粘贴的图片' if file_type == 'image' else '附件',
+                                          limit=100) + ext
+        folder = tempfile.mkdtemp(prefix='mynotepad_drop_')
+        try:
+            path = os.path.join(folder, safe)
+            with open(path, 'wb') as f:
+                f.write(raw)
+            return self.backend.file_copy_to_note(path, note_id, file_type)
+        except OSError:
+            import applog
+            applog.get_logger().exception('保存粘贴 / 拖入的文件失败')
+            return {'error': '「%s」没能存下来，详细原因记在 error.log 里' % name}
+        finally:
+            shutil.rmtree(folder, ignore_errors=True)
     def file_open(self, file_path):
         return self.backend.file_open(file_path)
 
@@ -627,9 +677,6 @@ class AppApi:
     # 读取文件为 base64（用于在 WebView 中显示本地图片）
     def read_file_base64(self, file_path):
         return self.backend.read_file_base64(file_path)
-
-    def save_temp_image(self, bytes_list, filename):
-        return self.backend.save_temp_image(bytes_list, filename)
 
     # 打开新图标选择对话框
     # 标签
@@ -732,7 +779,7 @@ class AppApi:
 
     # 导出笔记
     def export_note(self, title, html_content, format_type):
-        """导出笔记，返回保存路径或 None"""
+        """导出笔记为 HTML / TXT / Word / Excel。返回值的约定见 `_saved` 上面的说明"""
         import tkinter.filedialog
         ext_map = {
             'html': ('HTML 网页', '*.html'),
@@ -740,20 +787,20 @@ class AppApi:
             'docx': ('Word 文档', '*.docx'),
             'xlsx': ('Excel 表格', '*.xlsx'),
         }
-        desc, ext = ext_map.get(format_type, ('文件', '*.*'))
+        # 后端也只认这四种，别弹一个写不出文件的对话框（页面传来的是 JSON，可能根本不是字符串）
+        if not isinstance(format_type, str) or format_type not in ext_map:
+            return {'ok': False, 'error': '不支持导出成这种格式'}
+        desc, ext = ext_map[format_type]
         save_path = tkinter.filedialog.asksaveasfilename(
             title=f"导出为 {desc}",
             defaultextension=ext,
             filetypes=[(desc, ext)],
-            initialfile=f"{title}.{format_type}"
+            # 标题原样当文件名的话，有 `/` 时对话框说"路径不存在"，有 `?` 时点保存没反应
+            initialfile=f"{_backend_mod.safe_filename(title)}.{format_type}"
         )
         if not save_path:
             return None
-
-        success = self.backend.export_note(title, html_content, format_type, save_path)
-        if success:
-            return save_path
-        return None
+        return _saved(self.backend.export_note(title, html_content, format_type, save_path), save_path)
 
     # 一键全库导出（zip：notes.db + attachments + backgrounds）
     def export_all(self):
@@ -767,26 +814,26 @@ class AppApi:
         )
         if not save_path:
             return None
-        if self.backend.export_all_to_zip(save_path):
-            return save_path
-        return None
+        return _saved(self.backend.export_all_to_zip(save_path), save_path)
 
     def export_markdown(self, note_id, title=''):
-        """导出单篇为 Markdown（图片会复制到同级 .assets 目录）"""
+        """导出单篇为 Markdown（图片会复制到同级 .assets 目录）。返回值的约定见 `_saved` 上面的说明。
+
+        以前按「取消」也提示"导出失败：加密笔记需要先解锁"：取消和失败都返回 None，页面一律这么说。
+        """
         import tkinter.filedialog
         save_path = tkinter.filedialog.asksaveasfilename(
             title="导出为 Markdown",
             defaultextension='.md',
             filetypes=[('Markdown', '*.md')],
-            initialfile='%s.md' % (title or '笔记'))
+            initialfile='%s.md' % _backend_mod.safe_filename(title))
         if not save_path:
             return None
-        if self.backend.export_note_markdown(note_id, save_path):
-            return save_path
-        return None
+        return _saved(self.backend.export_note_markdown(note_id, save_path), save_path)
 
     def import_markdown_dialog(self, notebook_id=None):
-        """选择 .md 文件导入为新笔记，返回新笔记或 None
+        """选择 .md 文件导入为新笔记。按「取消」返回 None；导入了返回 {'ok': True, 'note': 回执}，
+        没导入返回 {'ok': False, 'error': 原因}（以前一律返回 None，读不出文件时页面一声不吭）。
 
         notebook_id：当前笔记本（第 12 轮）—— 在「原神」里导入一篇 .md，
         它就该落在原神里，而不是混进未分类。
@@ -797,22 +844,33 @@ class AppApi:
         if not path:
             return None
         try:
-            with open(path, encoding='utf-8') as f:
-                text = f.read()
-        except Exception:
             try:
+                with open(path, encoding='utf-8') as f:
+                    text = f.read()
+            except UnicodeDecodeError:              # 不是 UTF-8 的按 GBK 读（记事本存的老文件常见）
                 with open(path, encoding='gbk', errors='replace') as f:
                     text = f.read()
-            except Exception:
-                return None
-        return self.backend.import_markdown(text, None, notebook_id)
+        except OSError as exc:
+            import applog
+            applog.get_logger().exception("读取 Markdown 文件失败")
+            return {'ok': False, 'error': _backend_mod._file_error_text(exc, reading=True)}
+        note = self.backend.import_markdown(text, None, notebook_id)
+        if not note:
+            return {'ok': False, 'error': '导入时出错，详细原因记在 error.log 里'}
+        return {'ok': True, 'note': _ack(note)}
 
     def export_scope(self, notebook_id=None, tag_id=None, label=''):
-        """按笔记本/标签导出为可当库打开的 zip。返回 (保存路径, 笔记数) 或 None"""
+        """按笔记本/标签导出为可当库打开的 zip。返回值的约定见 `_saved` 上面的说明；
+        导出了带 count（笔记数），范围里没有笔记时 count 为 0、不带 path。
+
+        一篇都没有时不弹保存对话框，直接返回 count 0：以前先让人挑好保存位置，才说"这个范围里还没有笔记"。
+        （对话框开着的时候笔记被删光了，export_notes_zip 照样回 count 0、什么都不写）
+        """
+        if not self.backend.scope_note_count(notebook_id=notebook_id, tag_id=tag_id):
+            return {'ok': True, 'count': 0}
         import tkinter.filedialog
         from datetime import datetime
-        stem = ('我的记事本-%s' % (label or ('笔记本' if notebook_id else '标签'))
-                ).replace('/', '_').replace('\\', '_')
+        stem = _backend_mod.safe_filename('我的记事本-%s' % (label or ('笔记本' if notebook_id else '标签')))
         save_path = tkinter.filedialog.asksaveasfilename(
             title="导出所选范围",
             defaultextension='.zip',
@@ -821,10 +879,7 @@ class AppApi:
         )
         if not save_path:
             return None
-        n = self.backend.export_notes_zip(save_path, notebook_id=notebook_id, tag_id=tag_id)
-        if n is None:
-            return None
-        return {'path': save_path, 'count': n}
+        return _saved(self.backend.export_notes_zip(save_path, notebook_id=notebook_id, tag_id=tag_id), save_path)
 
     def pick_and_preview_icon(self):
         """第一步：选择图片，智能裁切为 512×512 基准方图并生成默认圆角预览，不修改正式图标"""
@@ -1011,7 +1066,8 @@ BRIDGE_MAIN = (
     'attachments_get_path', 'cancel_icon', 'capture_begin', 'capture_image', 'capture_mini_open',
     'clipboard_capture', 'confirm_icon', 'convert_note_format', 'daily_note_open', 'desktop_status',
     'export_all', 'export_markdown', 'export_note', 'export_scope', 'export_table_csv',
-    'file_copy_to_note', 'file_open', 'import_markdown_dialog', 'log_error', 'note_change_password',
+    'file_add_to_note', 'file_copy_to_note', 'file_open', 'import_markdown_dialog', 'log_error',
+    'note_change_password',
     'note_format_info', 'note_has_password', 'note_links', 'note_lock', 'note_remove_password',
     'note_set_lock_ttl', 'note_set_password', 'note_tags_get', 'note_tags_set', 'note_unlock_status',
     'note_verify_password', 'notebook_counts', 'notebooks_create', 'notebooks_delete', 'notebooks_list',
@@ -1024,7 +1080,7 @@ BRIDGE_MAIN = (
     'pick_background', 'pick_image', 'read_file_base64', 'reminder_complete', 'reminder_create',
     'reminder_delete', 'reminder_get', 'reminder_list', 'reminder_list_all', 'reminder_snooze',
     'reminder_update', 'reminder_update_next_repeat', 'reminders_check', 'restore_default_icon',
-    'restore_delta_backup', 'save_temp_image', 'saved_search_create', 'saved_search_delete',
+    'restore_delta_backup', 'saved_search_create', 'saved_search_delete',
     'saved_search_update', 'saved_searches_list', 'set_autostart', 'set_capture_hotkey_enabled',
     'set_hotkey_enabled', 'set_tray_enabled', 'settings_get', 'settings_get_all', 'settings_set',
     'startup_notice', 'tags_create', 'tags_delete', 'tags_list', 'tags_merge', 'tags_rename',

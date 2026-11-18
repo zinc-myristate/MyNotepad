@@ -1131,7 +1131,7 @@ class TestScopeExportChunking:
             api.notes_update(nid, {'title': '本外%d' % i, 'content': 'y\n'})
 
         out = str(tmp_path / 'scope.zip')
-        assert api.export_notes_zip(out, notebook_id=nb) > 0
+        assert api.export_notes_zip(out, notebook_id=nb)['count'] > 0
         with zipfile.ZipFile(out) as zf:
             assert 'notes.db' in zf.namelist()
 

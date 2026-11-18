@@ -24,7 +24,7 @@ def test_export_all_to_zip(api, backend_mod, tmp_path):
         f.write(b'fake-bg-bytes')
 
     out = str(tmp_path / 'backup.zip')
-    assert api.export_all_to_zip(out) is True
+    assert api.export_all_to_zip(out) == {'ok': True}
 
     with zipfile.ZipFile(out) as zf:
         names = zf.namelist()
@@ -45,14 +45,14 @@ def test_export_all_to_zip(api, backend_mod, tmp_path):
 
 def test_export_all_empty_db(api, tmp_path):
     out = str(tmp_path / 'empty.zip')
-    assert api.export_all_to_zip(out) is True
+    assert api.export_all_to_zip(out) == {'ok': True}
     with zipfile.ZipFile(out) as zf:
         assert 'notes.db' in zf.namelist()
 
 
 def test_export_all_wrapper(app_ns, tmp_path, monkeypatch):
-    """AppApi.export_all：monkeypatch 文件对话框后返回保存路径"""
+    """AppApi.export_all：monkeypatch 文件对话框后返回 {'ok': True, 'path': 保存路径}"""
     out = str(tmp_path / 'via-wrapper.zip')
     monkeypatch.setattr('tkinter.filedialog.asksaveasfilename', lambda **kw: out)
-    assert app_ns['api'].export_all() == out
+    assert app_ns['api'].export_all() == {'ok': True, 'path': out}
     assert os.path.isfile(out)

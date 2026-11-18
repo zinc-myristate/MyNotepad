@@ -17,6 +17,7 @@ import { scheduleEditorSidebarRefresh } from './02-editor.js';
 import { bindPreviewLinks, hydrateMarkdownAssets, hydrateWikilinks,
   renderMarkdown } from './14-markdown-render.js';
 import { applyMarkdownAction } from './17-markdown-actions.js';
+import { addFilesToNote, filesIn, pastedFiles } from './32-paste-drop.js';
 import { updateStatusBar } from './21-status-bar.js';
 import { syncOutlineActive } from './22-outline.js';
 
@@ -75,6 +76,21 @@ export function initMarkdownEditor() {
   });
   cm.on('cursorActivity', () => { updateStatusBar(); syncOutlineActive(); });
   cm.on('scroll', () => syncScroll('source'));
+  // 粘贴截图、拖进文件：存成附件，插成图片 / 附件链接（32-paste-drop.js）。以前这两样在 Markdown 笔记里都没人接：
+  // 粘贴截图没反应；拖进文件时 CodeMirror 自己会把 .txt、.csv 这类文件的内容整个当文字贴进正文
+  cm.on('paste', (_cm, e) => {
+    const files = pastedFiles(e.clipboardData);
+    if (!files.length) return;                     // 文字照常粘贴
+    e.preventDefault();
+    if (!cm.getOption('readOnly')) addFilesToNote(files);
+  });
+  cm.on('drop', (_cm, e) => {
+    const files = filesIn(e.dataTransfer);
+    if (!files.length) return;                     // 拖动正文里选中的文字：交给 CodeMirror
+    e.preventDefault();                            // 拦下来，CodeMirror 才不会把文件内容当文字贴进来
+    if (cm.getOption('readOnly')) return;
+    addFilesToNote(files, { at: cm.coordsChar({ left: e.clientX, top: e.clientY }, 'window') });
+  });
   const pane = document.getElementById('md-preview-pane');
   if (pane) pane.addEventListener('scroll', () => syncScroll('preview'));
   bindPreviewLinks(document.getElementById('md-preview'));

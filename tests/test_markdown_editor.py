@@ -1104,7 +1104,7 @@ def test_docx_export_keeps_every_piece_of_text(tmp_path, monkeypatch):
     r = _run(ns, actions, wait_before=0)
     assert 'error' not in r, r.get('error')
     assert not r['html'].startswith('ERROR'), r['html']
-    assert r['ok'] is True
+    assert r['ok'] == {'ok': True}
     from docx import Document
     doc = Document(docx_path)
     raw = _docx_text(doc)

@@ -6,9 +6,10 @@
 // 数据由后端 `notes_table` 一次桥调用返回（不是前端逐篇查）：N 次跨语言往返在大库下会明显卡。
 // 加密笔记只显示标题与「已加密」，派生数据列留空——属性同理，后端根本不下发。
 
-import { $, state, showToast } from './01-core.js';
+import { $, state, showResultToast, showToast } from './01-core.js';
 import { ICONS } from '../shared/icons.js';
 import { loadNotes, selectNote } from './03-notes.js';
+import { listItems } from './30-virtual-list.js';
 
 const FIXED_COLUMNS = [
   { key: 'title', label: '标题', type: 'text' },
@@ -90,18 +91,15 @@ function render() {
   }
 }
 
-/** 列表当前可见的笔记 id。
+/** 列表里的那些笔记（当前范围 + 搜索筛选之后），表格和导出的 CSV 都按它来。
  *
- *  为什么读 DOM 而不是 state.notes：搜索的筛选**只体现在 DOM 上**——09-boot 是给不匹配的
- *  `.note-item` 加 `hidden-by-search` 类，而不是把笔记从 state.notes 里摘掉。DOM 才等于
- *  "用户眼前那一份"，也天然覆盖了以后新增的任何列表筛选。没有搜索词时直接用 state.notes，
- *  这样"搜不到东西"不会被误当成"没有筛选"而显示全部。
+ *  注意不能读 DOM：列表第 13 轮改成只画看得见的十几行（30-virtual-list.js），以前这里数的是
+ *  `#note-list .note-item`，搜索命中 60 篇时表格和 CSV 里只有画出来的 18 行（2026-11-18 实测）。
+ *  `listItems()` 就是列表自己画行用的那一份：没有搜索词时是 state.notes，有搜索词时只留命中的，
+ *  一篇都没命中时是空的（不会被误当成"没有筛选"而显示全部）。
  */
 function visibleNoteIds() {
-  if (!state.searchQuery) return (state.notes || []).map((n) => n.id);
-  return Array.from(document.querySelectorAll('#note-list .note-item:not(.hidden-by-search)'))
-    .map((el) => el.dataset.noteId)
-    .filter(Boolean);
+  return listItems().map((n) => n.id);
 }
 
 export async function reloadTableView() {
@@ -142,11 +140,13 @@ export function isTableViewOpen() {
 
 export async function exportTableCsv() {
   const ids = visibleNoteIds();
+  // 表格是空的就别让人先挑一个保存位置，再告诉他什么都没写
+  if (!ids.length) { showToast('表格里没有笔记', { type: 'warn' }); return; }
   try {
+    // 以前写不进去时后端返回 null，这里当成「取消」一声不吭（CSV 正在 Excel 里开着就是这样）
     const res = await window.pywebview.api.export_table_csv(ids);
-    if (res === null || res === undefined) return;            // 用户取消
-    if (typeof res === 'object' && res.error) throw new Error(res.error);
-    showToast('已导出 ' + res + ' 行 CSV', { type: 'success' });
+    if (res && res.ok && res.count === 0) showToast('表格里没有笔记', { type: 'warn' });
+    else showResultToast(res, '已导出 ' + (res && res.count) + ' 行 CSV');
   } catch (e) {
     showToast('导出失败：' + (e && e.message ? e.message : e), { type: 'error' });
   }

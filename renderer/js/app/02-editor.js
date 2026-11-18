@@ -2,7 +2,7 @@
 // 字体/字号 Blot 已在 js/quill/quill-blots.js 中注册
 
 // ====== ESM 依赖（原先靠全局作用域与加载顺序隐式依赖，现显式声明）======
-import { $, $$, closePanel, dom, openPanel, showInfoDialog, showToast, state } from './01-core.js';
+import { $, $$, closePanel, dom, openPanel, showInfoDialog, showResultToast, showToast, state } from './01-core.js';
 import { debouncedSave, flushSave, loadNotes, renderNoteList, setSaveDot } from './03-notes.js';
 import { getCurrentNotebookId, getCurrentNotebookName, revealAndSelectNote } from './09-boot.js';
 import { _stickerSyncTimer, getCurrentTagFilter, getCurrentTagName, set_stickerSyncTimer } from './05-shell.js';
@@ -16,6 +16,7 @@ import { refreshFindIfOpen } from './23-find-bar.js';
 import { refreshPropBar } from './24-properties.js';
 import { refreshLinksIfOpen } from './25-links.js';
 import { throttle } from '../shared/utils.js';
+import { addFilesToNote } from './32-paste-drop.js';
 
 // ====== 编辑器侧栏的合并刷新（状态栏 / 大纲 / 查找 / 属性 / 双链）======
 // 两条编辑器路径（Quill 的 text-change、CodeMirror 的 change）共用这一个入口，
@@ -254,38 +255,14 @@ export function initQuill() {
     if (activeColor) quill.format('color', activeColor);
   });
 
-  // 处理粘贴图片
-  quill.root.addEventListener('paste', async (e) => {
-    const items = e.clipboardData?.items;
-    if (!items) return;
-
-    for (const item of items) {
-      if (item.type.startsWith('image/')) {
-        e.preventDefault();
-        const file = item.getAsFile();
-        if (file) {
-          await handleImageFile(file);
-        }
-        break;
-      }
-    }
-  });
-
-  // 处理拖拽文件
-  quill.root.addEventListener('drop', async (e) => {
-    const files = e.dataTransfer?.files;
-    if (!files || files.length === 0) return;
-
-    e.preventDefault();
-
-    for (const file of files) {
-      if (file.type.startsWith('image/')) {
-        await handleImageFile(file);
-      } else {
-        await handleAttachmentFile(file);
-      }
-    }
-  });
+  // 粘贴、拖进来的文件：什么时候算"贴进文件"、插在哪里（拖放时是落点）由 Quill 自带的 uploader 判断
+  //（剪贴板里有 HTML 时按 HTML 粘贴，只有截图、复制的图片才走文件），文件交给 32-paste-drop.js。
+  // 它自己的做法是把 PNG / JPEG 插成 data URI、别的文件一概不理；以前这里又另外监听了 paste / drop，
+  // 于是一张截图插进来两张（一张 data URI、一张附件），PDF 拖进来什么都没有（2026-11-18 实测）
+  quill.uploader.upload = (range, files) => {
+    if (!quill.isEnabled()) return;
+    addFilesToNote(Array.from(files || []), { range });
+  };
 
   quill.root.addEventListener('dragover', (e) => {
     e.preventDefault();
@@ -297,37 +274,12 @@ export function initQuill() {
 }
 
 // ====== 图片处理 ======
-
-async function handleImageFile(file) {
-  if (!state.activeNoteId) {
-    showToast('请先选择或新建一篇笔记', { type: 'warn' });
-    return;
-  }
-
-  try {
-    // pywebview: 拖拽的文件通常有 path 属性
-    if (file.path) {
-      await insertImageFromPath(file.path);
-    } else {
-      // 粘贴的图片：通过 Python 后端保存到临时文件
-      const buffer = await file.arrayBuffer();
-      const bytes = Array.from(new Uint8Array(buffer));
-      // 通过后端保存临时文件
-      const tempPath = await window.pywebview.api.save_temp_image(bytes, file.name);
-      if (tempPath) {
-        await insertImageFromPath(tempPath);
-      }
-    }
-  } catch (err) {
-    console.error('插入图片失败:', err);
-    showToast('插入图片失败：' + (err.message || err), { type: 'error' });
-  }
-}
+// 粘贴、拖进来的图片和文件在 32-paste-drop.js；这里是工具栏按钮那条路（文件对话框选的，交路径）
 
 async function insertImageFromPath(sourcePath) {
   const result = await window.pywebview.api.file_copy_to_note(sourcePath, state.activeNoteId, 'image');
-  if (!result) return;
-  insertImageResult(result);
+  if (result && result.error) showToast('插入图片失败：' + result.error, { type: 'error' });
+  else insertImageResult(result);
 }
 
 /**
@@ -351,29 +303,17 @@ export function insertImageResult(result) {
 
 // ====== 附件处理 ======
 
-async function handleAttachmentFile(file) {
-  if (!state.activeNoteId) {
-    showToast('请先选择或新建一篇笔记', { type: 'warn' });
-    return;
-  }
-
-  try {
-    const tempPath = file.path;
-    if (tempPath) {
-      await insertAttachmentFromPath(tempPath, file.name);
-    }
-  } catch (err) {
-    console.error('插入附件失败:', err);
-    showToast('插入附件失败：' + (err.message || err), { type: 'error' });
-  }
+async function insertAttachmentFromPath(sourcePath) {
+  const result = await window.pywebview.api.file_copy_to_note(sourcePath, state.activeNoteId, 'file');
+  // 以前只判 null：后端拒绝（比如超过 200MB）时回的是 {error}，照样插进一张空的附件卡片
+  if (result && result.error) showToast('插入附件失败：' + result.error, { type: 'error' });
+  else insertAttachmentResult(result);
 }
 
-async function insertAttachmentFromPath(sourcePath, originalName) {
-  const result = await window.pywebview.api.file_copy_to_note(sourcePath, state.activeNoteId, 'file');
-  if (!result) return;
-
-  // 在 Quill 中插入附件卡片
-  const range = state.quill.getSelection(true);
+/** 把**已经存进附件目录**的文件插成附件卡片（`file_copy_to_note` / `file_add_to_note` 的返回值） */
+export function insertAttachmentResult(result) {
+  if (!result || !result.filename) return;
+  const range = state.quill.getSelection(true) || { index: state.quill.getLength() };
   state.quill.insertEmbed(range.index, 'attachment', {
     id: result.id,
     filename: result.filename,
@@ -411,10 +351,7 @@ $('#btn-insert-attachment').addEventListener('click', async () => {
   }
   try {
     const filePath = await window.pywebview.api.pick_attachment();
-    if (filePath) {
-      const fileName = filePath.split(/[/\\]/).pop();
-      await insertAttachmentFromPath(filePath, fileName);
-    }
+    if (filePath) await insertAttachmentFromPath(filePath);
   } catch (err) {
     showToast('选择附件失败：' + (err && err.message ? err.message : err), { type: 'error' });
   }
@@ -1058,7 +995,10 @@ async function quillExportHtml(htmlContent) {
   return tmp.innerHTML;
 }
 
-// 导出选项点击
+// 导出成功时提示里的格式名（与导出面板上的名字一致）
+const EXPORT_NAMES = { html: 'HTML 网页', txt: '纯文本', docx: 'Word 文档', xlsx: 'Excel 表格' };
+
+// 导出选项点击。桥接返回 null = 在文件对话框里按了「取消」，结果怎么提示见 showResultToast
 $$('.export-option').forEach(btn => {
   btn.addEventListener('click', async () => {
     const format = btn.dataset.format;
@@ -1067,15 +1007,16 @@ $$('.export-option').forEach(btn => {
     // 全库备份 zip：不依赖当前笔记
     if (format === 'zip') {
       try {
-        const p = await window.pywebview.api.export_all();
-        if (p) showToast('备份包已导出', { type: 'success' });
+        showResultToast(await window.pywebview.api.export_all(), '备份包已导出');
       } catch (err) {
         showToast('导出失败：' + (err.message || err), { type: 'error' });
       }
       return;
     }
 
-    // 按当前筛选范围导出（笔记本 / 标签）：没在筛选就提示，不让用户导错范围
+    // 按当前筛选范围导出（笔记本 / 标签）：没在筛选就提示，不让用户导错范围。
+    // 范围里一篇都没有时桥接不弹保存对话框，直接回 count 0（篇数由后端数：标签导出的是这个标签的全部笔记，
+    // 不只是列表里那些"标签 × 当前笔记本"）
     if (format === 'zip-notebook' || format === 'zip-tag') {
       const byTag = format === 'zip-tag';
       const scopeId = byTag ? getCurrentTagFilter() : getCurrentNotebookId();
@@ -1087,38 +1028,25 @@ $$('.export-option').forEach(btn => {
       try {
         const r = await window.pywebview.api.export_scope(
           byTag ? null : scopeId, byTag ? scopeId : null, scopeName);
-        if (r && r.count === 0) showToast('这个范围里还没有笔记', { type: 'warn' });
-        else if (r) showToast('已导出 ' + r.count + ' 篇笔记', { type: 'success' });
+        if (r && r.ok && r.count === 0) showToast('这个范围里还没有笔记', { type: 'warn' });
+        else showResultToast(r, '已导出 ' + (r && r.count) + ' 篇笔记');
       } catch (err) {
         showToast('导出失败：' + (err.message || err), { type: 'error' });
       }
       return;
     }
 
-    // Markdown：导出当前笔记 / 导入为一篇新笔记
-    if (format === 'md') {
-      if (!state.activeNoteId) { showToast('请先选择一篇笔记', { type: 'warn' }); return; }
-      const note = state.notes.find(n => n.id === state.activeNoteId);
-      try {
-        const p = await window.pywebview.api.export_markdown(
-          state.activeNoteId, (note && note.title) || '笔记');
-        if (p) showToast('Markdown 已导出', { type: 'success' });
-        else showToast('导出失败：加密笔记需要先解锁', { type: 'warn' });
-      } catch (err) {
-        showToast('导出失败：' + (err.message || err), { type: 'error' });
-      }
-      return;
-    }
+    // Markdown 导入为一篇新笔记：不依赖当前笔记
     if (format === 'md-import') {
       try {
         // 导入的新笔记跟着**当前笔记本**走（与「＋ 新建笔记」同一条规矩），
         // 万一它落在别处（旧接口/未分类），视角也会跟过去，保证列表里看得见
-        const note = await window.pywebview.api.import_markdown_dialog(getCurrentNotebookId());
-        if (note) {
+        const r = await window.pywebview.api.import_markdown_dialog(getCurrentNotebookId());
+        if (r && r.ok) {
           await loadNotes();
-          await revealAndSelectNote(note.id);
-          showToast('已导入「' + (note.title || '导入的笔记') + '」', { type: 'success' });
-        }
+          await revealAndSelectNote(r.note.id);
+          showToast('已导入「' + (r.note.title || '导入的笔记') + '」', { type: 'success' });
+        } else showResultToast(r, '', '导入失败');
       } catch (err) {
         showToast('导入失败：' + (err.message || err), { type: 'error' });
       }
@@ -1132,6 +1060,17 @@ $$('.export-option').forEach(btn => {
     const note = state.notes.find(n => n.id === state.activeNoteId);
     if (note && note.has_password && !unlockedNotes[state.activeNoteId]) {
       showToast('请先解锁笔记再导出', { type: 'warn' });
+      return;
+    }
+
+    // Markdown：后端按库里的正文导出（图片复制到同级 .assets/）
+    if (format === 'md') {
+      try {
+        showResultToast(await window.pywebview.api.export_markdown(
+          state.activeNoteId, (note && note.title) || ''), 'Markdown 已导出');
+      } catch (err) {
+        showToast('导出失败：' + (err.message || err), { type: 'error' });
+      }
       return;
     }
 
@@ -1153,7 +1092,9 @@ $$('.export-option').forEach(btn => {
     }
 
     try {
-      await window.pywebview.api.export_note(title, htmlContent, format);
+      // 以前不看返回值：导出了不提示，Word 文件正在 Word 里开着、写不进去也不提示
+      showResultToast(await window.pywebview.api.export_note(title, htmlContent, format),
+        (EXPORT_NAMES[format] || format) + '已导出');
     } catch (err) {
       console.error('导出失败:', err);
       showToast('导出失败：' + (err.message || err), { type: 'error' });
