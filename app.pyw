@@ -870,7 +870,8 @@ class AppApi:
             return {'ok': True, 'count': 0}
         import tkinter.filedialog
         from datetime import datetime
-        stem = _backend_mod.safe_filename('我的记事本-%s' % (label or ('笔记本' if notebook_id else '标签')))
+        # 导出标签时页面会带上当前笔记本（跟着列表），所以先看 tag_id
+        stem = _backend_mod.safe_filename('我的记事本-%s' % (label or ('标签' if tag_id else '笔记本')))
         save_path = tkinter.filedialog.asksaveasfilename(
             title="导出所选范围",
             defaultextension='.zip',

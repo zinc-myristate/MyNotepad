@@ -7,6 +7,7 @@ import { renderNoteList } from './03-notes.js';
 import { analyzeImageColor, applyAdaptiveUI, applyBackgroundTuning, buildCoverPanel,
   refreshAdaptiveUI, updateChromeVeil } from './08-appearance2.js';
 import { debounce } from '../shared/utils.js';
+import { bindMenu } from '../shared/menu.js';
 
 export async function loadSettings(retryCount = 0) {
   try {
@@ -268,6 +269,10 @@ dom.btnTheme.addEventListener('click', () => {
   updateThemePanelUI();
   openPanel(dom.themePanel);
 });
+
+// 侧栏的「外观」：主题、背景、应用图标收在一个菜单里（2026-11-18 界面一轮：原来是底部 9 个按钮里的 3 个）。
+// 三个按钮的 id 和点击处理都没变，只是搬进了 #appearance-menu；命令面板「切换主题」照样点 #btn-theme。
+bindMenu($('#btn-appearance'), $('#appearance-menu'), { label: '外观' });
 
 function updateThemePanelUI() {
   markActiveThemeOption(state.currentTheme);

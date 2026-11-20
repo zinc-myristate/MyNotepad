@@ -163,6 +163,24 @@ class TestScopeExport:
         assert [r[0] for r in c.execute("SELECT title FROM notes").fetchall()] == ['C1']
         c.close()
 
+    def test_export_by_tag_within_a_notebook(self, api, seeded, tmp_path):
+        """「导出当前标签」跟着列表（2026-11-20）：页面带上当前笔记本时，只导出这一本里带这个标签的，
+        和列表用的 notes_by_tag 是同一批；包里的说明也写明了"只含所选笔记本里的\""""
+        other = api.notes_create()['id']
+        api.notes_update(other, {'title': 'B2', 'content': delta('乙组重点'), 'notebook_id': seeded['nb2']})
+        api.note_tags_set(other, [seeded['tag']])
+        out = str(tmp_path / 'tag-in-nb.zip')
+        assert api.export_notes_zip(out, notebook_id=seeded['nb1'], tag_id=seeded['tag']) == {'ok': True, 'count': 1}
+        _, db = self._zip_db(out, tmp_path)
+        c = sqlite3.connect('file:%s?mode=ro' % db, uri=True)
+        assert [r[0] for r in c.execute("SELECT title FROM notes").fetchall()] == ['C1']
+        c.close()
+        with zipfile.ZipFile(out) as zf:
+            assert '按标签，只含所选笔记本里的' in zf.read('导出说明.txt').decode('utf-8')
+        assert [n['id'] for n in api.notes_by_tag(seeded['tag'], seeded['nb1'])] == [seeded['c']]
+        assert api.scope_note_count(notebook_id=seeded['nb1'], tag_id=seeded['tag']) == 1
+        assert api.scope_note_count(tag_id=seeded['tag']) == 2
+
     def test_exported_db_is_a_usable_library(self, api, seeded, tmp_path):
         """核心：导出的 notes.db 必须能当库打开（表结构/FTS 都在），而不是残缺文件"""
         out = str(tmp_path / 'nb.zip')

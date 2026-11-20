@@ -998,14 +998,6 @@ body.adaptive-bg .panel-dialog {
 }
 .prop-chip b { color: var(--text-muted); font-weight: 600; }
 .prop-chip:hover { box-shadow: 0 0 0 1px var(--accent-text); }
-.prop-hint { font-size: var(--font-size-xs, 12px); color: var(--text-muted); }
-.prop-add {
-  border: 1px solid var(--border-light, rgba(0, 0, 0, 0.1)); background: transparent;
-  color: var(--text-muted); cursor: pointer; border-radius: 10px; padding: 1px 9px;
-  font-size: var(--font-size-xs, 12px);
-}
-.prop-add:hover { color: var(--accent-text); border-color: var(--accent-text); }
-.prop-add.prop-convert { color: var(--accent-text); border-color: var(--accent-text); }
 /* 面板绝对定位盖在编辑区上：属性行本身只占一行，展开不该把编辑器挤矮 */
 .prop-editor {
   position: absolute; top: 100%; left: 40px; right: 40px; z-index: 45;
@@ -1033,7 +1025,7 @@ body.adaptive-bg .panel-dialog {
 }
 .prop-del:hover { color: var(--danger, #C0392B); border-color: var(--danger, #C0392B); }
 .prop-editor-foot { display: flex; align-items: center; gap: 10px; }
-.prop-tip { flex: 1; font-size: 11px; color: var(--text-muted); }
+.prop-tip { flex: 1; font-size: 12px; color: var(--text-muted); }
 .prop-tip code { background: var(--glass-bg-strong, rgba(0, 0, 0, 0.05)); padding: 1px 4px; border-radius: 4px; }
 /* 属性面板底部按钮走既有的 .btn-secondary（紧凑尺寸见上面的统一覆盖） */
 
@@ -1059,7 +1051,7 @@ body.adaptive-bg .panel-dialog {
 }
 .link-count {
   background: var(--glass-bg-strong, rgba(0, 0, 0, 0.06)); border-radius: 8px;
-  padding: 0 6px; font-size: 11px;
+  padding: 0 6px; font-size: 12px;
 }
 .link-item {
   padding: 4px 8px; border-radius: 6px; cursor: pointer; font-size: 13px; color: var(--text-primary);
@@ -1068,9 +1060,9 @@ body.adaptive-bg .panel-dialog {
 .link-item[data-link-missing] { color: var(--danger, #C0392B); }
 .link-heading { color: var(--text-muted); font-size: 12px; }
 .link-alias { color: var(--text-muted); font-size: 12px; }
-.link-meta { float: right; color: var(--text-muted); font-size: 11px; }
+.link-meta { float: right; color: var(--text-muted); font-size: 12px; }
 .link-context {
-  margin-top: 2px; color: var(--text-muted); font-size: 11px;
+  margin-top: 2px; color: var(--text-muted); font-size: 12px;
   overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
 }
 .link-empty { padding: 8px 10px; color: var(--text-muted); font-size: var(--font-size-xs, 12px); }
@@ -1158,8 +1150,8 @@ body.no-active-note .outline-drawer { display: none !important; }
   font-size: var(--font-size-xs, 12px); outline: none;
 }
 .find-input:focus { border-color: var(--accent-text); }
-.find-count { min-width: 44px; text-align: center; color: var(--text-muted); font-size: 11px; }
-.find-case-label { display: flex; align-items: center; gap: 2px; font-size: 11px; color: var(--text-muted); }
+.find-count { min-width: 44px; text-align: center; color: var(--text-muted); font-size: 12px; }
+.find-case-label { display: flex; align-items: center; gap: 2px; font-size: 12px; color: var(--text-muted); }
 /* 紧凑容器里的标准按钮：尺寸缩小，外观仍是既有那两种（.btn-close-panel / .btn-secondary） */
 .find-bar .btn-close-panel,
 .outline-head .btn-close-panel,
@@ -1216,7 +1208,7 @@ body.no-active-note .outline-drawer { display: none !important; }
 }
 .capture-menu.hidden { display: none; }
 .capture-menu-head {
-  padding: 5px 8px 3px; font-size: 11px; letter-spacing: 0.04em;
+  padding: 5px 8px 3px; font-size: 12px; letter-spacing: 0.04em;
   color: var(--text-muted); font-weight: 600;
 }
 .capture-menu-head-sub { border-top: 1px solid var(--border-light, rgba(0,0,0,0.08)); margin-top: 4px; }
@@ -1230,7 +1222,7 @@ body.no-active-note .outline-drawer { display: none !important; }
 .capture-item:hover { background: var(--btn-hover-bg, rgba(0,0,0,0.06)); }
 .capture-item svg { flex: 0 0 auto; color: var(--text-secondary); }
 .capture-label { display: flex; flex-direction: column; line-height: 1.35; }
-.capture-label em { font-style: normal; color: var(--text-muted); font-size: 11px; }
+.capture-label em { font-style: normal; color: var(--text-muted); font-size: 12px; }
 .capture-tpl-list { display: flex; flex-direction: column; gap: 1px; }
 .capture-tpl-item {
   display: flex; align-items: center; gap: 8px; width: 100%; text-align: left;
@@ -1239,7 +1231,7 @@ body.no-active-note .outline-drawer { display: none !important; }
   font-family: var(--font-sans); font-size: var(--font-size-xs, 12px);
 }
 .capture-tpl-item:hover { background: var(--btn-hover-bg, rgba(0,0,0,0.06)); }
-.capture-tpl-empty { padding: 6px 8px; color: var(--text-muted); font-size: 11px; }
+.capture-tpl-empty { padding: 6px 8px; color: var(--text-muted); font-size: 12px; }
 
 /* ====== 模板抽屉（第 10 轮）======
    与大纟/链接同规格（同样用 .outline-drawer 的骨架），只是宽一点、内部是
@@ -1278,24 +1270,24 @@ body.no-active-note .outline-drawer { display: none !important; }
   font-family: var(--font-mono, Consolas, monospace); font-size: 12px; line-height: 1.55;
 }
 .tpl-vars { display: flex; flex-wrap: wrap; align-items: center; gap: 4px; }
-.tpl-vars-label { font-size: 11px; color: var(--text-muted); margin-right: 2px; }
+.tpl-vars-label { font-size: 12px; color: var(--text-muted); margin-right: 2px; }
 .tpl-var {
   padding: 2px 7px; border-radius: 999px; cursor: pointer;
   border: 1px solid var(--border-light, rgba(0,0,0,0.12));
   background: transparent; color: var(--text-secondary);
-  font-family: var(--font-mono, Consolas, monospace); font-size: 11px;
+  font-family: var(--font-mono, Consolas, monospace); font-size: 12px;
 }
 .tpl-var:hover { background: var(--btn-hover-bg, rgba(0,0,0,0.06)); color: var(--text-primary); }
 .tpl-actions { display: flex; flex-wrap: wrap; align-items: center; gap: 6px; }
-.tpl-saved { font-size: 11px; color: var(--text-muted); }
-.tpl-preview-head { display: flex; align-items: center; gap: 6px; font-size: 11px; color: var(--text-muted); }
+.tpl-saved { font-size: 12px; color: var(--text-muted); }
+.tpl-preview-head { display: flex; align-items: center; gap: 6px; font-size: 12px; color: var(--text-muted); }
 .tpl-preview-hint { color: var(--text-muted); opacity: 0.8; }
 .tpl-preview {
   margin: 0; padding: 8px; min-height: 60px; max-height: 190px; overflow: auto;
   border-radius: 8px; white-space: pre-wrap; word-break: break-word;
   background: var(--glass-bg-strong, rgba(0,0,0,0.05));
   color: var(--text-secondary);
-  font-family: var(--font-mono, Consolas, monospace); font-size: 11.5px; line-height: 1.6;
+  font-family: var(--font-mono, Consolas, monospace); font-size: 12px; line-height: 1.6;
 }
 
 /* ====== 识别文字（OCR）面板（第 11 轮）======
@@ -1315,7 +1307,7 @@ body.no-active-note .outline-drawer { display: none !important; }
   background: var(--input-bg, #fff); color: var(--text-primary);
   font-family: var(--font-sans); font-size: var(--font-size-xs, 12px);
 }
-.ocr-status { font-size: 11.5px; color: var(--text-muted); min-height: 16px; }
+.ocr-status { font-size: 12px; color: var(--text-muted); min-height: 16px; }
 .ocr-status.ok { color: var(--accent-dark, #5b6a4f); }
 .ocr-status.warn { color: #B8844A; }
 .ocr-status.error { color: var(--danger, #C0392B); }
@@ -1325,7 +1317,7 @@ body.no-active-note .outline-drawer { display: none !important; }
   background: var(--input-bg, #fff); color: var(--text-primary);
   font-family: var(--font-sans); font-size: 13.5px; line-height: 1.7;
 }
-.ocr-hint { margin-top: 6px; font-size: 11.5px; color: var(--text-muted); }
+.ocr-hint { margin-top: 6px; font-size: 12px; color: var(--text-muted); }
 .ocr-actions { display: flex; gap: 8px; margin-top: 12px; flex-wrap: wrap; }
 
 /* Quill 代码块：Snow 主题自带深色底（#23241f），在纸质笔记本里太突兀，
@@ -1344,7 +1336,7 @@ body.no-active-note .outline-drawer { display: none !important; }
   color: var(--text-muted);
   border: 1px solid var(--border-light, rgba(0,0,0,0.12));
   border-radius: 4px;
-  font-size: 11px;
+  font-size: 12px;
 }
 
 /* ====== 代码块语法高亮（highlight.js 的类名 → 主题变量）======
@@ -1391,7 +1383,7 @@ body[data-theme="dark"] {
 .ss-item:hover { background: var(--glass-bg-strong, rgba(0,0,0,0.06)); }
 .ss-item.active { background: var(--accent-light); color: var(--accent-text); font-weight: 600; }
 .ss-name { flex: 1; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-.ss-count { color: var(--text-muted); font-size: 11px; }
+.ss-count { color: var(--text-muted); font-size: 12px; }
 .ss-more {
   border: 0; background: transparent; color: var(--text-muted); cursor: pointer;
   padding: 0 2px; opacity: 0; transition: opacity var(--transition, 0.2s);
@@ -1410,7 +1402,7 @@ body[data-theme="dark"] {
 }
 .todo-tab:hover { border-color: var(--accent-text); color: var(--accent-text); }
 .todo-tab.active { background: var(--accent-solid, var(--accent-text)); color: var(--on-accent, #fff); border-color: transparent; }
-.todo-tab-count { opacity: 0.75; font-size: 10px; margin-left: 3px; }
+.todo-tab-count { opacity: 0.75; font-size: 12px; margin-left: 3px; }
 .todo-list { max-height: 52vh; overflow: auto; display: flex; flex-direction: column; gap: 2px; }
 .todo-item { display: flex; align-items: flex-start; gap: 10px; padding: 7px 8px; border-radius: 8px; }
 .todo-item:hover { background: var(--glass-bg-strong, rgba(0,0,0,0.05)); }
@@ -1433,14 +1425,14 @@ body[data-theme="dark"] {
 .todo-empty { padding: 24px 8px; text-align: center; color: var(--text-muted); }
 .todo-hint { margin: 12px 0 0; font-size: var(--font-size-xs, 12px); color: var(--text-muted); }
 .todo-hint code { background: var(--glass-bg-strong, rgba(0,0,0,0.05)); padding: 1px 5px; border-radius: 4px; }
-.tag-manager-count { color: var(--text-muted); font-size: 11px; min-width: 18px; text-align: right; }
+.tag-manager-count { color: var(--text-muted); font-size: 12px; min-width: 18px; text-align: right; }
 .tag-depth-1 { margin-left: 10px; }
 .tag-depth-2 { margin-left: 20px; }
 .tag-depth-3 { margin-left: 30px; }
 
 /* ====== 命令面板（Ctrl+P 的 `>` 模式） ====== */
 .quick-switch-item .qs-kind {
-  font-size: 10px; padding: 1px 6px; border-radius: 8px; margin-right: 8px;
+  font-size: 12px; padding: 1px 6px; border-radius: 8px; margin-right: 8px;
   background: var(--accent-light); color: var(--accent-text);
 }
 
@@ -2645,14 +2637,6 @@ body.adaptive-bg {
   cursor: pointer; font-size: 14px; opacity: 0.7; line-height: 1;
 }
 .tag-chip .tag-remove:hover { opacity: 1; }
-.btn-add-tag {
-  padding: 3px 12px; border: 1px dashed var(--border-color);
-  border-radius: 20px; background: transparent;
-  font-size: var(--font-size-xs); font-family: var(--font-sans);
-  color: var(--text-muted); cursor: pointer;
-  transition: all var(--transition-fast);
-}
-.btn-add-tag:hover { border-color: var(--accent); color: var(--accent-text); }
 
 /* 标签筛选 */
 .tag-filter {
@@ -2789,7 +2773,7 @@ body.adaptive-bg {
   transition: all 0.15s;
 }
 .math-sym-btn:hover { background: var(--accent-solid); color: var(--on-accent); border-color: var(--accent-solid); }
-.math-sym-btn.chem { font-family: var(--font-sans); font-size: 11px; width: auto; padding: 0 8px; }
+.math-sym-btn.chem { font-family: var(--font-sans); font-size: 12px; width: auto; padding: 0 8px; }
 .math-preview {
   padding: 16px; background: var(--bg-secondary);
   border-radius: var(--radius-sm); min-height: 50px;
@@ -2889,7 +2873,7 @@ body.adaptive-bg {
 .cal-day.today.has-note::after { background: var(--on-accent); }
 .cal-day-note-count {
   position: absolute; top: 1px; right: 3px;
-  font-size: 9px; font-weight: 700; color: var(--accent-text);
+  font-size: 12px; font-weight: 700; color: var(--accent-text);
   min-width: 16px; text-align: right;
 }
 .cal-day.today .cal-day-note-count { color: #fff; }
@@ -3176,7 +3160,7 @@ body.adaptive-bg {
   width:8px; height:8px; border-radius: 50%; flex-shrink: 0;
 }
 .notebook-count-badge {
-  font-size: 10px; color: var(--text-muted); font-weight: 400;
+  font-size: 12px; color: var(--text-muted); font-weight: 400;
 }
 .notebook-list-dropdown {
   position: absolute; top:100%; left:0; right:0;
@@ -3377,7 +3361,7 @@ body.adaptive-bg {
   color: var(--accent-text); font-size: 12px;
 }
 .reminder-item-note {
-  font-size: 11px; color: var(--text-muted);
+  font-size: 12px; color: var(--text-muted);
   max-width: 120px; overflow: hidden; text-overflow: ellipsis;
   white-space: nowrap; cursor: pointer;
 }
@@ -3521,3 +3505,23 @@ body.adaptive-bg {
   color: var(--text-primary); text-align: left; border-radius: var(--radius-sm);
 }
 .checklist-context-menu button:hover { background: var(--accent-soft); color: var(--accent-text); }
+
+/* ====== 弹出菜单（侧栏「外观」、Markdown 工具栏「插入」）======
+   开合、键盘、点别处收起都在 js/shared/menu.js。菜单挂在 <body> 下：
+   图片背景下侧栏和工具栏带 backdrop-filter，挂在它们里面 position: fixed 会按它们定位。 */
+.app-menu {
+  position: fixed; z-index: 10001; min-width: 150px;
+  display: flex; flex-direction: column; gap: 1px; padding: 5px;
+  background: var(--bg-primary); border: 1px solid var(--border-color);
+  border-radius: var(--radius-md); box-shadow: var(--shadow-lg);
+}
+.app-menu.hidden { display: none; }
+.app-menu-item {
+  display: flex; align-items: center; gap: 8px; width: 100%; padding: 7px 12px;
+  border: 0; border-radius: var(--radius-sm); background: transparent; cursor: pointer;
+  color: var(--text-primary); font-size: var(--font-size-sm); font-family: var(--font-sans); text-align: left;
+}
+.app-menu-item svg { flex-shrink: 0; color: var(--text-secondary); }
+.app-menu-item:hover, .app-menu-item:focus-visible { background: var(--accent-soft); color: var(--accent-text); }
+.app-menu-item:hover svg, .app-menu-item:focus-visible svg { color: currentColor; }
+.app-menu-item:focus-visible { outline-offset: -2px; }

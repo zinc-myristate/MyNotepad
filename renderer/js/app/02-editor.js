@@ -889,6 +889,23 @@ $('#btn-export').addEventListener('click', () => {
   openPanel(exportPanel);
 });
 
+/** 「导出当前标签」导出哪些：跟着列表（2026-11-20 用户定的）。列表在标签筛选下是"这个标签 × 当前笔记本"，
+ *  选的是「全部笔记」时就是这个标签的全部笔记。以前不管选了哪一本都导出这个标签的全部笔记，列表看到 5 篇、导出来 12 篇。
+ *  搜索框不算：它是临时的筛选，要导出搜出来的那几篇用表格视图的「导出 CSV」。 */
+function tagExportScope() {
+  const tagId = getCurrentTagFilter();
+  if (!tagId) return null;
+  const notebookId = getCurrentNotebookId() || null;
+  const tagName = getCurrentTagName() || '所选标签';
+  const notebookName = notebookId ? (getCurrentNotebookName() || '当前笔记本') : '';
+  return {
+    tagId, notebookId,
+    text: notebookId ? '「' + notebookName + '」里标签为「' + tagName + '」的笔记'
+      : '所有笔记本里标签为「' + tagName + '」的笔记',
+    label: notebookId ? tagName + '（' + notebookName + '）' : tagName,
+  };
+}
+
 /** 按范围导出用的是「当前筛选」（所见即所得）：没在筛选就把按钮置灰并说明原因，
  *  而不是让用户点开一个保存对话框才发现导错了范围。 */
 function refreshScopeExportLabels() {
@@ -899,7 +916,6 @@ function refreshScopeExportLabels() {
   const nbId = getCurrentNotebookId();
   const tagId = getCurrentTagFilter();
   const nbName = getCurrentNotebookName();
-  const tagName = getCurrentTagName();
 
   [nbBtn, tagBtn].forEach(b => { if (b) b.classList.remove('is-disabled'); });
 
@@ -908,19 +924,18 @@ function refreshScopeExportLabels() {
     nbBtn.classList.toggle('is-disabled', !ok);
     nbBtn.title = ok ? ('导出笔记本「' + (nbName || '当前笔记本') + '」') : '先在侧边栏选择一个笔记本';
     if (nbDesc) {
+      // 同时按标签筛选时，列表只是这一本的一部分；这个按钮导出的是整本，写明了免得以为也跟着标签
       nbDesc.textContent = ok
-        ? ('当前：' + (nbName || '所选笔记本') + '（含附件）')
+        ? ('当前：' + (nbName || '所选笔记本') + (tagId ? ' 整本' : '') + '（含附件）')
         : '先在侧边栏选择一个笔记本';
     }
   }
   if (tagBtn) {
-    const ok = !!tagId;
-    tagBtn.classList.toggle('is-disabled', !ok);
-    tagBtn.title = ok ? ('导出标签「' + (tagName || '当前标签') + '」') : '先按标签筛选';
+    const scope = tagExportScope();
+    tagBtn.classList.toggle('is-disabled', !scope);
+    tagBtn.title = scope ? ('导出' + scope.text) : '先按标签筛选';
     if (tagDesc) {
-      tagDesc.textContent = ok
-        ? ('当前：' + (tagName || '所选标签') + '（含附件）')
-        : '先按标签筛选';
+      tagDesc.textContent = scope ? ('当前：' + scope.text + '（含附件）') : '先按标签筛选';
     }
   }
 }
@@ -1015,19 +1030,20 @@ $$('.export-option').forEach(btn => {
     }
 
     // 按当前筛选范围导出（笔记本 / 标签）：没在筛选就提示，不让用户导错范围。
-    // 范围里一篇都没有时桥接不弹保存对话框，直接回 count 0（篇数由后端数：标签导出的是这个标签的全部笔记，
-    // 不只是列表里那些"标签 × 当前笔记本"）
+    // 导出标签跟着列表：带上当前笔记本（见 tagExportScope）；导出笔记本是整本，不管标签筛选。
+    // 范围里一篇都没有时桥接不弹保存对话框，直接回 count 0（篇数由后端数，和导出用同一个条件）
     if (format === 'zip-notebook' || format === 'zip-tag') {
       const byTag = format === 'zip-tag';
-      const scopeId = byTag ? getCurrentTagFilter() : getCurrentNotebookId();
-      const scopeName = byTag ? getCurrentTagName() : getCurrentNotebookName();
-      if (!scopeId) {
+      const tagScope = byTag ? tagExportScope() : null;
+      const notebookId = getCurrentNotebookId();
+      if (byTag ? !tagScope : !notebookId) {
         showToast(byTag ? '请先按标签筛选' : '请先在侧边栏选择笔记本', { type: 'warn' });
         return;
       }
       try {
-        const r = await window.pywebview.api.export_scope(
-          byTag ? null : scopeId, byTag ? scopeId : null, scopeName);
+        const r = byTag
+          ? await window.pywebview.api.export_scope(tagScope.notebookId, tagScope.tagId, tagScope.label)
+          : await window.pywebview.api.export_scope(notebookId, null, getCurrentNotebookName());
         if (r && r.ok && r.count === 0) showToast('这个范围里还没有笔记', { type: 'warn' });
         else showResultToast(r, '已导出 ' + (r && r.count) + ' 篇笔记');
       } catch (err) {

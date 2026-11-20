@@ -1,6 +1,6 @@
 // ====== LaTeX 数学公式 ======
 // ====== ESM 依赖（原先靠全局作用域与加载顺序隐式依赖，现显式声明）======
-import { $, $$, closePanel, dom, hideEditorUI, openPanel, showInfoDialog, showToast, state } from './01-core.js';
+import { $, $$, closePanel, dom, hideEditorUI, isPanelOpen, openPanel, showInfoDialog, showToast, state } from './01-core.js';
 import { notesStore } from './01b-store.js';
 import { debouncedSave, flushSave, loadNotes, renderNoteList, selectNote } from './03-notes.js';
 
@@ -265,7 +265,7 @@ export function initAutoLock() {
     // 密码面板开着时不锁：用户正在输密码，锁掉只会让流程错乱
     const pwdOpen = ['password-panel', 'password-verify-panel'].some(id => {
       const el = document.getElementById(id);
-      return el && el.style.display === 'flex';
+      return el && isPanelOpen(el);
     });
     if (pwdOpen) { _markActivity(); return; }
     if (Date.now() - _lastActivity >= _autoLockMinutes * 60 * 1000) _lockAllUnlocked();

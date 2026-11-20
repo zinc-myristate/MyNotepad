@@ -108,7 +108,8 @@ export async function loadTagBar() {
     });
     tagList.appendChild(chip);
   });
-  $('#tag-bar').classList.remove('hidden');
+  // 没有标签就不占这一行：「+ 标签」在标题行里（2026-11-18 界面一轮）
+  $('#tag-bar').classList.toggle('hidden', tags.length === 0);
 }
 
 /** 把「当前标签筛选 + 当前笔记本范围」重新套到列表上（切标签 / 换笔记本 / 清筛选共用）。

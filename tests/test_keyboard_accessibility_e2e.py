@@ -26,10 +26,14 @@ def test_modal_focus_dismissal_and_keyboard_context(tmp_path, monkeypatch):
         assert wait_for_js(window, 'Boolean(window.__app && !document.querySelector(".note-skeleton"))')
         window.evaluate_js("import('./js/app/01-core.js').then(m => window.core = m)")
         assert wait_for_js(window, 'Boolean(window.core)')
+        # 主题在侧栏「外观」菜单里：选了菜单项，菜单先收起、焦点回到「外观」，面板记下的打开者就是它
         window.evaluate_js("window.key = (key, opts={}) => document.activeElement.dispatchEvent("
                            "new KeyboardEvent('keydown', {key, bubbles:true, cancelable:true, ...opts}));"
-                           "document.getElementById('btn-theme').focus();"
-                           "document.getElementById('btn-theme').click();")
+                           "document.getElementById('btn-appearance').focus();"
+                           "document.getElementById('btn-appearance').click();")
+        assert window.evaluate_js('document.activeElement.id') == 'btn-theme'
+        window.evaluate_js('document.activeElement.click()')
+        assert window.evaluate_js("document.getElementById('appearance-menu').classList.contains('hidden')")
         assert window.evaluate_js("document.getElementById('theme-panel').contains(document.activeElement)")
         assert window.evaluate_js("document.getElementById('app').inert")
         window.evaluate_js("document.querySelector('.theme-option:last-child').focus(); key('Tab')")
@@ -45,7 +49,7 @@ def test_modal_focus_dismissal_and_keyboard_context(tmp_path, monkeypatch):
         window.evaluate_js("core.openPanel(document.getElementById('background-panel')); key('Escape')")
         assert window.evaluate_js("document.activeElement.matches('.theme-option:last-child')")
         window.evaluate_js("key('Escape')")
-        assert window.evaluate_js('document.activeElement.id') == 'btn-theme'
+        assert window.evaluate_js('document.activeElement.id') == 'btn-appearance'
         assert not window.evaluate_js("document.getElementById('app').inert")
         # Closing with X must settle a pending confirmation, not leave its caller hanging.
         window.evaluate_js("window.answer = 'pending'; core.showConfirmAsync({danger:true}).then(v=>answer=v)")
@@ -58,7 +62,7 @@ def test_modal_focus_dismissal_and_keyboard_context(tmp_path, monkeypatch):
         assert window.evaluate_js('window.answer') == 'pending'
         window.evaluate_js("key('Escape')")
         assert wait_for_js(window, 'window.answer === null')
-        assert window.evaluate_js('document.activeElement.id') == 'btn-theme'
+        assert window.evaluate_js('document.activeElement.id') == 'btn-appearance'
         # Quickly opening/closing command search must not steal focus via a delayed timer.
         window.evaluate_js("document.getElementById('btn-command-palette').focus();"
                            "document.getElementById('btn-command-palette').click()")
@@ -259,7 +263,9 @@ def test_shortcuts_stay_behind_a_modal_even_when_focus_fell_to_body(tmp_path, mo
         assert window.evaluate_js("document.getElementById('quick-switch-panel').style.display") == 'none'
         assert not window.evaluate_js("document.body.classList.contains('focus-mode')")
         window.evaluate_js("key('Escape')")
-        assert window.evaluate_js("document.getElementById('theme-panel').style.display") == 'none'
+        # 关闭时面板先出栈、再淡出一下才藏起来：栈立刻空，display 等一等
+        assert not window.evaluate_js('core.hasOpenPanel()')
+        assert wait_for_js(window, "document.getElementById('theme-panel').style.display", 'none') == 'none'
         # Ctrl+P 在命令面板里仍然是开关；从源码编辑器进去，关掉要回到源码编辑器
         window.evaluate_js("document.querySelector('.CodeMirror').CodeMirror.focus()")
         assert window.evaluate_js("Boolean(document.activeElement.closest('.CodeMirror'))")
@@ -432,7 +438,7 @@ def test_short_window_keeps_every_sidebar_control_reachable_and_named(tmp_path, 
     assert 'error' not in result, result
     assert result['bad'] == [], result['bad']
     tools = json.loads(result['tools'])
-    assert len(tools) == 9, tools
+    assert len(tools) == 7, tools          # 主题、背景、图标收进了「外观」菜单（2026-11-18）
     assert all(t == ['BUTTON', 0, 'sidebar-footer', True] for t in tools), tools
     assert result['chip'], '聚焦窄条外的标签时，它要滚进可视范围'
     assert result['end'] and result['home'], result

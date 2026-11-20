@@ -6,7 +6,7 @@
 // 为什么单独一个模块：它与列表、编辑器、密码流程都只是"读"的关系，
 // 放在 05-shell（快捷键）里会让那个文件同时管标签栏和一堆面板逻辑。
 
-import { $, state, showToast, openPanel, closePanel, hasOpenPanel } from './01-core.js';
+import { $, state, showToast, openPanel, closePanel, hasOpenPanel, isPanelOpen } from './01-core.js';
 import { revealAndSelectNote } from './09-boot.js';
 import { escapeHtml } from '../shared/utils.js';
 import { listCommands, runCommand } from './19-command-panel.js';
@@ -217,7 +217,7 @@ document.addEventListener('keydown', (e) => {
   if (e.ctrlKey && !e.shiftKey && !e.altKey && (e.key === 'p' || e.key === 'P')) {
     e.preventDefault();
     const panel = $('#quick-switch-panel');
-    if (panel && panel.style.display === 'flex') closeQuickSwitch();
+    if (panel && isPanelOpen(panel)) closeQuickSwitch();
     else if (!hasOpenPanel()) openQuickSwitch();
   }
 });

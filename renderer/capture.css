@@ -51,7 +51,7 @@ body.ov { cursor: crosshair; }
   position: absolute; left: -1px; top: -24px;
   padding: 2px 7px; border-radius: 5px;
   background: rgba(0, 0, 0, 0.72); color: #fff;
-  font-size: 11.5px; font-variant-numeric: tabular-nums;
+  font-size: 12px; font-variant-numeric: tabular-nums;
   white-space: nowrap;
 }
 .ov-size.inside { top: 4px; left: 4px; }
@@ -84,7 +84,7 @@ body.ov { cursor: crosshair; }
 }
 .ov-mag-hex {
   font-family: Consolas, "Courier New", monospace;
-  font-size: 11px; color: #fff; letter-spacing: 0.04em;
+  font-size: 12px; color: #fff; letter-spacing: 0.04em;
 }
 
 .ov-hint {
@@ -121,7 +121,7 @@ body.ov { cursor: crosshair; }
 .ov-btn-ghost:hover { background: var(--cap-btn); color: var(--cap-fg); }
 .ov-btn[disabled] { opacity: 0.45; cursor: default; }
 .ov-bar-msg {
-  flex-basis: 100%; padding: 3px 4px 1px; color: #F0A0A0; font-size: 11.5px;
+  flex-basis: 100%; padding: 3px 4px 1px; color: #F0A0A0; font-size: 12px;
 }
 .ov-bar-msg.hidden { display: none; }
 
@@ -140,7 +140,7 @@ body.mini {
   cursor: default;
 }
 .mini-title { font-size: 12.5px; font-weight: 600; }
-.mini-hint { flex: 1; color: var(--cap-muted); font-size: 11px; }
+.mini-hint { flex: 1; color: var(--cap-muted); font-size: 12px; }
 .mini-close {
   display: inline-flex; align-items: center; justify-content: center;
   width: 24px; height: 24px; padding: 0; border: none; border-radius: 6px;
@@ -159,7 +159,7 @@ body.mini {
   display: flex; align-items: center; gap: 8px;
   padding: 6px 10px 8px; border-top: 1px solid var(--cap-line);
 }
-.mini-status { flex: 1; color: var(--cap-muted); font-size: 11.5px; }
+.mini-status { flex: 1; color: var(--cap-muted); font-size: 12px; }
 .mini-status.ok { color: #A8C08A; }
 .mini-save {
   display: inline-flex; align-items: center; gap: 6px;

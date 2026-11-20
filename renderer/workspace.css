@@ -63,12 +63,14 @@
 .btn-new-note kbd { margin-left: auto; opacity: .85; }
 .btn-new-note:hover { transform: translateY(-1px); box-shadow: 0 3px 7px rgba(25, 45, 32, .12); }
 .btn-new-note:active { transform: translateY(0) scale(.99); }
-kbd { font: 10px var(--font-sans); white-space: nowrap; letter-spacing: 0; }
+kbd { font: 12px var(--font-sans); white-space: nowrap; letter-spacing: 0; }
+/* 单行的小标签：字从 10–11px 提到 12px 时行高收到 1.4，这几行的高度和原来差不多。
+   不收的话侧栏多出 6px，1100×792 有标签和视图时列表就放不下 3 行（test_note_list_gets_three_rows…） */
 .note-list-heading, .sidebar-tools-heading {
   display: flex; align-items: center; justify-content: space-between;
-  padding: 4px 18px 8px; color: var(--text-muted); font-size: 11px; font-weight: 600;
+  padding: 4px 18px 8px; color: var(--text-muted); font-size: 12px; font-weight: 600; line-height: 1.4;
 }
-.note-list-heading > :last-child { font-weight: 400; font-size: 10px; }
+.note-list-heading > :last-child { font-weight: 400; font-size: 12px; }
 .note-list { min-height: 0; padding: 0 10px; }
 .note-item {
   /* No margins: virtual scrolling measures the border box as the row stride. */
@@ -91,8 +93,8 @@ kbd { font: 10px var(--font-sans); white-space: nowrap; letter-spacing: 0; }
 .note-item.selected { box-shadow: inset 3px 0 var(--accent-solid); border-color: var(--accent-solid); }
 .note-item-title { font-size: 13px; line-height: 1.6; font-weight: 550; }
 .note-item-meta { padding-left: 0; margin-top: 5px; gap: 8px; }
-.note-item-time { color: var(--text-muted); font-size: 10px; flex-shrink: 0; }
-.note-item-preview { font-size: 11px; }
+.note-item-time { color: var(--text-muted); font-size: 12px; flex-shrink: 0; }
+.note-item-preview { font-size: 12px; }
 .note-cover { width: 32px; height: 36px; border-radius: 6px; font-size: 15px; }
 .note-item-row-cover { gap: 10px; position: relative; }
 /* Hover actions float over the lower line so long titles never jump sideways. */
@@ -126,16 +128,17 @@ kbd { font: 10px var(--font-sans); white-space: nowrap; letter-spacing: 0; }
 .sidebar-tools-heading { padding-top: 12px; border-top: 1px solid var(--border-light); }
 .sidebar-footer { border-top: 0; padding: 0 12px 8px; gap: 3px; }
 .btn-sidebar-footer {
+  flex: 0 0 calc((100% - 6px) / 3);
   min-height: 32px; padding: 6px 4px; border-color: transparent;
-  font-size: 11px; transition: background var(--workspace-fast), color var(--workspace-fast);
+  font-size: 12px; transition: background var(--workspace-fast), color var(--workspace-fast);
 }
 .btn-sidebar-footer:hover { border-color: transparent; }
 .workspace-local {
   display: flex; align-items: center; gap: 5px; padding: 10px 14px;
-  border-top: 1px solid var(--border-light); font-size: 10px; color: var(--text-muted);
+  border-top: 1px solid var(--border-light); font-size: 12px; line-height: 1.4; color: var(--text-muted);
 }
 .workspace-local > span { width: 5px; height: 5px; border-radius: 50%; background: var(--accent-text); }
-.workspace-local kbd { margin-left: auto; font-size: 9px; }
+.workspace-local kbd { margin-left: auto; font-size: 12px; }
 
 /* Workspace chrome lives outside the editor grid. */
 .editor-area { min-width: 0; display: flex; flex-direction: column; }
@@ -151,7 +154,7 @@ kbd { font: 10px var(--font-sans); white-space: nowrap; letter-spacing: 0; }
 }
 .workspace-breadcrumb > svg { flex-shrink: 0; color: var(--text-muted); }
 #workspace-scope { overflow: hidden; white-space: nowrap; text-overflow: ellipsis; }
-.workspace-save { display: flex; align-items: center; gap: 6px; font-size: 11px; white-space: nowrap; }
+.workspace-save { display: flex; align-items: center; gap: 6px; font-size: 12px; white-space: nowrap; }
 .workspace-save .save-dot { width: 6px; height: 6px; background: var(--accent-text); }
 .workspace-save .save-dot.dirty { background: var(--accent); }
 .workspace-save .save-dot.error { background: var(--danger); }
@@ -168,7 +171,7 @@ kbd { font: 10px var(--font-sans); white-space: nowrap; letter-spacing: 0; }
 .md-view-switch { display: flex; flex-shrink: 0; padding: 3px; gap: 2px; border-radius: 7px; background: var(--bg-secondary); }
 .md-view-switch button {
   border: 0; background: transparent; color: var(--text-muted); border-radius: 5px;
-  padding: 4px 10px; font: 11px var(--font-sans); cursor: pointer;
+  padding: 4px 10px; font: 12px var(--font-sans); cursor: pointer;
   transition: background var(--workspace-fast), color var(--workspace-fast), box-shadow var(--workspace-fast);
 }
 .md-view-switch button[aria-pressed="true"] { background: var(--bg-editor); color: var(--text-primary); box-shadow: 0 1px 3px #00000012; }
@@ -202,7 +205,15 @@ body.no-active-note .workspace-save, body.no-active-note .md-view-switch { displ
   padding: 8px; border: 1px solid var(--border-color); border-radius: 10px;
   background: var(--bg-primary); box-shadow: var(--shadow-md);
 }
-.note-format-badge { font-size: 10px; padding: 2px 7px; border-color: var(--border-color); color: var(--text-muted); }
+/* 「+ 标签」「+ 属性」在标题行里，和「Aa」一样是安静的文字按钮。
+   原来各占一行，没有标签、没有属性时也照样占着；现在那两行只在有内容（或属性面板开着）时出现。 */
+.title-meta-btn {
+  flex-shrink: 0; padding: 4px 8px; border: 0; border-radius: 5px; background: transparent;
+  color: var(--text-muted); font: 13px var(--font-sans); white-space: nowrap; cursor: pointer;
+  transition: background var(--workspace-fast), color var(--workspace-fast);
+}
+.title-meta-btn:hover { background: var(--btn-hover-bg); color: var(--text-primary); }
+.note-format-badge { font-size: 12px; padding: 2px 7px; border-color: var(--border-color); color: var(--text-muted); }
 body.no-active-note #title-row, body.no-active-note #tag-bar, body.no-active-note #prop-block { display: none !important; }
 .md-toolbar, .ql-toolbar.ql-snow {
   padding: 7px 24px; border: 0; border-top: 1px solid var(--border-light);
@@ -211,16 +222,12 @@ body.no-active-note #title-row, body.no-active-note #tag-bar, body.no-active-not
 }
 .md-toolbar { gap: 3px; }
 body.adaptive-bg .md-toolbar { background: transparent; }
-.md-btn { padding: 5px 7px; border-radius: 5px; font-size: 11px; min-height: 28px; }
+.md-btn { padding: 5px 7px; border-radius: 5px; font-size: 12px; min-height: 28px; }
 .md-btn:hover { transform: none; }
+.md-menu-btn[aria-expanded="true"], #btn-appearance[aria-expanded="true"],
+.title-meta-btn[aria-expanded="true"] { background: var(--btn-hover-bg); color: var(--text-primary); }
 .md-editor { border-top: 0; }
 .md-source-pane { display: flex; flex-direction: column; min-height: 0; }
-.md-pane-heading {
-  display: flex; align-items: center; justify-content: space-between; flex-shrink: 0;
-  padding: 10px 24px 6px; color: var(--text-muted); font-size: 9px; letter-spacing: 1.2px;
-  user-select: none;
-}
-.md-pane-heading > :last-child { letter-spacing: 0; font-size: 10px; }
 .md-source-pane .CodeMirror { flex: 1; min-height: 0; height: auto; font-size: 13px; line-height: 1.9; }
 .md-source-pane .CodeMirror-scroll { padding: 10px 20px 32px; }
 .md-source-pane > textarea { flex: 1; min-height: 0; }
@@ -229,8 +236,8 @@ body.adaptive-bg .md-toolbar { background: transparent; }
 .md-preview h2 { font-size: 1.25em; margin-top: 1.6em; }
 .md-preview blockquote { border-left-color: var(--accent); background: var(--accent-soft); padding: 10px 16px; border-radius: 0 6px 6px 0; }
 .md-preview pre { border: 1px solid var(--border-light); padding: 16px; }
-.editor-status { min-height: 36px; padding: 6px 24px; gap: 8px; font-size: 11px; }
-.status-btn { border-color: transparent; font-size: 11px; }
+.editor-status { min-height: 36px; padding: 6px 24px; gap: 8px; font-size: 12px; }
+.status-btn { border-color: transparent; font-size: 12px; }
 body[data-md-view="source"] .md-preview-pane,
 body[data-md-view="preview"] .md-source-pane { display: none; }
 body[data-md-view="source"] .md-source-pane { border-right: 0; }
@@ -250,13 +257,13 @@ body.focus-mode .ql-editor { padding-left: max(38px, calc((100% - 800px) / 2)) !
   font-size: 32px; opacity: 1; filter: none; margin-bottom: 10px;
 }
 .no-note-icon svg { width: 30px; height: 30px; }
-.welcome-eyebrow { font-size: 11px; letter-spacing: 3px; color: var(--accent-text); }
+.welcome-eyebrow { font-size: 12px; letter-spacing: 3px; color: var(--accent-text); }
 .no-note-hint h2 { font-size: 28px; letter-spacing: -1px; font-weight: 600; color: var(--text-primary); }
 .no-note-hint p { font-size: 13px; line-height: 2; color: var(--text-secondary); }
 .welcome-actions { display: flex; gap: 10px; margin: 10px 0 4px; }
 .welcome-actions button { display: inline-flex; align-items: center; gap: 16px; padding: 10px 16px; border-radius: 7px; }
 .welcome-actions kbd { opacity: .8; }
-.welcome-footnote { font-size: 11px; color: var(--text-muted); }
+.welcome-footnote { font-size: 12px; color: var(--text-muted); }
 .empty-hint { flex: 0 0 auto; padding: 28px 16px; opacity: 1; font-size: 12px; }
 .sidebar:has(.empty-hint:not(.hidden)) .note-list { flex: 0; }
 
@@ -268,9 +275,18 @@ body.focus-mode .ql-editor { padding-left: max(38px, calc((100% - 800px) / 2)) !
 @keyframes workspace-fade-in { from { opacity: 0; } to { opacity: 1; } }
 .panel-overlay { animation: workspace-fade-in var(--workspace-fast) ease-out; }
 .panel-dialog { border: 1px solid var(--border-color); border-radius: 14px; animation: workspace-dialog-in var(--workspace-enter) var(--workspace-ease); }
+/* 关闭：面板已经出栈（键盘、焦点立刻还给工作区），画面上再淡出这一下才藏起来。
+   时长和 01-core.js 的 PANEL_CLOSE_MS 对应；减少动态效果时那边直接藏，不走这里。 */
+@keyframes workspace-fade-out { from { opacity: 1; } to { opacity: 0; } }
+@keyframes workspace-dialog-out {
+  from { opacity: 1; transform: translateY(0) scale(1); }
+  to { opacity: 0; transform: translateY(6px) scale(.985); }
+}
+.panel-overlay.is-closing { pointer-events: none; animation: workspace-fade-out 120ms ease-in forwards; }
+.panel-overlay.is-closing .panel-dialog { animation: workspace-dialog-out 120ms ease-in forwards; }
 .panel-header { padding: 18px 22px; }
 .panel-header h3 { font-size: 16px; font-weight: 600; }
-.capture-menu, .title-style-picker[open] .title-style-btns { animation: workspace-dialog-in 160ms var(--workspace-ease); }
+.capture-menu, .app-menu, .title-style-picker[open] .title-style-btns { animation: workspace-dialog-in 160ms var(--workspace-ease); }
 .no-note-hint:not(.hidden) { animation: workspace-fade-in 240ms ease-out; }
 .quick-switch-dialog { max-width: 620px; }
 .quick-switch-input { padding: 14px 16px; }
@@ -337,7 +353,7 @@ body.focus-mode .ql-editor { padding-left: max(38px, calc((100% - 800px) / 2)) !
   }
 }
 @media print {
-  .workspace-bar, .md-pane-heading, .title-style-picker, .no-note-hint { display: none !important; }
+  .workspace-bar, .title-style-picker, .title-meta-btn, .no-note-hint { display: none !important; }
   .editor-container { display: block !important; }
   .md-preview-pane { display: block !important; }
   .md-preview { max-width: none; }

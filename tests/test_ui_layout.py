@@ -488,6 +488,10 @@ def test_theme_panel_is_readable_and_marks_only_the_current_theme(tmp_path, monk
             window.evaluate_js(
                 "document.querySelector('.theme-option[data-theme=\"%s\"]').click()" % theme)
             wait_for_js(window, "document.body.getAttribute('data-theme')", expected=theme)
+            # 选了主题面板就关，关的时候淡出 120ms：等它真的藏起来再打开（和人手一样）。
+            # 淡出时就重开的话卡片一直在屏幕上，换主题的颜色过渡刚开始就被量到
+            wait_for_js(window, "getComputedStyle(document.getElementById('theme-panel')).display",
+                        expected='none')
             window.evaluate_js("document.getElementById('btn-theme').click()")
             wait_for_js(window, "getComputedStyle(document.getElementById('theme-panel')).display",
                         expected='flex')
@@ -721,12 +725,13 @@ def test_note_list_gets_three_rows_at_every_supported_height(tmp_path, monkeypat
         assert m['rowH'] == 76, '%s 行高变成 %s（虚拟列表只量一次行高，不能随窗口变）' % (size, m['rowH'])
         assert m['listH'] >= 3 * m['rowH'], '%s 列表只有 %dpx，放不下 3 行：%s' % (size, m['listH'], m)
         assert m['overflow'] == 0, '%s 侧栏被挤出窗口 %dpx' % (size, m['overflow'])
-        assert m['toolsOnTop'] == 9, '%s 只有 %d 个工具点得到' % (size, m['toolsOnTop'])
+        # 主题、背景、图标收进了「外观」菜单（2026-11-18）：底部 7 个，一行三个，还是三行
+        assert m['toolsOnTop'] == 7, '%s 只有 %d 个工具点得到' % (size, m['toolsOnTop'])
         # 分档看真实视口，不看名义窗口：CI 屏幕小，1200×800 的窗口会被夹小。
         # 默认窗口内高约 765，要留在最宽裕的一档：三行带字的工具、标题、状态行、副标题都在
         icons = m['inner'] <= 755
         assert m['toolRows'] == (1 if icons else 3), '%s 工具行数不对：%s' % (size, m)
-        assert m['labelsInline'] == (0 if icons else 9), '%s 文字应%s：%s' % (size, '收进气泡' if icons else '留在按钮里', m)
+        assert m['labelsInline'] == (0 if icons else 7), '%s 文字应%s：%s' % (size, '收进气泡' if icons else '留在按钮里', m)
         assert m['heading'] != icons and m['local'] != icons, m
         assert m['subtitle'] == m['listHeading'] == (m['inner'] > 660), m
 

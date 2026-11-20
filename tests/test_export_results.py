@@ -16,8 +16,11 @@ import ctypes
 import errno
 import json
 import os
+import re
+import sqlite3
 import sys
 import time
+import zipfile
 
 import pytest
 from conftest import load_app_partial, wait_for_js, wait_until
@@ -448,3 +451,89 @@ def test_the_table_view_lists_every_search_match(tmp_path, monkeypatch):
         assert len(list(csv.reader(f))) == 61                     # 表头 + 60 行
     assert r['empty_toast'] == '表格里没有笔记', r
     assert len(asked) == 1, '表格是空的时候不该弹保存对话框'
+
+
+# ---------------- 「导出当前标签」跟着列表（2026-11-20 用户定的） ----------------
+
+def test_the_tag_export_counts_what_the_list_shows(app_ns, monkeypatch):
+    """导出标签时页面带上当前笔记本：这一本里没有这个标签的笔记就不弹保存对话框，哪怕别的笔记本里有。
+    两个都给、没给名字时，默认文件名写"标签"（以前看 notebook_id，会写成"笔记本"）"""
+    import backend as _b
+    work = _b.api.notebooks_create('工作')['id']
+    life = _b.api.notebooks_create('生活')['id']
+    tag = _b.api.tags_create('重点')['id']
+    _b.api.note_tags_set(_note(_b.api, '工作里的重点', '正文\n', work), [tag])
+    _note(_b.api, '生活里的', '正文\n', life)
+    asked = []
+    monkeypatch.setattr('tkinter.filedialog.asksaveasfilename', lambda **kw: asked.append(kw['initialfile']) or '')
+    bridge = app_ns['AppApi'](_b.api)
+    assert bridge.export_scope(notebook_id=life, tag_id=tag, label='重点（生活）') == {'ok': True, 'count': 0}
+    assert asked == [], '这一本里没有这个标签的笔记，就不该弹保存对话框'
+    assert bridge.export_scope(notebook_id=work, tag_id=tag) is None
+    assert len(asked) == 1 and re.fullmatch(r'我的记事本-标签-\d{8}-\d{6}\.zip', asked[0]), asked
+
+
+@pytest.mark.e2e
+def test_the_tag_export_follows_the_list(tmp_path, monkeypatch):
+    """选了笔记本再按标签筛，「导出当前标签」导出的就是列表里那几篇（这个标签 × 这一本），
+    按钮下面也这么写；选「全部笔记」时是这个标签的全部笔记。以前不管选了哪一本都导出这个标签的全部笔记。
+    走真实界面和真实桥接，只换掉保存对话框，最后打开 zip 看里面是哪几篇"""
+    ns = load_app_partial(monkeypatch, tmp_path)
+    import backend
+    work = backend.api.notebooks_create('工作')['id']
+    life = backend.api.notebooks_create('生活')['id']
+    tag = backend.api.tags_create('重点')['id']
+    in_work = _note(backend.api, '工作里的重点', '正文\n', work)
+    _note(backend.api, '工作里的别的', '正文\n', work)
+    in_life = _note(backend.api, '生活里的重点', '正文\n', life)
+    backend.api.note_tags_set(in_work, [tag])
+    backend.api.note_tags_set(in_life, [tag])
+    targets = [tmp_path / '工作里的.zip', tmp_path / '全部.zip']
+    asked = []
+    monkeypatch.setattr('tkinter.filedialog.asksaveasfilename',
+                        lambda **kw: asked.append(kw['initialfile']) or str(targets[len(asked) - 1]))
+    toast = "(document.getElementById('save-toast') || {}).textContent"
+    chip = "document.querySelector('.tag-filter-chip[data-tag-id=\"%s\"]')" % tag
+    listed = "JSON.stringify(window.__app.state.notes.map(n => n.id).sort())"
+
+    def export_tag(window):
+        window.evaluate_js("document.getElementById('btn-export').click()")
+        assert wait_for_js(window, "document.getElementById('export-panel').style.display", 'flex') == 'flex'
+        descs = window.evaluate_js("[document.getElementById('export-scope-tag-desc').textContent,"
+                                   " document.getElementById('export-scope-notebook-desc').textContent]")
+        window.evaluate_js("document.querySelector('.export-option[data-format=\"zip-tag\"]').click()")
+        return descs
+
+    def actions(window, result):
+        window.evaluate_js("window.__app.setNotebookScope(%s)" % json.dumps(work))
+        assert wait_for_js(window, "window.__app.getCurrentNotebookId()", work) == work
+        assert wait_for_js(window, "!!" + chip)
+        window.evaluate_js(chip + ".click()")
+        expected = json.dumps([in_work], separators=(',', ':'))          # 和 JSON.stringify 一样不带空格
+        assert wait_for_js(window, listed, expected) == expected
+        result['work'] = export_tag(window)
+        result['work_toast'] = wait_for_js(window, toast, '已导出 1 篇笔记', timeout=10)
+        # 标签筛选还在，换成「全部笔记」：列表是这个标签的全部笔记，导出的也是
+        window.evaluate_js("window.__app.setNotebookScope(null)")
+        expected = json.dumps(sorted([in_work, in_life]), separators=(',', ':'))
+        assert wait_for_js(window, listed, expected) == expected
+        result['all'] = export_tag(window)
+        result['all_toast'] = wait_for_js(window, toast, '已导出 2 篇笔记', timeout=10)
+
+    r = _run(ns, actions)
+    assert 'error' not in r, r.get('error')
+    assert r['work'] == ['当前：「工作」里标签为「重点」的笔记（含附件）', '当前：工作 整本（含附件）'], r['work']
+    assert r['all'] == ['当前：所有笔记本里标签为「重点」的笔记（含附件）', '先在侧边栏选择一个笔记本'], r['all']
+    assert r['work_toast'] == '已导出 1 篇笔记' and r['all_toast'] == '已导出 2 篇笔记', r
+    assert len(asked) == 2, asked
+    assert re.fullmatch(r'我的记事本-重点（工作）-\d{8}-\d{6}\.zip', asked[0]), asked
+    assert re.fullmatch(r'我的记事本-重点-\d{8}-\d{6}\.zip', asked[1]), asked
+    for target, titles in zip(targets, (['工作里的重点'], ['工作里的重点', '生活里的重点']), strict=True):
+        unpacked = tmp_path / ('unz-' + target.stem)
+        with zipfile.ZipFile(target) as zf:
+            zf.extract('notes.db', str(unpacked))
+        conn = sqlite3.connect('file:%s?mode=ro' % (unpacked / 'notes.db'), uri=True)
+        try:
+            assert sorted(row[0] for row in conn.execute('SELECT title FROM notes')) == titles, target
+        finally:
+            conn.close()

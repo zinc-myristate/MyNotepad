@@ -62,12 +62,20 @@ def test_toolbar_visible_only_for_markdown(tmp_path, monkeypatch):
             "!!document.querySelector('.ql-toolbar')?.classList.contains('hidden')")
         result['buttons'] = window.evaluate_js(
             "document.querySelectorAll('#md-toolbar [data-md]').length")
+        result['menu'] = window.evaluate_js(
+            "JSON.stringify([...document.querySelectorAll('#md-insert-menu [data-md]')].map(b => b.dataset.md))")
+        # 1200 宽的窗口里整条工具栏只有一行（以前折成两行，第二行只剩「公式」）
+        result['spread'] = window.evaluate_js(
+            "(t => Math.max(...t) - Math.min(...t))([...document.querySelectorAll('#md-toolbar button')].map("
+            "b => b.getBoundingClientRect().top))")
 
     r = _run(ns, actions)
     assert 'error' not in r, r.get('error')
     assert r['md_toolbar'] is True, 'Markdown 笔记应显示 Markdown 工具栏'
     assert r['quill_toolbar'] is True, 'Markdown 笔记下 Quill 工具栏应隐藏'
-    assert r['buttons'] >= 15, '工具栏按钮数量异常：%r' % r['buttons']
+    assert r['buttons'] == 14, '工具栏按钮数量异常：%r' % r['buttons']
+    assert r['menu'] == '["codeblock","table","divider","attachment"]', r['menu']
+    assert r['spread'] < 10, '工具栏折行了：按钮上沿相差 %rpx' % r['spread']
 
 
 @pytest.mark.e2e
@@ -99,11 +107,14 @@ def test_toolbar_edits_source_and_preview(tmp_path, monkeypatch):
         _click(window, 'h2')
         result['after_h2_twice'] = window.evaluate_js(SRC)
 
-        # 待办 + 表格 + 分割线
+        # 待办 + 表格 + 分割线（后两个在「插入」菜单里：先点开菜单再点那一项）
         _click(window, 'todo')
         result['after_todo'] = window.evaluate_js(SRC)
-        _click(window, 'table')
-        _click(window, 'divider')
+        for action in ('table', 'divider'):
+            window.evaluate_js("document.getElementById('md-insert-btn').click()")
+            assert window.evaluate_js("!document.getElementById('md-insert-menu').classList.contains('hidden')")
+            window.evaluate_js("document.querySelector('#md-insert-menu [data-md=\"%s\"]').click()" % action)
+            assert window.evaluate_js("document.getElementById('md-insert-menu').classList.contains('hidden')")
         time.sleep(0.8)
         result['source'] = window.evaluate_js(SRC)
         result['preview'] = window.evaluate_js(

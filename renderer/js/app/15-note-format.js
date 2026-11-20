@@ -59,7 +59,9 @@ export async function convertActiveNote(to) {
   return r;
 }
 
-async function onClick() {
+/** 徽标的点击：先说清楚会发生什么、等用户确认，再转换。
+ *  标题行的「+ 属性」在富文本笔记上也走这里（`lead` 写在确认框最前面，说明为什么要转）。 */
+export async function promptFormatChange({ lead = '' } = {}) {
   if (_busy || !state.activeNoteId) return;
   const noteId = state.activeNoteId;
   let info = null;
@@ -97,6 +99,7 @@ async function onClick() {
     okText = '转为富文本';
   }
 
+  if (lead) message = lead + '\n\n' + message;
   const ok = await showConfirmAsync({
     title: '正文格式', message, okText, cancelText: '取消',
   });
@@ -130,6 +133,6 @@ async function onClick() {
 export function initNoteFormatBadge() {
   const el = badge();
   if (!el) return;
-  el.addEventListener('click', onClick);
+  el.addEventListener('click', () => promptFormatChange());
   syncFormatBadge();
 }

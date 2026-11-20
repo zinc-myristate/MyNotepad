@@ -3369,7 +3369,8 @@ class Api:
 
     def scope_note_count(self, notebook_id=None, tag_id=None):
         """按笔记本 / 标签导出前先数一下：一篇都没有就不弹保存对话框（桥接 export_scope 用）。
-        不能让页面按列表自己数：列表在标签筛选下是"标签 × 当前笔记本"，导出标签却是这个标签的全部笔记"""
+        两个都给就是两者叠加（导出标签时页面带上当前笔记本，和列表的 notes_by_tag 同一个口径）。
+        不让页面自己数：列表是窗口化的，DOM 里只有看得见的十几行，搜索框还会再筛一道"""
         conn = _ctx_conn()   # 只读连接（上下文解析）：见 _ctx_conn 的说明
         clause, params = _scope_clause(notebook_id, tag_id)
         return conn.execute("SELECT COUNT(*) FROM notes WHERE " + clause, params).fetchone()[0]
@@ -3437,7 +3438,8 @@ class Api:
                                 '本包含 %d 篇笔记（%s）。\n\n'
                                 '恢复方法：退出「我的记事本」，把这里的 notes.db、attachments/、\n'
                                 'backgrounds/ 覆盖到程序目录的 data/ 下即可（建议先备份原 data/）。\n'
-                                % (len(ids), '按笔记本' if notebook_id else '按标签'))
+                                % (len(ids), '按标签，只含所选笔记本里的' if notebook_id and tag_id
+                                   else '按笔记本' if notebook_id else '按标签'))
                 return {'ok': True, 'count': len(ids)}
             finally:
                 shutil.rmtree(tmp, ignore_errors=True)

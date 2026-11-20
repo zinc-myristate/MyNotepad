@@ -142,7 +142,7 @@ export async function loadNotebookBar() {
     item.tabIndex = 0;
     item.setAttribute('role', 'button');
     const nbCount = (_counts.by_id && _counts.by_id[nb.id]) || 0;
-    item.innerHTML = `<span class="notebook-dot" style="background:${nb.color||'#7D8A6E'}"></span>${escapeHtml(nb.name)}<span style="margin-left:auto;font-size:10px;color:var(--text-muted);">${nbCount}篇</span>` +
+    item.innerHTML = `<span class="notebook-dot" style="background:${nb.color||'#7D8A6E'}"></span>${escapeHtml(nb.name)}<span style="margin-left:auto;font-size:12px;color:var(--text-muted);">${nbCount}篇</span>` +
       `<button class="notebook-rename-btn" title="重命名笔记本">${ICONS.edit}</button>` +
       `<button class="notebook-delete-btn" title="删除笔记本" style="margin-left:4px;color:var(--text-muted);background:none;border:none;cursor:pointer;font-size:14px;padding:0 4px;">×</button>`;
     // 改名：先收起下拉、焦点回到笔记本按钮，对话框关掉后焦点才有地方回
@@ -172,7 +172,7 @@ export async function loadNotebookBar() {
   allItem.className = 'notebook-drop-item' + (currentNotebookId === null ? ' active' : '');
   allItem.tabIndex = 0;
   allItem.setAttribute('role', 'button');
-  allItem.innerHTML = `<span class="notebook-dot" style="background:var(--accent)"></span>全部笔记<span style="margin-left:auto;font-size:10px;color:var(--text-muted);">${_counts.total}篇</span>`;
+  allItem.innerHTML = `<span class="notebook-dot" style="background:var(--accent)"></span>全部笔记<span style="margin-left:auto;font-size:12px;color:var(--text-muted);">${_counts.total}篇</span>`;
   allItem.addEventListener('click', async () => {
     closeNotebookDropdown(true);
     await setNotebookScope(null);

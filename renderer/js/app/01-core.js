@@ -150,8 +150,31 @@ function syncPanelContext() {
   });
 }
 
+// 关闭的退出过渡：面板先出栈（键盘、焦点、#app 的 inert 立刻归还），画面上再淡出这么久才真的藏起来
+// （动画在 workspace.css 的 .panel-overlay.is-closing）。淡出时它不接点击、进不了焦点；这期间又被打开就不藏了。
+// 要判断面板开没开，用 isPanelOpen 看栈，别看 style.display：淡出的那一下它还是 flex。
+export const PANEL_CLOSE_MS = 120;
+const _closingTimers = new Map();     // 正在淡出的面板 → 藏起它的定时器
+
+function finishClosing(panel) {
+  clearTimeout(_closingTimers.get(panel));
+  _closingTimers.delete(panel);
+  panel.classList.remove('is-closing');
+  panel.style.display = 'none';
+  panel.inert = false;
+}
+
+export function isPanelOpen(panel) {
+  return panelStack.some(entry => entry.panel === panel);
+}
+
 export function openPanel(panel) {
   if (!panel || panelStack.some(entry => entry.panel === panel)) return;
+  if (_closingTimers.has(panel)) {
+    clearTimeout(_closingTimers.get(panel));
+    _closingTimers.delete(panel);
+    panel.classList.remove('is-closing');
+  }
   const trigger = document.activeElement;
   panelStack.push({ panel, trigger, noteId: trigger?.closest('.note-item')?.dataset.noteId });
   panel.style.display = 'flex';
@@ -172,8 +195,15 @@ export function closePanel(panel) {
   const index = panelStack.findIndex(entry => entry.panel === panel);
   const wasTop = index === panelStack.length - 1 && index >= 0;
   const entry = index >= 0 ? panelStack.splice(index, 1)[0] : null;
-  panel.style.display = 'none';
-  panel.inert = false;
+  if (_closingTimers.has(panel)) {
+    // 已经在淡出：让它照原来的时间藏起来
+  } else if (panel.style.display !== 'flex' || matchMedia('(prefers-reduced-motion: reduce)').matches) {
+    finishClosing(panel);
+  } else {
+    panel.inert = true;
+    panel.classList.add('is-closing');
+    _closingTimers.set(panel, setTimeout(() => finishClosing(panel), PANEL_CLOSE_MS));
+  }
   panel.querySelector('.panel-dialog')?.removeAttribute('aria-modal');
   // Every dismissal route settles pending promises, including X, backdrop and panel replacement.
   if (panel.id === 'confirm-dialog' && _confirmResolver) {

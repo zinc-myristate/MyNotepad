@@ -13,7 +13,7 @@ import threading
 import time
 
 import pytest
-from conftest import PROJECT_ROOT, load_app_partial, make_delta_note
+from conftest import PROJECT_ROOT, load_app_partial, make_delta_note, wait_for_js
 
 RENDERER = PROJECT_ROOT + '/renderer'
 
@@ -148,25 +148,37 @@ def test_properties_add_and_delete_row(tmp_path, monkeypatch):
 
 @pytest.mark.e2e
 def test_delta_note_offers_conversion(tmp_path, monkeypatch):
-    """富文本笔记：属性行明确说明"没有属性"并给出转换入口（不是把功能藏起来）。"""
+    """富文本笔记：属性行不占地方，但标题行的「+ 属性」还在（不是把功能藏起来）。
+
+    点它先弹格式徽标的那个确认框，最前面说明属性是 Markdown 的东西；取消就什么都不变。
+    以前这个按钮写着「转成 Markdown」、点了不问就直接转。
+    """
     ns = load_app_partial(monkeypatch, tmp_path)
     import backend
-    make_delta_note(backend, '富文本', json.dumps({'ops': [{'insert': '正文\n'}]}))
+    nid = make_delta_note(backend, '富文本', json.dumps({'ops': [{'insert': '正文\n'}]}))
 
     def actions(window, result):
-        time.sleep(1.5)
-        result['note_format'] = window.evaluate_js("window.__app.state.noteFormat")
+        assert wait_for_js(window, "window.__app?.state.noteFormat", 'delta') == 'delta'
         result['block_hidden'] = window.evaluate_js(
             "document.getElementById('prop-block').classList.contains('hidden')")
-        result['chips'] = window.evaluate_js("document.getElementById('prop-chips').textContent")
-        result['btn'] = window.evaluate_js("document.getElementById('btn-prop-edit').textContent")
+        result['btn'] = window.evaluate_js(
+            "(b => [b.textContent, b.title, b.getClientRects().length > 0])(document.getElementById('btn-prop-edit'))")
+        window.evaluate_js("document.getElementById('btn-prop-edit').click()")
+        assert wait_for_js(window, "document.getElementById('confirm-dialog').style.display", 'flex') == 'flex'
+        result['message'] = window.evaluate_js("document.getElementById('confirm-dialog').innerText")
+        window.evaluate_js("document.getElementById('btn-confirm-cancel').click()")
+        assert wait_for_js(window, "document.getElementById('confirm-dialog').style.display", 'none') == 'none'
+        time.sleep(0.5)
+        result['format_after'] = window.evaluate_js("window.__app.state.noteFormat")
 
     r = _run(ns, actions)
     assert 'error' not in r, r.get('error')
-    assert r['note_format'] == 'delta'
-    assert r['block_hidden'] is False, '富文本也要显示属性行（否则用户不知道有这功能）'
-    assert '富文本' in r['chips'], r['chips']
-    assert r['btn'] == '转成 Markdown', r['btn']
+    assert r['block_hidden'] is True, '富文本笔记没有属性，属性行不该占一行'
+    assert r['btn'] == ['+ 属性', '富文本笔记没有属性：点这里可以转成 Markdown', True], r['btn']
+    assert '属性（front-matter）是 Markdown 笔记才有的' in r['message'], r['message']
+    assert '转为 Markdown' in r['message'], r['message']
+    assert r['format_after'] == 'delta'
+    assert backend.api.note_format_info(nid)['format'] == 'delta', '取消了就不能转'
 
 
 # ---------------- 双链：预览、标红、点击 ----------------
