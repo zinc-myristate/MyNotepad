@@ -4,11 +4,12 @@
 工具栏的正确性只有真点才知道（按钮的 data-md 路由、CodeMirror 选区操作、
 前缀开关行为）。这里覆盖纯编辑动作；图片/附件按钮要走系统文件对话框，不在自动化里点。
 """
+import json
 import threading
 import time
 
 import pytest
-from conftest import PROJECT_ROOT, load_app_partial
+from conftest import PROJECT_ROOT, load_app_partial, wait_for_js
 
 RENDERER = PROJECT_ROOT + '/renderer'
 
@@ -64,10 +65,12 @@ def test_toolbar_visible_only_for_markdown(tmp_path, monkeypatch):
             "document.querySelectorAll('#md-toolbar [data-md]').length")
         result['menu'] = window.evaluate_js(
             "JSON.stringify([...document.querySelectorAll('#md-insert-menu [data-md]')].map(b => b.dataset.md))")
-        # 1200 宽的窗口里整条工具栏只有一行（以前折成两行，第二行只剩「公式」）
-        result['spread'] = window.evaluate_js(
-            "(t => Math.max(...t) - Math.min(...t))([...document.querySelectorAll('#md-toolbar button')].map("
-            "b => b.getBoundingClientRect().top))")
+        # 默认窗口量一次，再缩窄量一次（1000×700：这么窄放不下一行，也接近 CI 的样子）
+        result['fit'] = [json.loads(window.evaluate_js(TOOLBAR_FIT))]
+        window.resize(1000, 700)
+        wait_for_js(window, 'innerWidth < 1010', True, timeout=3)
+        time.sleep(0.4)
+        result['fit'].append(json.loads(window.evaluate_js(TOOLBAR_FIT)))
 
     r = _run(ns, actions)
     assert 'error' not in r, r.get('error')
@@ -75,7 +78,31 @@ def test_toolbar_visible_only_for_markdown(tmp_path, monkeypatch):
     assert r['quill_toolbar'] is True, 'Markdown 笔记下 Quill 工具栏应隐藏'
     assert r['buttons'] == 14, '工具栏按钮数量异常：%r' % r['buttons']
     assert r['menu'] == '["codeblock","table","divider","attachment"]', r['menu']
-    assert r['spread'] < 10, '工具栏折行了：按钮上沿相差 %rpx' % r['spread']
+    for m in r['fit']:
+        assert m['squeezed'] == 0, '有按钮被压扁了（字从按钮里溢出来）：%r' % m
+        if abs(m['need'] - m['room']) >= 3:              # 刚好卡在边上的那一两像素不判
+            assert (m['spread'] < 10) == (m['need'] <= m['room']), '放得下就该是一行，放不下才折行：%r' % m
+    # 默认窗口（1200×800，内宽约 1187）要放得下一行（以前折成两行，第二行只剩「公式」）。
+    # CI 的屏幕只有 1024×768，1200×800 的窗口会被夹小，量不到这一档
+    wide = [m for m in r['fit'] if m['inner'] >= 1180]
+    assert all(m['need'] <= m['room'] and m['spread'] < 10 for m in wide), wide
+
+
+# 工具栏要多宽（各按钮 / 分隔线的宽度 + 间距）、有多宽、按钮上沿相差多少
+TOOLBAR_FIT = r"""JSON.stringify((() => {
+  const bar = document.getElementById('md-toolbar'), cs = getComputedStyle(bar);
+  const kids = [...bar.children].filter(el => el.getClientRects().length);
+  const width = el => { const s = getComputedStyle(el);
+    return el.getBoundingClientRect().width + parseFloat(s.marginLeft) + parseFloat(s.marginRight); };
+  const need = kids.reduce((sum, el) => sum + width(el), 0) + (parseFloat(cs.columnGap) || 0) * (kids.length - 1);
+  const room = bar.clientWidth - parseFloat(cs.paddingLeft) - parseFloat(cs.paddingRight);
+  const buttons = [...bar.querySelectorAll('button')];
+  const tops = buttons.map(b => b.getBoundingClientRect().top);
+  return {need: Math.round(need), room: Math.round(room), inner: innerWidth,
+          spread: Math.round(Math.max(...tops) - Math.min(...tops)),
+          // 不折行时按钮会被压窄：中文逐字换行，按钮高度是定的，字从下面溢出来。那样"放得下"是假的
+          squeezed: buttons.filter(b => b.scrollWidth > b.clientWidth + 1 || b.scrollHeight > b.clientHeight + 1).length};
+})())"""
 
 
 @pytest.mark.e2e

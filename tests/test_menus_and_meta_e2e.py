@@ -258,6 +258,13 @@ def test_panel_close_fades_out_but_releases_the_workspace_at_once(tmp_path, monk
     state = ("(p => [core.hasOpenPanel(), document.getElementById('app').inert, p.style.display,"
              " p.classList.contains('is-closing'), p.inert, getComputedStyle(p).pointerEvents])"
              "(document.getElementById('theme-panel'))")
+    # 关面板和读状态必须在同一次调用里：两次 evaluate_js 之间可能就过了 120ms（CI 上红过，面板已经藏了）。
+    # 「减少动态效果」也在这里定死：CI 的 Windows 上要是开着，关面板本来就直接藏，测不到淡出。
+    # 替身只在这一次调用里，别的代码碰不到
+    close = ("((p, reduce) => { const real = window.matchMedia;"
+             " window.matchMedia = q => ({matches: reduce && /reduce/.test(q), media: q});"
+             " try { core.closePanel(p); } finally { window.matchMedia = real; }"
+             " return %s; })(document.getElementById('theme-panel'), %%s)" % state)
 
     def actions(window, result):
         assert wait_for_js(window, 'Boolean(window.__app?.state.activeNoteId)')
@@ -265,25 +272,21 @@ def test_panel_close_fades_out_but_releases_the_workspace_at_once(tmp_path, monk
         assert wait_for_js(window, 'Boolean(window.core)')
         panel = "document.getElementById('theme-panel')"
         window.evaluate_js("document.getElementById('btn-appearance').focus(); core.openPanel(%s)" % panel)
-        window.evaluate_js("core.closePanel(%s)" % panel)
-        result['closing'] = window.evaluate_js(state)
+        result['closing'] = window.evaluate_js(close % 'false')
         result['focus'] = window.evaluate_js('document.activeElement.id')
         t0 = time.time()
         assert wait_for_js(window, "%s.style.display" % panel, 'none', timeout=3) == 'none'
         result['hidden_after'] = round(time.time() - t0, 2)
         result['closed'] = window.evaluate_js(state)
         # 淡出的那一下又打开：不能被之前排好的定时器藏掉
-        window.evaluate_js("core.openPanel(%s); core.closePanel(%s); core.openPanel(%s)" % (panel, panel, panel))
+        window.evaluate_js("core.openPanel(%s); %s; core.openPanel(%s)" % (panel, close % 'false', panel))
         time.sleep(0.4)
         result['reopened'] = window.evaluate_js(state)
-        window.evaluate_js("core.closePanel(%s)" % panel)
+        window.evaluate_js(close % 'false')
         assert wait_for_js(window, "%s.style.display" % panel, 'none', timeout=3) == 'none'
-        # 减少动态效果：直接藏（替身只在这一次调用里，别的代码碰不到）
-        window.evaluate_js("(() => { const real = window.matchMedia;"
-                           " window.matchMedia = q => ({matches: /reduce/.test(q), media: q});"
-                           " try { core.openPanel(%s); core.closePanel(%s); } finally { window.matchMedia = real; } })()"
-                           % (panel, panel))
-        result['reduced'] = window.evaluate_js(state)
+        # 减少动态效果：直接藏
+        window.evaluate_js("core.openPanel(%s)" % panel)
+        result['reduced'] = window.evaluate_js(close % 'true')
 
     r = _run(ns, actions, wait_before=0, wait_after=0)
     assert 'error' not in r, r
