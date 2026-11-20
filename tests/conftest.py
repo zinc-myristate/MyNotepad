@@ -150,11 +150,50 @@ def app_ns(tmp_path, monkeypatch):
     _purge_backend_modules()
 
 
+class WaitTimeout:
+    """`wait_for_js` 等一个具体值、到点还没等到时的返回值。
+
+    - **假值**：`assert wait_for_js(window, "….style.display", 'flex')` 超时就失败。以前超时返回最后取到的
+      `'none'`，也是真值，这条断言写了等于没写（2026-11-18 撤掉「外观」菜单的绑定做变异检查时抓到）。
+    - `==` 按最后取到的值比：`wait_for_js(…) == 'flex'`、先存进结果字典再整个比，这些写法不受影响。
+    - repr 带上要等的值、最后取到的值和表达式，断言失败时一眼看出差在哪。
+    - 它不是数据：要对结果做 `json.loads`、切片、拼字符串的，先判断（`if not v`）或者先断言它。
+    """
+
+    __slots__ = ('value', 'expected', 'expression', 'timeout')
+
+    def __init__(self, value, expected, expression, timeout):
+        self.value = value
+        self.expected = expected
+        self.expression = expression
+        self.timeout = timeout
+
+    def __bool__(self):
+        return False
+
+    def __eq__(self, other):
+        if isinstance(other, WaitTimeout):
+            other = other.value
+        return self.value == other
+
+    __hash__ = None
+
+    def __repr__(self):
+        expression = ' '.join(str(self.expression).split())
+        if len(expression) > 160:
+            expression = expression[:157] + '...'
+        return '<wait_for_js 超时：等了 %g 秒没等到 %r，最后取到 %r｜%s>' % (
+            self.timeout, self.expected, self.value, expression)
+
+
 def wait_for_js(window, expression, expected=None, timeout=20.0, interval=0.25):
     """轮询 JS 表达式，直到等于 expected（expected=None 时直到取到真值）或超时。
 
-    返回**最后一次取到的值**，超时也返回 —— 让调用方的 assert 给出原本的报错信息，
-    而不是抛一个与真因无关的超时异常。
+    等到了返回取到的值本身。超时不抛异常，让调用方的 assert 给出原本的报错信息：
+    - expected=None：返回最后一次取到的值。它本来就是假值，`assert wait_for_js(…)` 照样失败。
+    - 给了 expected：返回 `WaitTimeout`（假值，`==` 按最后取到的值比，repr 写明等的是什么、取到的是什么）。
+      所以 `assert wait_for_js(…, 'flex')` 和 `assert wait_for_js(…, 'flex') == 'flex'` 都对。
+      例外：expected 本身是假值（`''`、`0`、`False`）时，等到了返回的也是假值，只能写 `== 值`。
 
     ⚠️ 为什么必须有它：无头 WebView2 在 CI 上比开发机慢得多，而 e2e 里大量用
     "sleep 固定秒数 + 一次性取值"。那等于把"断言行为"变成"断言机器有多快"——实测
@@ -171,12 +210,18 @@ def wait_for_js(window, expression, expected=None, timeout=20.0, interval=0.25):
         elif value == expected:
             return value
         if time.time() >= deadline:
-            return value
+            if expected is None:
+                return value
+            return WaitTimeout(value, expected, expression, timeout)
         time.sleep(interval)
 
 
 def wait_until(predicate, timeout=20.0, interval=0.05):
-    """`wait_for_js` 的 Python 版：条件在后端或假桥接上时用它。约定相同，超时也返回最后的值。"""
+    """`wait_for_js` 的 Python 版：条件在后端或假桥接上时用它。
+
+    只有「等到真值」这一种：超时返回最后取到的值，它本来就是假值，`assert wait_until(…)` 会失败。
+    要等具体值，让 predicate 自己比（`wait_until(lambda: f() == 值)`）。
+    """
     deadline = time.time() + timeout
     while True:
         value = predicate()

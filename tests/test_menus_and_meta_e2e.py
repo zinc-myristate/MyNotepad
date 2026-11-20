@@ -142,7 +142,7 @@ def test_appearance_menu_opens_each_panel_and_focus_comes_back(tmp_path, monkeyp
             opened = wait_for_js(window, "document.getElementById('%s').style.display" % panel, 'flex')
             menu_hidden = window.evaluate_js("document.getElementById('appearance-menu').classList.contains('hidden')")
             window.evaluate_js("key('Escape')")
-            # wait_for_js 超时也返回最后取到的值（'none' 也是真值），所以要和 'flex' 比
+            # 记成真假：超时时 opened 是 WaitTimeout（假值，== 按最后取到的值比）
             rounds[item] = [inside, opened == 'flex', menu_hidden, window.evaluate_js('document.activeElement.id')]
         result['rounds'] = rounds
         # 一次只开一个菜单

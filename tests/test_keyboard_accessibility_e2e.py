@@ -3,7 +3,7 @@ import json
 import time
 
 import pytest
-from conftest import load_app_partial, make_delta_note, wait_for_js
+from conftest import load_app_partial, make_delta_note, wait_for_js, wait_until
 from test_ui_layout import _fill_sidebar, _resize, _run, _sidebar_ready
 
 pytestmark = pytest.mark.e2e
@@ -229,8 +229,9 @@ def test_cancelling_unlock_keeps_the_open_note_saving(tmp_path, monkeypatch):
         window.evaluate_js("document.getElementById('note-title-input').value = '普通改过';"
                            "document.getElementById('note-title-input').dispatchEvent(new Event('input', {bubbles:true}));"
                            "window.__app.flushSave()")
-        assert wait_for_js(window, "window.__saved = window.pywebview.api.notes_get(%r).then(n => window.__saved = n.title),"
-                                   " typeof window.__saved === 'string' ? window.__saved : ''" % plain['id'], '普通改过') is not None
+        # 条件在后端，就在后端等。以前在页面里轮询 notes_get，表达式先把 Promise 赋给 window.__saved 再读它，
+        # 永远读到 ''：每次都等满 20 秒，再靠 `is not None` 通过（2026-11-18 改 wait_for_js 时抓到）
+        wait_until(lambda: backend.api.notes_get(plain['id'])['title'] == '普通改过')
         assert backend.api.notes_get(plain['id'])['title'] == '普通改过'
         # 点密码按钮时 activeNoteId 已经指向加密笔记：这时取消才需要收起，回到能编辑的笔记
         window.evaluate_js(row + ".querySelector('[data-password-id], .note-item-password')?.click()")

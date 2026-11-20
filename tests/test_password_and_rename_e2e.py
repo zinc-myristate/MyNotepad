@@ -185,8 +185,9 @@ def test_renaming_a_tag_keeps_views_and_the_search_box_in_step(tmp_path, monkeyp
         result['toast'] = wait_for_js(window, TOAST, '已重命名为「工作」')
         result['search'] = wait_for_js(window, "document.getElementById('search-input').value", 'tag:工作')
         result['query'] = wait_for_js(window, 'window.__app.state.searchQuery', 'tag:工作')
-        result['visible'] = json.loads(wait_for_js(
-            window, 'JSON.stringify(%s)' % visible, json.dumps([note['id']])))
+        # 超时拿到的是 WaitTimeout，不是字符串：原样留着，下面按最后取到的值比，报错里写着当时列表里是什么
+        shown = wait_for_js(window, 'JSON.stringify(%s)' % visible, json.dumps([note['id']]))
+        result['visible'] = json.loads(shown) if shown else shown
         result['view'] = wait_for_js(
             window, "document.querySelector('[data-ss]').getAttribute('title')", 'tag:工作')
         result['active'] = wait_for_js(
