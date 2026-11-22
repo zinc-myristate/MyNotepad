@@ -17,7 +17,7 @@ import threading
 import time
 
 import pytest
-from conftest import PROJECT_ROOT, load_app_partial, wait_for_js
+from conftest import PROJECT_ROOT, load_app_partial, wait_for_js, wait_until
 from test_frontend_modules import strip_code
 
 RENDERER = os.path.join(PROJECT_ROOT, 'renderer')
@@ -132,8 +132,14 @@ def test_typing_renders_preview_and_persists(tmp_path, monkeypatch):
             '> 引用一句\n\n```\ncode block\n```\n\n公式 $a^2+b^2=c^2$\n')
 
     def actions(window, result):
+        # 等这篇笔记真的打开、载完再写：载入中（state.isLoading）CodeMirror 的改动会被当成程序写入忽略掉，
+        # 既不渲染预览也不保存。以前固定等 8 秒，机器忙的时候不够（2026-11-22 分份跑 E2E 红过一次：预览里一个 h1 都没有）
+        result['opened'] = wait_for_js(
+            window, "!!(window.__app && __app.state.activeNoteId === %s && !__app.state.isLoading)"
+            % json.dumps(nid), True)
         _set_source(window, body)
-        time.sleep(1.6)                              # 预览节流 180ms + 保存防抖 500ms
+        wait_for_js(window, "document.getElementById('md-preview').innerHTML.includes('</h1>')", True, timeout=10)
+        result['saved'] = wait_until(lambda: backend.api.notes_get(nid)['content'] == body, timeout=10)
         html = _preview_html(window)
         # 第 9 轮起标题带锚点 id（`<h1 id="md-h-标题一">`），所以不能只匹配 `<h1>`
         result['h1'] = ('<h1' in html) and ('</h1>' in html)
@@ -147,8 +153,10 @@ def test_typing_renders_preview_and_persists(tmp_path, monkeypatch):
 
     r = _run(ns, actions)
     assert 'error' not in r, r.get('error')
+    assert r['opened'] is True, '20 秒内这篇笔记没打开、或一直在载入：%r' % (r['opened'],)
     for key in ('h1', 'h1_anchor', 'strong', 'task_done', 'blockquote', 'pre', 'katex'):
         assert r[key], '预览缺少 %s 的渲染结果' % key
+    assert r['saved'], '10 秒内没有落库（防抖保存链路）'
     stored = backend.api.notes_get(nid)['content']
     assert stored == body, '落库内容应与输入逐字符一致（防抖保存链路）'
     assert backend.api.notes_get(nid)['format'] == 'md'

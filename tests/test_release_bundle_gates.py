@@ -595,6 +595,177 @@ class TestBuildBackupPruning:
         assert other.is_dir(), '非 _predist* 的目录不能被碰'
 
 
+class TestBuildRollbackSnapshots:
+    """`build.py` 自己存程序回滚快照、自己剪枝；构建失败时把旧程序也换回来；还原后核对用户文件。
+
+    以前回滚快照是每次打包前手工拷的（build.py 的备份只有用户数据和一个 exe，`_internal` 不在里面，
+    新包有问题时换不回旧程序），十几次下来 dist 里攒了 11 份、2.5 GB 没人清。
+    这里用临时目录造一个假的 dist/MyNotepad，假的 PyInstaller 和真的一样先把整个目录清空再写新程序。
+    """
+
+    @staticmethod
+    def _fake_dist(tmp_path, monkeypatch):
+        import build
+        root = tmp_path / 'dist'
+        dist = root / 'MyNotepad'
+        (dist / '_internal' / 'renderer').mkdir(parents=True)
+        (dist / 'MyNotepad.exe').write_bytes(b'old exe')
+        (dist / '_internal' / 'renderer' / 'app.js').write_text('old', encoding='utf-8')
+        (dist / 'data' / 'attachments').mkdir(parents=True)
+        (dist / 'data' / 'notes.db').write_bytes(b'notes')
+        (dist / 'data' / 'attachments' / 'a.png').write_bytes(b'png')
+        (dist / 'resources').mkdir()
+        (dist / 'resources' / 'icon.ico').write_bytes(b'icon')
+        monkeypatch.setattr(build, 'DIST', str(dist))
+        monkeypatch.setattr(build, 'EXE', str(dist / 'MyNotepad.exe'))
+        monkeypatch.setattr(build, 'BACKUP_ROOT', str(root))
+        for name in ('kill_running_app', 'fix_shortcuts', 'smoke_check'):
+            monkeypatch.setattr(build, name, lambda *a, **k: 0)
+        return build, root, dist
+
+    @staticmethod
+    def _pyinstaller(dist, fail=False):
+        """和 PyInstaller --clean 一样：先把 dist/MyNotepad 整个清空，再写新程序（或者失败）"""
+        def run():
+            shutil.rmtree(dist)
+            if fail:
+                raise RuntimeError('PyInstaller 构建失败（exit 1）')
+            (dist / '_internal' / 'renderer').mkdir(parents=True)
+            (dist / 'MyNotepad.exe').write_bytes(b'new exe')
+            (dist / '_internal' / 'renderer' / 'app.js').write_text('new', encoding='utf-8')
+        return run
+
+    @staticmethod
+    def _user_files(dist):
+        return {p.relative_to(dist).as_posix(): p.read_bytes()
+                for name in ('data', 'resources') for p in (dist / name).rglob('*') if p.is_file()}
+
+    @staticmethod
+    def _make_snapshot(root, name, exe=b'snap exe'):
+        snap = root / name
+        (snap / '_internal').mkdir(parents=True)
+        (snap / 'MyNotepad.exe').write_bytes(exe)
+        (snap / '_internal' / 'lib.dll').write_bytes(exe + b' lib')
+        return snap
+
+    def test_a_build_snapshots_the_old_program_without_user_data(self, tmp_path, monkeypatch):
+        build, root, dist = self._fake_dist(tmp_path, monkeypatch)
+        before = self._user_files(dist)
+        monkeypatch.setattr(build, 'run_build', self._pyinstaller(dist))
+
+        assert build.main(['--no-smoke']) == 0
+        snaps = build.rollback_snapshots()
+        assert len(snaps) == 1 and build.ROLLBACK_RE.fullmatch(snaps[0]), snaps
+        snap = root / snaps[0]
+        assert (snap / 'MyNotepad.exe').read_bytes() == b'old exe', '快照存的是打包前的程序'
+        assert (snap / '_internal' / 'renderer' / 'app.js').read_text(encoding='utf-8') == 'old', \
+            '_internal 也要在快照里（以前的备份没有它，换不回程序）'
+        assert not (snap / 'data').exists() and not (snap / 'resources').exists(), \
+            '用户数据不进程序快照（那是 _predist 备份的事）'
+        assert (dist / 'MyNotepad.exe').read_bytes() == b'new exe'
+        assert self._user_files(dist) == before, '用户文件还原回来要逐字节一样'
+
+    def test_a_failed_build_puts_back_both_the_old_program_and_the_data(self, tmp_path, monkeypatch):
+        build, _root, dist = self._fake_dist(tmp_path, monkeypatch)
+        before = self._user_files(dist)
+        monkeypatch.setattr(build, 'run_build', self._pyinstaller(dist, fail=True))
+
+        assert build.main(['--no-smoke']) == 1
+        assert (dist / 'MyNotepad.exe').read_bytes() == b'old exe', \
+            'PyInstaller 已经清空了目录：不把旧程序换回来，用户手里就没有能用的记事本了'
+        assert (dist / '_internal' / 'renderer' / 'app.js').read_text(encoding='utf-8') == 'old'
+        assert self._user_files(dist) == before
+
+    def test_a_restore_that_does_not_match_fails_and_prunes_nothing(self, tmp_path, monkeypatch):
+        build, root, dist = self._fake_dist(tmp_path, monkeypatch)
+        for day in (1, 2, 3):
+            self._make_snapshot(root, '_rollback-2000010%d-000000' % day)
+        old_backup = root / '_predist-backup-20000101-000000'
+        old_backup.mkdir()
+        os.utime(str(old_backup), (1_000_000, 1_000_000))
+        monkeypatch.setattr(build, 'run_build', self._pyinstaller(dist))
+        real_restore = build.restore
+
+        def restore_but_damage(backup):
+            real_restore(backup)
+            (dist / 'data' / 'notes.db').write_bytes(b'damaged')
+        monkeypatch.setattr(build, 'restore', restore_but_damage)
+
+        assert build.main(['--no-smoke']) == 1, '还原回来的用户文件和打包前不一样，必须算失败'
+        assert len(build.rollback_snapshots()) == 4, '核对没过就不剪枝：回滚快照一份都不能少'
+        assert old_backup.is_dir(), '核对没过就不剪枝：旧的数据备份也要留着'
+
+    def test_a_good_build_prunes_only_what_build_py_made(self, tmp_path, monkeypatch):
+        build, root, dist = self._fake_dist(tmp_path, monkeypatch)
+        for day in (1, 2, 3):
+            self._make_snapshot(root, '_rollback-2000010%d-000000' % day)
+        manual = self._make_snapshot(root, '_rollback-20261120-before-build')
+        old_backup = root / '_predist-backup-20000101-000000'
+        old_backup.mkdir()
+        os.utime(str(old_backup), (1_000_000, 1_000_000))
+        monkeypatch.setattr(build, 'run_build', self._pyinstaller(dist))
+
+        assert build.main(['--no-smoke']) == 0
+        snaps = build.rollback_snapshots()
+        assert len(snaps) == 2 and snaps[1] == '_rollback-20000103-000000', \
+            '默认留最近两份：这次存的和上一份：%r' % snaps
+        assert manual.is_dir(), '手工存的快照不是 build.py 的命名，不能被剪'
+        assert not old_backup.exists(), '数据备份照旧只留最近 1 份'
+        assert len([p for p in root.iterdir() if p.name.startswith('_predist')]) == 1
+
+    def test_keep_backup_prunes_nothing(self, tmp_path, monkeypatch):
+        build, root, dist = self._fake_dist(tmp_path, monkeypatch)
+        for day in (1, 2, 3):
+            self._make_snapshot(root, '_rollback-2000010%d-000000' % day)
+        monkeypatch.setattr(build, 'run_build', self._pyinstaller(dist))
+        assert build.main(['--no-smoke', '--keep-backup']) == 0
+        assert len(build.rollback_snapshots()) == 4
+
+    def test_prune_rollbacks_ignores_other_names_and_files(self, tmp_path, monkeypatch):
+        import build
+        for day in (1, 2, 3):
+            self._make_snapshot(tmp_path, '_rollback-2000010%d-000000' % day)
+        # 最旧那份的修改时间反而最新（copytree 会把源目录的修改时间拷过来）：只能按名字里的时间排
+        os.utime(str(tmp_path / '_rollback-20000101-000000'), (4_000_000_000, 4_000_000_000))
+        manual = self._make_snapshot(tmp_path, '_rollback-20261120-before-build')
+        (tmp_path / '_rollback-20000104-000000.zip').write_bytes(b'x')
+        predist = tmp_path / '_predist-backup-20000101-000000'
+        predist.mkdir()
+        monkeypatch.setattr(build, 'BACKUP_ROOT', str(tmp_path))
+        build.prune_rollbacks(keep=1)
+        assert build.rollback_snapshots() == ['_rollback-20000103-000000']
+        assert manual.is_dir() and predist.is_dir()
+        assert (tmp_path / '_rollback-20000104-000000.zip').exists(), '文件不该被当成快照'
+
+    def test_rollback_command_restores_the_newest_snapshot_and_leaves_user_files(self, tmp_path, monkeypatch):
+        build, root, dist = self._fake_dist(tmp_path, monkeypatch)
+        before = self._user_files(dist)
+        self._make_snapshot(root, '_rollback-20000101-000000', exe=b'v1')
+        self._make_snapshot(root, '_rollback-20000102-000000', exe=b'v2')
+        self._make_snapshot(root, '_rollback-29991231-before-build', exe=b'manual')   # 名字更大，但不是 build.py 的
+        (dist / '_internal' / 'only-in-new-build.dll').write_bytes(b'x')
+
+        assert build.main(['--rollback']) == 0
+        assert (dist / 'MyNotepad.exe').read_bytes() == b'v2', '换回 build.py 存的最近一份'
+        assert (dist / '_internal' / 'lib.dll').read_bytes() == b'v2 lib'
+        assert not (dist / '_internal' / 'only-in-new-build.dll').exists(), '新包多出来的文件要清掉'
+        assert self._user_files(dist) == before, '回滚不动 data、resources'
+        assert len(build.rollback_snapshots()) == 2, '回滚不消耗快照'
+
+    def test_rollback_without_a_snapshot_changes_nothing(self, tmp_path, monkeypatch):
+        build, _root, dist = self._fake_dist(tmp_path, monkeypatch)
+        assert build.main(['--rollback']) == 1
+        assert (dist / 'MyNotepad.exe').read_bytes() == b'old exe'
+
+    def test_restore_program_refuses_a_snapshot_without_the_exe(self, tmp_path, monkeypatch):
+        build, root, dist = self._fake_dist(tmp_path, monkeypatch)
+        broken = root / '_rollback-20000101-000000'
+        (broken / '_internal').mkdir(parents=True)
+        with pytest.raises(RuntimeError):
+            build.restore_program(str(broken))
+        assert (dist / 'MyNotepad.exe').read_bytes() == b'old exe', '先检查快照，再删当前程序'
+
+
 class TestVersionConsistency:
     """版本号只有一个真相源（`build_resources/version_info.txt`），三处必须互相一致。
 

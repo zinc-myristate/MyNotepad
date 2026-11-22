@@ -153,5 +153,5 @@ jobs:
 
             - 需要 **Windows 10 1809+ / Windows 11**（依赖系统自带的 WebView2 运行时；
               老机器若缺少，装一次 [WebView2 Runtime](https://developer.microsoft.com/microsoft-edge/webview2/) 即可）
-            - 本程序**不联网、不写注册表**（除非你主动开启「开机自启」）、不采集任何数据
+            - 本程序**不联网**（语音输入除外：识别要用在线服务，点了才联网）、**不写注册表**（除非你主动开启「开机自启」）、不采集任何数据
             - 许可：[MIT](LICENSE)；第三方组件见 `THIRD_PARTY_NOTICES.md` 与包内 `_internal/licenses/`

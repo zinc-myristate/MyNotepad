@@ -1687,7 +1687,7 @@ def _on_loaded():
         user32.BringWindowToTop(hwnd)
         user32.SetForegroundWindow(hwnd)
         # 0.5s 后取消置顶
-        ctypes.windll.kernel32.Sleep(500)
+        kernel32.Sleep(500)
         user32.SetWindowPos(hwnd, -2, 0, 0, 0, 0, 0x0002 | 0x0001)
 
 

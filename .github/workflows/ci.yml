@@ -36,18 +36,36 @@ jobs:
   #   · 真回归会连挂 3 次，照样拦住提交（门禁强度不变）；
   #   · 纯时序抖动被重试吸收，不再让 master 无端变红。
   # 单测 job **不**加重试——它是确定性的，重试只会掩盖真问题。
+  #
+  # E2E 拆成三个并行任务：每个设 E2E_SHARD=k/3，tests/conftest.py 按收集顺序轮流分，各跑三分之一。
+  # 不拆的时候这一个 job 要 22 分钟，整轮 CI 28 分钟。改份数时 matrix 和 E2E_SHARD 的分母一起改
+  # （tests/test_e2e_shard.py 会核对：分母比 matrix 大的话，多出来的那几份没人跑，测试就静默少了）。
+  # fail-fast 关掉：一份红了别把另外两份取消，要拿到全部失败的用例。
   e2e:
+    name: e2e (${{ matrix.shard }}/3)
     runs-on: windows-latest
     needs: test
+    strategy:
+      fail-fast: false
+      matrix:
+        shard: [1, 2, 3]
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-python@v5
         with:
           python-version: '3.14'
+      - name: Cache pip
+        uses: actions/cache@v4
+        with:
+          path: ~\AppData\Local\pip\Cache
+          key: pip-${{ runner.os }}-${{ hashFiles('requirements.txt') }}
+          restore-keys: pip-${{ runner.os }}-
       - name: Install dependencies
         run: python -m pip install -r requirements.txt
       - name: Run headless E2E tests
         shell: pwsh
+        env:
+          E2E_SHARD: ${{ matrix.shard }}/3
         run: |
           # 失败信息必须**能被看到**：Actions 的 job 日志要登录才读得到（403），
           # 而 e2e 一旦红了就完全不知道挂在哪。所以：
@@ -66,14 +84,14 @@ jobs:
               $_.failure -or $_.error
             })
             $names = @($cases | ForEach-Object { "$($_.classname)::$($_.name)" })
-            $summary = "## E2E 失败详情（$($names.Count) 个用例）`n`n"
+            $summary = "## E2E 失败详情（第 $env:E2E_SHARD 份，$($names.Count) 个用例）`n`n"
             foreach ($c in $cases) {
               $body = if ($c.failure) { $c.failure.'#text' } else { $c.error.'#text' }
               $summary += "### $($c.classname)::$($c.name)`n`n``````text`n$body`n```````n`n"
             }
             Add-Content -Path $env:GITHUB_STEP_SUMMARY -Value $summary -Encoding utf8
             $head = if ($names.Count -gt 12) { $names[0..11] } else { $names }
-            Write-Host "::error title=E2E 失败（$($names.Count) 个）::$($head -join ' | ')"
+            Write-Host "::error title=E2E 失败（第 $env:E2E_SHARD 份，$($names.Count) 个）::$($head -join ' | ')"
           }
           exit $rc
 

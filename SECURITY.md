@@ -6,6 +6,8 @@
 
 - **不联网**：没有任何 HTTP 客户端调用、没有账号、没有遥测。唯一的外部依赖是系统自带的
   WebView2 运行时（渲染界面）与 Windows OCR 语言包（识别图片文字）。
+  例外是**语音输入**：它用 WebView2 内核的 Web Speech API，录音由内核交给在线语音服务识别
+  （页面的内容安全策略管不到内核自己发的请求）；不点语音输入就不会发生。
 - **数据只在本机**：`data/notes.db`（SQLite）+ `data/attachments/` + `data/backgrounds/`，
   随 exe 同目录（便携模式）。可用 `MYNOTEPAD_DATA_DIR` 环境变量改到别处。
 - **加密是真的**：`notes.content` 用 AES-256-GCM 加密，每条笔记一个随机 DEK，DEK 由密码经

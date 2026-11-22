@@ -30,6 +30,11 @@ INDEX = os.path.join(PROJECT_ROOT, 'renderer', 'index.html')
 
 # ---------- 工具：剥离注释与字符串（模板字面量的 ${} 内部视为代码） ----------
 
+# 在第 i 个字符处匹配标识符：用 match(src, i)，不要 re.match(…, src[i:])。
+# 后者每个字符都把剩下的源码整段拷一遍，一个 45 KB 的文件就是平方级的拷贝（2026-11-22 前全部模块要解析 38 秒）
+_IDENT_AT = re.compile(r'[A-Za-z_$][\w$]*')
+
+
 def strip_code(src, blank_strings=True):
     """剥离注释；blank_strings=True 时连字符串内容一起抹掉（保留模板字面量 ${} 内的代码）。
 
@@ -110,7 +115,7 @@ def strip_code(src, blank_strings=True):
                 stack.append('tpl')
             i += 1
             continue
-        m = re.match(r'[A-Za-z_$][\w$]*', src[i:])
+        m = _IDENT_AT.match(src, i)
         prev_word = m.group(0) if m else ('' if c.isspace() else prev_word)
         if c == '{':
             stack.append('brace'); out.append(c); i += 1; continue
@@ -146,9 +151,12 @@ PARAM_RE = re.compile(r'\(([^)]*)\)\s*(?:=>|\{)')
 IDENT_RE = re.compile(IDENT)
 
 
-def _statement_end(src, start):
-    """从 start 起找到顶层 ; 的位置（跳过字符串/注释/括号嵌套）"""
-    stripped = strip_comments_and_strings(src)
+def _statement_end(stripped, start):
+    """从 start 起找到顶层 ; 的位置（跳过字符串/注释/括号嵌套）。
+
+    stripped 是整个文件 strip_comments_and_strings 之后的样子（同长度，位置一一对应），
+    由调用方每个文件只算一次：以前这里每遇到一处声明就把整个文件重新剥一遍
+    """
     depth = 0
     i = start
     while i < len(stripped):
@@ -162,7 +170,7 @@ def _statement_end(src, start):
         elif c == '\n' and depth == 0:
             return i
         i += 1
-    return len(src)
+    return len(stripped)
 
 
 def _declared_names_in(decl_text):
@@ -190,6 +198,7 @@ def _declared_names_in(decl_text):
 def parse_module(src):
     """返回 (imports, exports, declared) —— imports: [(imported_name, local_name, source)]"""
     clean = strip_code(src, blank_strings=False)   # 必须保留字符串：模块路径在引号里
+    stripped = strip_comments_and_strings(src)     # 找语句结尾用，整个文件只剥一次
     imports, exports, declared = [], set(), set()
 
     for m in IMPORT_RE.finditer(clean):
@@ -213,7 +222,7 @@ def parse_module(src):
     for m in EXPORT_CLASS_RE.finditer(clean):
         exports.add(m.group(1))
     for m in EXPORT_VAR_RE.finditer(clean):
-        end = _statement_end(src, m.end())
+        end = _statement_end(stripped, m.end())
         decl_text = strip_comments_and_strings(src[m.end():end])
         for name in _declared_names_in(decl_text):
             exports.add(name)
@@ -229,7 +238,7 @@ def parse_module(src):
     for m in DECL_CLASS_RE.finditer(clean):
         declared.add(m.group(1))
     for m in DECL_VAR_RE.finditer(clean):
-        end = _statement_end(src, m.end())
+        end = _statement_end(stripped, m.end())
         for name in _declared_names_in(strip_comments_and_strings(src[m.end():end])):
             declared.add(name)
     for m in PARAM_RE.finditer(clean):

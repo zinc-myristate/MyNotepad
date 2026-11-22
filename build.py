@@ -7,15 +7,23 @@
 靠事前快照才救回 12.6MB 笔记库。
 
 用法：
-    python build.py              # 完整流程（推荐）
+    python build.py              # 完整流程（推荐）：关实例 → 存程序回滚快照 → 备份用户数据 → PyInstaller
+                                 #   → 还原用户数据并逐字节核对 → 剪枝 → 修快捷方式 → 冒烟
     python build.py --dry-run    # 只打印将要执行的步骤，不实际构建
     python build.py --no-restore # 构建完不还原数据（调试用）
-    python build.py --keep-backup  # 保留下载备份目录（默认保留最近 1 份）
+    python build.py --keep-backup  # 这次不剪枝（用户数据备份和程序回滚快照都留着）
+    python build.py --rollback   # 新包有问题：把程序换回最近一份回滚快照（不动 data、resources）
 
-退出码：0 成功；非 0 失败（且失败时会尽力还原数据，备份仍留在 dist/_predist-backup-*）。
+两种备份，各管一半：
+    dist/_predist-backup-<时间>/  用户数据（data、resources）+ 旧 exe：构建时 dist/MyNotepad 会被整个清空，靠它还原。默认留最近 1 份
+    dist/_rollback-<时间>/        打包前的程序（除 data、resources 以外的全部，含 _internal）：新包有问题时靠它换回去。默认留最近 2 份
+
+退出码：0 成功；非 0 失败（失败时会尽力把旧程序和数据都还原回来，备份仍留在 dist/ 里）。
 """
 import argparse
+import hashlib
 import os
+import re
 import shutil
 import subprocess
 import sys
@@ -32,6 +40,10 @@ BACKUP_ROOT = os.path.join(ROOT, 'dist')
 
 # 打包必须一并保护的目录（相对 dist/MyNotepad）
 PROTECTED = ('data', 'resources')
+
+# build.py 自己存的程序回滚快照：`_rollback-<年月日>-<时分秒>`。剪枝和 --rollback 只认这个格式，
+# 手工存的（比如 `_rollback-20261120-before-build`）不碰
+ROLLBACK_RE = re.compile(r'_rollback-\d{8}-\d{6}')
 
 SHORTCUT_NAME = '我的记事本.lnk'
 
@@ -118,6 +130,108 @@ def prune_backups(keep=1):
     for old in items[keep:]:
         shutil.rmtree(os.path.join(BACKUP_ROOT, old), ignore_errors=True)
         log('清理旧备份 %s' % old)
+
+
+def _tree_digest(root):
+    """root 下每个文件：相对路径 → (大小, sha256)"""
+    out = {}
+    for r, _dirs, files in os.walk(root):
+        for f in files:
+            path = os.path.join(r, f)
+            h = hashlib.sha256()
+            with open(path, 'rb') as fh:
+                for chunk in iter(lambda: fh.read(1 << 20), b''):
+                    h.update(chunk)
+            out[os.path.relpath(path, root).replace(os.sep, '/')] = (os.path.getsize(path), h.hexdigest())
+    return out
+
+
+def protected_digest():
+    """用户文件（PROTECTED 目录里的每个文件）的大小和哈希：打包前算一次，还原后再算一次，必须一样"""
+    return {name + '/' + rel: v
+            for name in PROTECTED if os.path.isdir(os.path.join(DIST, name))
+            for rel, v in _tree_digest(os.path.join(DIST, name)).items()}
+
+
+def digest_diff(before, after):
+    """两次 protected_digest 的差别：(变了的, 少了的, 多出来的)，各是排好序的相对路径列表"""
+    changed = sorted(k for k in before.keys() & after.keys() if before[k] != after[k])
+    return changed, sorted(before.keys() - after.keys()), sorted(after.keys() - before.keys())
+
+
+def snapshot_program():
+    """把打包前的程序（dist/MyNotepad 里除了 PROTECTED 以外的全部，含 _internal）存到 dist/_rollback-<时间>/。
+
+    为什么：make_backup 只存用户数据和一个 exe，新包有问题时换不回旧程序 —— Python 运行时、前端文件都在
+    _internal 里。以前每次打包前手工拷一份，十几次下来攒了 2 GB 没人清。
+    目标目录先建好再逐项拷进去，不对整个 dist/MyNotepad 用 copytree：copytree 最后会把源目录的修改时间
+    拷到目标上（手工存的 `_rollback-20261120-before-build` 显示的就是 11-18 的时间）
+    """
+    if not os.path.exists(EXE):
+        log('dist 里还没有程序（可能是首次打包），不存回滚快照')
+        return None
+    stamp = datetime.now().strftime('%Y%m%d-%H%M%S')
+    dest = os.path.join(BACKUP_ROOT, '_rollback-%s' % stamp)
+    os.makedirs(dest)
+    try:
+        for name in sorted(os.listdir(DIST)):
+            if name in PROTECTED:
+                continue
+            src = os.path.join(DIST, name)
+            if os.path.isdir(src):
+                shutil.copytree(src, os.path.join(dest, name))
+            else:
+                shutil.copy2(src, os.path.join(dest, name))
+    except Exception:
+        shutil.rmtree(dest, ignore_errors=True)        # 拷了一半的快照不能留着冒充能用的
+        raise
+    log('已存程序回滚快照：%s（%s，不含 %s）' % (os.path.basename(dest), human(dest), '、'.join(PROTECTED)))
+    return dest
+
+
+def rollback_snapshots():
+    """build.py 自己存的回滚快照（目录名），新 → 旧。
+
+    按名字里的时间戳排，不按修改时间：名字格式是定死的，名字序就是时间序；
+    修改时间却会被 copytree 改成源目录的（见 snapshot_program）
+    """
+    try:
+        names = [d for d in os.listdir(BACKUP_ROOT)
+                 if ROLLBACK_RE.fullmatch(d) and os.path.isdir(os.path.join(BACKUP_ROOT, d))]
+    except OSError:
+        return []
+    return sorted(names, reverse=True)
+
+
+def prune_rollbacks(keep=2):
+    """只留最近 keep 份 build.py 存的回滚快照（每份两百多 MB）"""
+    for old in rollback_snapshots()[keep:]:
+        shutil.rmtree(os.path.join(BACKUP_ROOT, old), ignore_errors=True)
+        log('清理旧的回滚快照 %s' % old)
+
+
+def restore_program(snapshot):
+    """把 dist/MyNotepad 里的程序换成 snapshot 里的那份；PROTECTED 目录（用户数据）不动"""
+    if not os.path.isfile(os.path.join(snapshot, 'MyNotepad.exe')):
+        raise RuntimeError('快照里没有 MyNotepad.exe，不像一份完整的程序：%s' % snapshot)
+    os.makedirs(DIST, exist_ok=True)
+    for name in os.listdir(DIST):
+        if name in PROTECTED:
+            continue
+        path = os.path.join(DIST, name)
+        if os.path.isdir(path):
+            shutil.rmtree(path)
+        else:
+            os.remove(path)
+    for name in os.listdir(snapshot):
+        if name in PROTECTED:
+            continue
+        src = os.path.join(snapshot, name)
+        if os.path.isdir(src):
+            shutil.copytree(src, os.path.join(DIST, name))
+        else:
+            shutil.copy2(src, os.path.join(DIST, name))
+    log('程序已换回 %s' % os.path.basename(snapshot))
 
 
 def kill_running_app():
@@ -243,40 +357,69 @@ def smoke_check():
         shutil.rmtree(tmp, ignore_errors=True)
 
 
-def main():
+def main(argv=None):
     ap = argparse.ArgumentParser(description='备份-构建-还原-修快捷方式 一条命令打包')
     ap.add_argument('--dry-run', action='store_true', help='只打印步骤，不构建')
     ap.add_argument('--no-restore', action='store_true', help='构建后不还原数据')
     ap.add_argument('--no-smoke', action='store_true', help='跳过冒烟启动')
     ap.add_argument('--no-kill', action='store_true', help='不自动关闭正在运行的实例')
-    ap.add_argument('--keep-backup', action='store_true', help='保留全部备份目录')
-    ap.add_argument('--keep', type=int, default=1, help='保留最近几份快照（默认 1）')
+    ap.add_argument('--keep-backup', action='store_true', help='这次不剪枝（数据备份和回滚快照都留着）')
+    ap.add_argument('--keep', type=int, default=1, help='保留最近几份用户数据备份（默认 1）')
+    ap.add_argument('--keep-rollback', type=int, default=2, help='保留最近几份程序回滚快照（默认 2）')
     ap.add_argument('--prune-only', action='store_true',
-                    help='只清理 dist 下的历史快照再退出（不构建），配合 --keep N 指定保留份数')
-    args = ap.parse_args()
+                    help='只清理 dist 下的历史备份再退出（不构建），配合 --keep / --keep-rollback 指定保留份数')
+    ap.add_argument('--rollback', action='store_true',
+                    help='把程序换回最近一份回滚快照再退出（不构建，不动 data、resources）')
+    args = ap.parse_args(argv)
+    keep, keep_rollback = max(1, args.keep), max(1, args.keep_rollback)
 
     log('项目根目录：%s' % ROOT)
     log('产物路径  ：%s' % DIST)
     if args.prune_only:
-        # 快照会随每次打包累积（每份 ~80MB），这里给一个不改动任何构建产物的清理入口
-        log('只清理历史快照：保留最近 %d 份（当前目录：%s）' % (args.keep, BACKUP_ROOT))
-        prune_backups(keep=max(1, args.keep))
+        # 备份会随每次打包累积（数据备份每份约 50 MB，回滚快照每份两百多 MB），这里给一个不改动任何构建产物的清理入口
+        log('只清理历史备份：数据备份留最近 %d 份、回滚快照留最近 %d 份（目录：%s）'
+            % (keep, keep_rollback, BACKUP_ROOT))
+        prune_backups(keep=keep)
+        prune_rollbacks(keep=keep_rollback)
+        return 0
+    if args.rollback:
+        snaps = rollback_snapshots()
+        if not snaps:
+            log('没有 build.py 存的回滚快照（dist/_rollback-<年月日>-<时分秒>），没法回滚')
+            return 1
+        if not args.no_kill:
+            kill_running_app()
+        try:
+            restore_program(os.path.join(BACKUP_ROOT, snaps[0]))
+        except Exception as exc:
+            log('回滚失败：%s（快照还在 %s，可以再试一次）' % (exc, snaps[0]))
+            return 1
         return 0
     if args.dry_run:
-        log('--dry-run：将执行 关实例 -> 备份 -> PyInstaller -> 还原 -> 修快捷方式 -> 冒烟')
+        log('--dry-run：将执行 关实例 -> 存回滚快照 -> 备份 -> PyInstaller -> 还原并核对 -> 剪枝 -> 修快捷方式 -> 冒烟')
         for name in PROTECTED:
             p = os.path.join(DIST, name)
             log('  保护 %-10s %s' % (name, human(p) if os.path.exists(p) else '(不存在)'))
+        log('  现有回滚快照 %d 份：%s' % (len(rollback_snapshots()), '、'.join(rollback_snapshots()) or '无'))
         return 0
 
-    backup = None
+    backup = snapshot = before = None
     try:
         if not args.no_kill:
             kill_running_app()
+        before = protected_digest()
         backup = make_backup()
+        snapshot = snapshot_program()
         run_build()
     except Exception as exc:
         log('构建阶段失败：%s' % exc)
+        # PyInstaller 一开始就清空了 dist/MyNotepad：程序和数据都要还原，不然用户手里一个能用的都没有
+        if snapshot:
+            log('正在把打包前的程序换回来 …')
+            try:
+                restore_program(snapshot)
+            except Exception as exc2:
+                log('换回程序失败：%s（快照还在 %s）' % (exc2, snapshot))
         if backup:
             log('正在从备份还原，避免丢失运行数据 …')
             restore(backup)
@@ -284,14 +427,25 @@ def main():
 
     if not args.no_restore:
         restore(backup)
+        changed, missing, extra = digest_diff(before, protected_digest())
+        if changed or missing or extra:
+            for label, names in (('变了', changed), ('少了', missing), ('多了', extra)):
+                if names:
+                    log('  %s %d 个：%s' % (label, len(names), '、'.join(names[:10])))
+            log('还原后的用户文件和打包前不一样！这次不剪枝，备份在 %s' % backup)
+            return 1
+        log('核对通过：用户文件 %d 个，与打包前逐字节一致' % len(before))
     if not args.keep_backup:
-        prune_backups(keep=max(1, args.keep))
+        prune_backups(keep=keep)
+        prune_rollbacks(keep=keep_rollback)
     fix_shortcuts()
     if not args.no_smoke:
         try:
             smoke_check()
         except Exception as exc:
             log('冒烟失败：%s' % exc)
+            if snapshot:
+                log('要换回打包前的程序：python build.py --rollback')
             return 1
     log('全部完成（可执行文件已生成）  产物：%s' % EXE)
     return 0

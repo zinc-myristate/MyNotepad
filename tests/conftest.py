@@ -15,6 +15,48 @@ APP_PYW = os.path.join(PROJECT_ROOT, 'app.pyw')
 APP_SPLIT_MARKER = '# ====== 创建窗口 ======'
 
 
+def parse_e2e_shard(spec):
+    """E2E_SHARD 的值：'k/n'（第 k 份，共 n 份，k 从 1 起）→ (k, n)；空 → None；写错了抛 UsageError"""
+    spec = (spec or '').strip()
+    if not spec:
+        return None
+    k, sep, n = spec.partition('/')
+    if not (sep and k.isdigit() and n.isdigit() and 1 <= int(k) <= int(n)):
+        raise pytest.UsageError('E2E_SHARD 要写成「第几份/共几份」，比如 1/3，现在是 %r' % spec)
+    return int(k), int(n)
+
+
+def split_e2e_shard(items, shard):
+    """按收集顺序把 E2E 用例轮流分成 n 份，返回 (留下的, 去掉的)；不是 E2E 的用例都留下。
+
+    轮流分而不是按文件切：同一个文件里的用例耗时差不多，轮流分下来每份的耗时比较平均
+    """
+    k, n = shard
+    keep, drop = [], []
+    index = 0
+    for item in items:
+        if item.get_closest_marker('e2e') is None:
+            keep.append(item)
+            continue
+        (keep if index % n == k - 1 else drop).append(item)
+        index += 1
+    return keep, drop
+
+
+def pytest_collection_modifyitems(config, items):
+    """CI 把 E2E 拆成几个并行任务（ci.yml 的 matrix），每个任务设 E2E_SHARD=k/n，只跑自己那一份。
+
+    不拆的时候 E2E 一个任务要 22 分钟，整轮 CI 28 分钟。每个任务的收集顺序一样，各算各的也分得一致
+    """
+    shard = parse_e2e_shard(os.environ.get('E2E_SHARD'))
+    if shard is None:
+        return
+    keep, drop = split_e2e_shard(items, shard)
+    if drop:
+        config.hook.pytest_deselected(items=drop)
+        items[:] = keep
+
+
 @pytest.fixture(autouse=True)
 def launched(monkeypatch):
     """跑测试时绝不真的把东西交给系统打开：浏览器、邮件客户端、附件的默认程序都算。

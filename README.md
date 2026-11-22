@@ -2,7 +2,7 @@
 
 > Windows 桌面本地记事本 —— Python + pywebview 架构，纸质笔记本风格。
 > 数据完全本地存储，便携模式（数据跟随 exe 目录），可拷到 U 盘随身携带。
-> **不联网、不写注册表（除非你主动开「开机自启」）、不采集任何数据。**
+> **不联网（语音输入除外，见功能表）、不写注册表（除非你主动开「开机自启」）、不采集任何数据。**
 
 [![CI](https://github.com/zinc-myristate/MyNotepad/actions/workflows/ci.yml/badge.svg)](https://github.com/zinc-myristate/MyNotepad/actions/workflows/ci.yml)
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](LICENSE)
@@ -39,7 +39,7 @@
 | 📤 导出 | HTML（含公式时自带公式样式和字体，断网打开也不走样）/ TXT / DOCX（标题样式、Word 表格、列表符号；公式写 TeX 源码）/ XLSX（段落一行一格、表格照原样，格子一律按文字写）/ PDF（系统打印）/ **Markdown**（图片自动复制到同级 `.assets/`）/ **导入 Markdown** / **一键全库备份 ZIP** / **按笔记本或标签导出**（解压即可作为独立库打开；导出标签时跟着列表，选了笔记本就只导出这一本里的） |
 | 📥 快速捕获 | 侧栏「捕获」菜单：**截图选区**（框选 → 插入当前笔记 / 存为新笔记 / 复制，带像素放大镜）/ **剪贴板文本** →「收件箱」/ **今日日记**（幂等，套「日记」模板）/ **迷你记录窗**（`Ctrl+Alt+S` 全局唤起，Enter 收进收件箱，不抢焦点）/ **模板**（`{{date}} {{time}} {{weekday}} {{title}}`，抽屉里可视化编辑 + 变量预览） |
 | 🔍 识别文字 | **Windows 自带 OCR**（不联网不下模型）：截图工具条 / 捕获菜单「识别图片…」「识别剪贴板图片」/ 笔记里图片**右键**四个入口；识别完先弹面板可改可换语言（记住选择），再选「插入当前笔记（图保留、文字接在它下面）/ 复制 / 存为新笔记」；中文逐字去空格、按行距还原段落，小图自动放大重试 |
-| 🎙 其他 | 语音输入（Web Speech API zh-CN）、日历面板、自定义应用图标（显著性智能裁切 + Win11 大圆角）、**复制笔记**（含附件文件） |
+| 🎙 其他 | 语音输入（Web Speech API zh-CN：识别由 WebView2 内核交给在线语音服务完成，**点了语音输入才联网**）、日历面板、自定义应用图标（显著性智能裁切 + Win11 大圆角）、**复制笔记**（含附件文件） |
 
 ## 技术架构
 
@@ -52,7 +52,7 @@
 | Markdown 栈 | markdown-it（渲染）+ CodeMirror 5（源码编辑）+ DOMPurify（消毒）+ highlight.js（代码高亮），全部离线自带、无 CDN |
 | 加密 | `cryptography`（AES-256-GCM） |
 | 打包 | PyInstaller（`MyNotepad.spec`） |
-| 测试 | pytest（894 单测 + 139 无头 E2E）、ruff |
+| 测试 | pytest（1076 单测 + 159 无头 E2E）、ruff |
 
 ## 快速开始
 
@@ -71,7 +71,7 @@ python app.pyw                      # 或 py -3.14 app.pyw
 **打包分发**：
 
 ```bash
-python build.py                     # 推荐：关实例 → 备份 data → PyInstaller → 还原 → 修快捷方式 → 冒烟
+python build.py                     # 推荐：关实例 → 备份 data → 存回滚快照 → PyInstaller → 还原并核对 → 修快捷方式 → 冒烟
 ```
 
 **便捷启动**：`启动.bat` / `启动.vbs`（打包版）；`诊断.bat` 排查环境问题（只读，输出可直接贴到 issue）。
@@ -96,13 +96,15 @@ python build.py                     # 推荐：关实例 → 备份 data → PyI
 ## 测试
 
 ```bash
-py -3.14 -m pytest                 # 894 单测（自动隔离临时数据目录）
-py -3.14 -m pytest -m e2e          # 139 无头 pywebview 端到端（真开窗口，约 20 分钟）
-python -m ruff check .             # 代码检查（配置见 pyproject.toml）
+py -3.14 -m pytest                 # 1076 单测（自动隔离临时数据目录）
+py -3.14 -m pytest -m e2e          # 159 无头 pywebview 端到端（真开窗口，约 23 分钟）
+python -m ruff check .             # 代码检查（含 app.pyw，配置见 pyproject.toml）
 ```
 
+E2E 可以拆开跑：设环境变量 `E2E_SHARD=1/3` 只跑三份里的第一份（按收集顺序轮流分）。
+
 CI（[`.github/workflows/ci.yml`](.github/workflows/ci.yml)）在 windows-latest 上跑同样三步：
-ruff + 单测 → 无头 E2E → master 分支额外做一次打包冒烟；打 tag 时由
+ruff + 单测 → 无头 E2E（拆成三个任务并行）→ master 分支额外做一次打包冒烟；打 tag 时由
 [`release.yml`](.github/workflows/release.yml) 出 Windows 包并自动附到 Release。
 [`audit.yml`](.github/workflows/audit.yml) 在提交时和每周一查依赖的已知漏洞（含自带的前端库），
 本地可以运行 `python build_resources/audit_deps.py`。
@@ -113,8 +115,9 @@ ruff + 单测 → 无头 E2E → master 分支额外做一次打包冒烟；打 
 python build.py                    # 推荐：一条命令完成全部步骤
 ```
 
-`build.py` 按 `关实例 → 备份 data/resources → PyInstaller → 还原数据 → 修快捷方式 → 冒烟启动`
-执行，任一步失败都会**尽力还原数据**。
+`build.py` 按 `关实例 → 备份 data/resources → 存程序回滚快照 → PyInstaller → 还原数据并逐字节核对 → 剪枝 → 修快捷方式 → 冒烟启动`
+执行，构建失败时会把**旧程序和数据都还原回来**。新包有问题，`python build.py --rollback` 把程序换回打包前那一版
+（不动 `data/`、`resources/`）。dist 里默认留最近 1 份数据备份、2 份程序回滚快照，`--keep-backup` 这次全留。
 
 > ⚠️ 不要直接跑 `pyinstaller MyNotepad.spec`：它会清空整个 `dist/MyNotepad`，
 > 而你的笔记库、附件、背景图就在 `dist/MyNotepad/data/` 里。手工执行前务必先备份 `data/`。
@@ -132,7 +135,7 @@ SQLite 删除或改写大字段后**不会**把空间还给文件系统——图
 ├── app.pyw                  # 入口（pywebview 窗口 + JS API 桥接 + 关窗兜底 + 图标处理）
 ├── backend.py               # 后端 API（数据库/加密/搜索/备份/提醒/导出）
 ├── applog.py                # 崩溃兜底日志
-├── build.py                 # 打包脚本（备份-构建-还原-修快捷方式-冒烟）
+├── build.py                 # 打包脚本（备份-回滚快照-构建-还原核对-修快捷方式-冒烟；--rollback 换回上一版）
 ├── MyNotepad.spec           # PyInstaller 打包配置（含依赖许可证收集）
 ├── pyproject.toml           # ruff 配置
 ├── renderer/                # 前端（ES 模块图 + Quill/KaTeX + 4 主题样式）

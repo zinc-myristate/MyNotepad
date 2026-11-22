@@ -10,7 +10,8 @@
 
 ```bash
 python app.pyw          # 开发运行（数据在仓库 data/）
-python build.py         # 打包（关实例 → 备份 data/resources → PyInstaller → 还原 → 冒烟）
+python build.py         # 打包（关实例 → 备份 data/resources → 存程序回滚快照 → PyInstaller → 还原并逐字节核对 → 剪枝 → 冒烟）
+python build.py --rollback  # 新包有问题：把程序换回打包前那一版（不动 data/、resources/）
 python 诊断.bat          # 环境自检（只读）
 ```
 
@@ -22,7 +23,7 @@ python 诊断.bat          # 环境自检（只读）
 ```bash
 python -m ruff check .   # 阻断项
 python -m pytest         # 单测（默认不含 e2e）
-python -m pytest -m e2e  # 无头 E2E（真开窗口，约 10 分钟；改了界面/前端模块必跑）
+python -m pytest -m e2e  # 无头 E2E（真开窗口，约 23 分钟；改了界面/前端模块必跑。E2E_SHARD=1/3 只跑三分之一）
 ```
 
 CI（`.github/workflows/ci.yml`）会跑同样的三步，**e2e 失败会直接拦提交**。
@@ -88,6 +89,8 @@ CI（`.github/workflows/ci.yml`）会跑同样的三步，**e2e 失败会直接�
 2. 把 [CHANGELOG.md](CHANGELOG.md) 顶部的「## 未发布（日期）」改成「## v1.2.0（日期）」，并在下面开一个新的空「未发布」段。
 3. 本地跑一遍 `python -m ruff check .` + `python -m pytest` + `python build_resources/audit_deps.py`，
    再 `python build.py` 确认打包与冒烟都过。
+   界面改过的话重拍 README 截图：`python docs/make_screenshots.py`（演示数据，不碰自己的库）
+   + `python docs/make_social_preview.py`；社交预览图还要在仓库 Settings → Social preview 里重新上传。
 4. `git tag v1.2.0 -m "一句话说明"` → `git push origin master` → `git push origin v1.2.0`。
 5. [`release.yml`](.github/workflows/release.yml) 会自动：跑测试 → PyInstaller → 冒烟 →
    **许可证闸门（`collect_licenses.py --verify`）+ 校验没有私人数据**

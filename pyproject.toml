@@ -2,6 +2,8 @@
 # 目标版本与打包环境一致（Python 3.14 + PyInstaller 6.x）
 target-version = "py314"
 line-length = 110
+# ruff 默认只认 .py：入口 app.pyw 以前一直没被检查（下面 per-file-ignores 里给它配的规则也就没生效过）
+extend-include = ["*.pyw"]
 
 # 只检查仓库自身的源码与测试；dist/build 是产物，renderer 是前端（含第三方压缩库）
 extend-exclude = [
@@ -34,8 +36,9 @@ ignore = [
 ]
 
 [tool.ruff.lint.per-file-ignores]
-# app.pyw 必须在 import webview 之前做 subprocess 猴子补丁（见文件头注释），导入位置特殊
-"app.pyw" = ["E402", "F401"]
+# app.pyw 必须在 import webview 之前做 subprocess 猴子补丁（见文件头注释），导入位置特殊；
+# 导入顺序也是刻意的，不让 isort 重排（I001）。未定义名字（F821）等其余规则照常查
+"app.pyw" = ["E402", "F401", "I001"]
 # 测试里会用导入副作用、长断言消息
 "tests/*" = ["B011", "B017", "E402", "F401"]
 
