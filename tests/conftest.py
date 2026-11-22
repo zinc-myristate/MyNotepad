@@ -270,3 +270,19 @@ def wait_until(predicate, timeout=20.0, interval=0.05):
         if value or time.time() >= deadline:
             return value
         time.sleep(interval)
+
+
+BOOT_STATE = ("window.__bootError ? 'error: ' + window.__bootError"
+              " : ((window.__bootTrace || []).indexOf('ready') >= 0 ? 'ready' : '')")
+
+
+def wait_app_ready(window, timeout=60.0):
+    """等主界面启动完：09-boot.js 最后在 `window.__bootTrace` 里记的 'ready'
+    （笔记列表、第一篇笔记、侧栏的视图 / 标签 / 笔记本、启动提示都好了）。
+
+    以前各个 E2E 文件开窗后固定 sleep 6–8 秒：本机多数时候白等五六秒，全量 E2E 一大半时间花在这儿；
+    机器忙的时候又不够（2026-11-22 分份跑时有一条就这么红过）。启动出错时马上把 __bootError 报出来，不等满超时
+    """
+    state = wait_for_js(window, BOOT_STATE, timeout=timeout)
+    if state != 'ready':
+        raise AssertionError('主界面 %s 秒内没有启动完：%r' % (timeout, state))

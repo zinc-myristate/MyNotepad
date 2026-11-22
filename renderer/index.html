@@ -13,14 +13,17 @@
            可执行或可嵌入的容器。
          · base-uri 'none' —— 防 <base> 劫持相对路径。
 
-       为什么 script-src 保留 'unsafe-inline'：启动加载器（index.html 末尾那段）是**刻意**内联的，
-       它要在第三方库逐个注入失败时整页 reload 重试；抽成外部文件会把这段关键路径重新变成
-       "文件本身也可能取不到"。收益（挡注入的内联事件属性）不值这个险。
-       同理 style-src 需要 'unsafe-inline'：本项目大量的界面着色/薄纱/封面都是内联样式。
+         · script-src 不放行内联脚本，只认 self 和下面那个 sha256：启动加载器（本文件末尾那段）是**刻意**内联的
+           （它要在第三方库逐个注入失败时整页 reload 重试；抽成外部文件，这段关键路径本身就可能取不到），
+           按哈希放行它一段，别的内联脚本、onerror= 这类内联事件属性一律不执行。万一有内容绕过了 DOMPurify
+           混进页面，也跑不起来（2026-11-22 前这里是 'unsafe-inline'）。
+           注意：改了加载器（哪怕一个空格）就要重算哈希，不然整个应用起不来：tests/test_csp.py 会提示新的值。
+
+       style-src 仍要 'unsafe-inline'：本项目大量的界面着色/薄纱/封面都是内联样式。
        真正的注入面（贴纸 HTML 回灌、KaTeX \href）已在 14/quill-deco/quill-blots 三处从源头堵住。 -->
   <meta http-equiv="Content-Security-Policy"
         content="default-src 'self';
-                 script-src 'self' 'unsafe-inline';
+                 script-src 'self' 'sha256-tiw/Bj6fL70/pEUE3481sMIdHmUgGr2fUkdmeRlvY8M=';
                  style-src 'self' 'unsafe-inline';
                  img-src 'self' data: blob:;
                  font-src 'self' data:;

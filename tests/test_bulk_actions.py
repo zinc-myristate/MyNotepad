@@ -10,7 +10,7 @@ import threading
 import time
 
 import pytest
-from conftest import PROJECT_ROOT, load_app_partial
+from conftest import PROJECT_ROOT, load_app_partial, wait_app_ready
 
 
 def delta(text):
@@ -109,7 +109,7 @@ class TestBatchBackend:
 
 # ---------- 前端交互（e2e） ----------
 
-def _run(ns, actions, wait_before=8):
+def _run(ns, actions, wait_before=None):
     import webview
     result = {}
     window = webview.create_window('批量回归', os.path.join(PROJECT_ROOT, 'renderer', 'index.html'),
@@ -117,7 +117,10 @@ def _run(ns, actions, wait_before=8):
 
     def runner():
         try:
-            time.sleep(wait_before)
+            if wait_before is None:
+                wait_app_ready(window)        # 等启动完（以前固定等 8 秒）
+            else:
+                time.sleep(wait_before)
             actions(window, result)
         except Exception as exc:
             result['error'] = repr(exc)

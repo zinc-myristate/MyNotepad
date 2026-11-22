@@ -23,7 +23,7 @@ python 诊断.bat          # 环境自检（只读）
 ```bash
 python -m ruff check .   # 阻断项
 python -m pytest         # 单测（默认不含 e2e）
-python -m pytest -m e2e  # 无头 E2E（真开窗口，约 23 分钟；改了界面/前端模块必跑。E2E_SHARD=1/3 只跑三分之一）
+python -m pytest -m e2e  # 无头 E2E（真开窗口，约 13 分钟；改了界面/前端模块必跑。E2E_SHARD=1/3 只跑三分之一）
 ```
 
 CI（`.github/workflows/ci.yml`）会跑同样的三步，**e2e 失败会直接拦提交**。

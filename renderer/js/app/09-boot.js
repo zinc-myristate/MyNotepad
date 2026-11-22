@@ -429,7 +429,7 @@ async function initApp() {
   initNoteFormatBadge();  // 标题栏的格式徽标：Markdown ⇄ 富文本 互转
   initMarkdownToolbar();  // Markdown 工具栏（加粗/列表/待办/表格/图片/附件…）
   initTodoPanel();        // 跨笔记待办清单
-  initSavedSearches();    // 侧栏「视图」区（保存的搜索）
+  const savedSearchesLoaded = initSavedSearches();    // 侧栏「视图」区（保存的搜索），在后台载入
   initStatusBar();        // 状态栏（字数统计）
   initOutline();          // 大纲抽屉
   initFindBar();          // 笔记内查找替换
@@ -469,15 +469,14 @@ async function initApp() {
     document.querySelector('.ql-toolbar')?.classList.add('hidden');
   }
 
-  // 加载标签筛选
-  loadTagFilter();
-  // 加载笔记本栏
-  loadNotebookBar();
+  // 标签筛选、笔记本栏在后台载入（不挡着下面的初始化）
+  const sidebarLoaded = Promise.allSettled([savedSearchesLoaded, loadTagFilter(), loadNotebookBar()]);
   // 初始化 Dock 拖拽
   initAllDrag();
   console.log('📒 我的记事本已就绪！');
   console.log(`   - ${notes.length} 篇笔记已加载`);
   console.log(`   - 当前主题：${state.currentTheme}`);
+  return sidebarLoaded;   // 侧栏的视图、标签、笔记本都载完，bootApplication 才记「启动完成」
 }
 
 /** 启动提示（开发态数据目录 / 另一份数据更完整）：一次性展示，可关闭。
@@ -516,7 +515,9 @@ async function showStartupNotice() {
 // 界面停在"只有骨架、没有列表、笔记本栏是空的"半死状态，而且只在某个 import 边存在时才复现。
 // 模块求值是同步的，排到下一个宏任务时整张图必然已求值完毕，这类顺序坑从此不可能再发生。
 function bootApplication() {
-  initApp().then(showStartupNotice).catch(err => {
+  // 最后记一步 'ready'：笔记列表、第一篇笔记、侧栏的视图 / 标签 / 笔记本、启动提示都好了。
+  // e2e 等的就是它（conftest.wait_app_ready）：以前开窗后固定等 6–8 秒，多数时候白等，机器忙时又不够
+  initApp().then(showStartupNotice).then(() => _bootStep('ready')).catch(err => {
     // 启动失败会让界面停在"半死"状态（没有列表、没有笔记本栏，只有骨架占位），
     // 所以把原因留在 window.__bootError 上：诊断/e2e 能直接读到，不必靠猜。
     try { window.__bootError = (err && (err.stack || err.message)) || String(err); } catch (e) { /* 忽略 */ }

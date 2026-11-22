@@ -17,14 +17,14 @@ import threading
 import time
 
 import pytest
-from conftest import PROJECT_ROOT, load_app_partial, wait_for_js
+from conftest import PROJECT_ROOT, load_app_partial, wait_app_ready, wait_for_js
 
 pytestmark = pytest.mark.e2e
 
 RENDERER = PROJECT_ROOT + '/renderer'
 
 
-def _run(ns, actions, wait_before=8):
+def _run(ns, actions, wait_before=None):
     import webview
     result = {}
     window = webview.create_window('笔记本范围回归', RENDERER + '/index.html',
@@ -32,7 +32,10 @@ def _run(ns, actions, wait_before=8):
 
     def runner():
         try:
-            time.sleep(wait_before)
+            if wait_before is None:
+                wait_app_ready(window)        # 等启动完（以前固定等 8 秒）
+            else:
+                time.sleep(wait_before)
             actions(window, result)
         except Exception as exc:                     # noqa: BLE001
             result['error'] = repr(exc)

@@ -3,6 +3,7 @@
 处理数据库、文件操作，暴露 API 给前端
 """
 import base64
+import contextlib
 import csv
 import errno
 import functools
@@ -469,13 +470,28 @@ def _file_error_text(exc, reading=False):
     return ('导入' if reading else '导出') + '时出错，详细原因记在 error.log 里'
 
 
-def _discard_partial(path):
-    """删掉写到一半的 zip。它的名字看着就是一份备份，打开却是坏的，留着比没有更糟。
-    只在 zip 已经建出来以后调用：打开就失败时目标文件没被动过（可能是一份旧备份），不能删"""
+@contextlib.contextmanager
+def _replacing(save_path):
+    """导出先写到同一目录下的临时文件，写完、关好，再一步换成正式文件名（os.replace）。
+
+    以前直接打开目标文件写：中途失败（磁盘满、某个附件读不出来、生成时抛异常）时，同名的旧文件已经被清空，
+    新文件只写了一半。覆盖上次导出的全库 zip 时最伤：旧备份没了，新的又打不开。
+    现在失败只删临时文件，同名的旧文件原样留着；目标被别的程序独占、或者是个同名文件夹时，替换那一步报错，原因照旧。
+    临时文件放在同一目录：os.replace 只有在同一个卷上才是一步完成的。
+    用法：`with _replacing(save_path) as part:` 里往 part 写，块里的文件要在块结束前关掉（Windows 换不了打开着的文件）
+    """
+    fd, part = tempfile.mkstemp(prefix='.%s.' % os.path.basename(save_path), suffix='.part',
+                                dir=os.path.dirname(os.path.abspath(save_path)))
+    os.close(fd)
     try:
-        os.remove(path)
-    except OSError:
-        pass
+        yield part
+        os.replace(part, save_path)
+    except BaseException:
+        try:
+            os.remove(part)
+        except OSError:
+            pass
+        raise
 
 
 def _scope_clause(notebook_id=None, tag_id=None):
@@ -2297,7 +2313,7 @@ class Api:
             if not rows:
                 return {'ok': True, 'count': 0}
             keys = sorted({k for r in rows for k in (r.get('props') or {})})
-            with open(save_path, 'w', encoding='utf-8-sig', newline='') as fh:
+            with _replacing(save_path) as part, open(part, 'w', encoding='utf-8-sig', newline='') as fh:
                 writer = csv.writer(fh)
                 writer.writerow(['标题', '笔记本', '标签', '更新时间', '字数',
                                  '待办(未完成/总数)', '最近到期', '已加密'] + keys)
@@ -3344,17 +3360,15 @@ class Api:
         """一键全库导出：sqlite backup API 快照 notes.db + attachments/ + backgrounds/ 归档为 zip。
         snapshot 页级一致（遇写入自动重启），归档内容与备份包同构，可直接替换 data/ 目录恢复。
 
-        返回 {'ok': True} 或 {'ok': False, 'error': 原因}。写到一半失败时删掉那个不完整的 zip。
+        返回 {'ok': True} 或 {'ok': False, 'error': 原因}。写到一半失败时同名的旧文件原样留着（`_replacing`）。
         """
-        created = False
         try:
             import zipfile
             tmp = tempfile.mkdtemp(prefix='mynotepad_export_')
             try:
                 snap = os.path.join(tmp, 'notes.db')
                 self._snapshot_db(snap)
-                with zipfile.ZipFile(save_path, 'w', zipfile.ZIP_DEFLATED) as zf:
-                    created = True
+                with _replacing(save_path) as part, zipfile.ZipFile(part, 'w', zipfile.ZIP_DEFLATED) as zf:
                     zf.write(snap, 'notes.db')
                     self._zip_dir(zf, ATTACH_DIR, 'attachments')
                     self._zip_dir(zf, os.path.join(DATA_DIR, 'backgrounds'), 'backgrounds')
@@ -3363,8 +3377,6 @@ class Api:
                 shutil.rmtree(tmp, ignore_errors=True)
         except Exception as exc:
             applog.get_logger().exception("全库导出失败")
-            if created:
-                _discard_partial(save_path)
             return {'ok': False, 'error': _file_error_text(exc)}
 
     def scope_note_count(self, notebook_id=None, tag_id=None):
@@ -3384,10 +3396,9 @@ class Api:
         而不是一堆需要手工整理的散文件。
 
         返回 {'ok': True, 'count': 导出的笔记数}（范围里没有笔记时 count 为 0，什么都不写）
-        或 {'ok': False, 'error': 原因}。写到一半失败时删掉那个不完整的 zip。
+        或 {'ok': False, 'error': 原因}。写到一半失败时同名的旧文件原样留着（`_replacing`）。
         """
         clause, params = _scope_clause(notebook_id, tag_id)
-        created = False
         try:
             ids = [r['id'] for r in conn.execute(
                 "SELECT id FROM notes WHERE " + clause, params).fetchall()]
@@ -3414,8 +3425,7 @@ class Api:
                     c.commit()
                 finally:
                     c.close()
-                with zipfile.ZipFile(save_path, 'w', zipfile.ZIP_DEFLATED) as zf:
-                    created = True
+                with _replacing(save_path) as part, zipfile.ZipFile(part, 'w', zipfile.ZIP_DEFLATED) as zf:
                     zf.write(snap, 'notes.db')
                     for nid in ids:                      # 只打包这些笔记的附件目录
                         self._zip_dir(zf, os.path.join(ATTACH_DIR, nid),
@@ -3445,8 +3455,6 @@ class Api:
                 shutil.rmtree(tmp, ignore_errors=True)
         except Exception as exc:
             applog.get_logger().exception("按范围导出失败")
-            if created:
-                _discard_partial(save_path)
             return {'ok': False, 'error': _file_error_text(exc)}
 
     def export_note_markdown(self, note_id, save_path):
@@ -3495,7 +3503,7 @@ class Api:
 
             md = _delta_to_markdown(content, resolve_image=resolve)
             title = note.get('title') or '未命名笔记'
-            with open(save_path, 'w', encoding='utf-8') as f:
+            with _replacing(save_path) as part, open(part, 'w', encoding='utf-8') as f:
                 if not md.lstrip().startswith('#'):
                     f.write('# %s\n\n' % title)     # 标题补成一级标题，导出即可读
                 f.write(md)
@@ -3544,7 +3552,8 @@ class Api:
         if writer is None:
             return {'ok': False, 'error': '不支持导出成这种格式'}
         try:
-            writer(title, html_content, save_path)
+            with _replacing(save_path) as part:          # 写到一半失败时，同名的旧文件原样留着
+                writer(title, html_content, part)
         except Exception as exc:
             applog.get_logger().exception('导出 %s 失败', format_type)
             return {'ok': False, 'error': _file_error_text(exc)}

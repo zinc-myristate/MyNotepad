@@ -10,6 +10,7 @@
 页面统一走 `showResultToast`。
 """
 import base64
+import builtins
 import contextlib
 import csv
 import ctypes
@@ -79,6 +80,7 @@ def test_a_folder_in_the_way(api, tmp_path):
     target.mkdir()
     for name, export in _exports(api):
         assert export(str(target)) == {'ok': False, 'error': BUSY}, name
+    assert not [p.name for p in tmp_path.iterdir() if p.name.endswith('.part')], '替换不了时临时文件要删掉'
 
 
 @pytest.mark.skipif(sys.platform != 'win32', reason='独占打开文件是 Windows 上的行为')
@@ -92,6 +94,7 @@ def test_a_file_another_program_holds_open(api, tmp_path):
             result = export(str(target))
         assert result == {'ok': False, 'error': BUSY}, name
         assert target.read_text(encoding='utf-8') == '旧内容', name
+    assert not [p.name for p in tmp_path.iterdir() if p.name.endswith('.part')], '替换不了时临时文件要删掉'
 
 
 def test_a_folder_that_is_gone(api, tmp_path):
@@ -145,18 +148,78 @@ def test_an_unknown_format(api, tmp_path):
     assert os.listdir(out) == []
 
 
-def test_a_half_written_zip_is_removed(api, backend_mod, tmp_path, monkeypatch):
-    """zip 写到一半失败（比如 U 盘满了）：留下的文件名字像一份备份，打开却是坏的。删掉"""
-    def full(*args, **kwargs):
-        raise OSError(errno.ENOSPC, 'No space left on device')
-    monkeypatch.setattr(backend_mod.Api, '_zip_dir', staticmethod(full))
-    notebook = api.notebooks_create('项目')['id']
-    _note(api, '项目里的', '正文\n', notebook)
-    for name, export in (('zip', api.export_all_to_zip),
-                         ('scope', lambda path: api.export_notes_zip(path, notebook_id=notebook))):
-        target = tmp_path / (name + '.zip')
+def test_a_half_written_export_keeps_the_old_file(api, backend_mod, tmp_path, monkeypatch):
+    """写到一半失败（比如 U 盘满了）：同名的旧文件原样留着，写了一半的临时文件也删掉。
+
+    以前直接打开目标文件写，旧文件一打开就被清空了，失败后手里只剩一个打不开的半截文件（两种 zip 再把半截删掉，
+    旧备份照样没了）。现在都先写临时文件、写完再替换（`_replacing`）。八种导出各在写进去一部分之后报磁盘满
+    """
+    exports = _exports(api)
+    full = OSError(errno.ENOSPC, 'No space left on device')
+
+    def half_zip(zf, base, arc):                       # 两种 zip：已经写进去一部分
+        zf.writestr('一部分.txt', '写了一半')
+        raise full
+
+    def half_file(_title, _html, path):                # Word / Excel：库已经往文件里写了一部分
+        with builtins.open(path, 'wb') as fh:
+            fh.write(b'PK\x03\x04half')
+        raise full
+
+    class HalfWriter:                                  # HTML / TXT / Markdown / CSV：第一次写只落一半
+        def __init__(self, fh):
+            self.fh = fh
+
+        def write(self, text):
+            self.fh.write(text[:len(text) // 2])
+            raise full
+
+        def __getattr__(self, name):
+            return getattr(self.fh, name)
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *exc):
+            self.fh.close()
+
+    def opener(file, mode='r', *args, **kwargs):
+        fh = builtins.open(file, mode, *args, **kwargs)
+        return HalfWriter(fh) if 'w' in mode else fh
+
+    monkeypatch.setattr(backend_mod.Api, '_zip_dir', staticmethod(half_zip))
+    monkeypatch.setattr(backend_mod, 'html_to_docx', half_file)
+    monkeypatch.setattr(backend_mod, 'html_to_xlsx', half_file)
+    monkeypatch.setattr(backend_mod, 'open', opener, raising=False)
+    out = tmp_path / '导出'                            # tmp_path 本身是数据目录，导出放单独的文件夹好数
+    out.mkdir()
+    for name, export in exports:
+        target = out / ('旧的.' + name)
+        target.write_text('旧内容', encoding='utf-8')
         assert export(str(target)) == {'ok': False, 'error': '磁盘空间不够'}, name
-        assert not target.exists(), name
+        assert target.read_text(encoding='utf-8') == '旧内容', name
+    assert sorted(p.name for p in out.iterdir()) == sorted('旧的.' + name for name, _ in exports), \
+        '写了一半的临时文件要删掉'
+
+
+def test_replacing_swaps_the_file_in_only_when_it_is_complete(backend_mod, tmp_path):
+    out = tmp_path / '导出'
+    out.mkdir()
+    target = out / '备份.zip'
+    target.write_text('旧内容', encoding='utf-8')
+    with backend_mod._replacing(str(target)) as part:
+        assert os.path.dirname(part) == str(out), '临时文件要在同一目录：os.replace 跨盘就不是一步完成的'
+        with open(part, 'w', encoding='utf-8') as fh:
+            fh.write('新内容')
+        assert target.read_text(encoding='utf-8') == '旧内容', '写完之前旧文件不能动'
+    assert target.read_text(encoding='utf-8') == '新内容'
+    with pytest.raises(OSError):
+        with backend_mod._replacing(str(target)) as part:
+            with open(part, 'w', encoding='utf-8') as fh:
+                fh.write('写了一半')
+            raise OSError(errno.ENOSPC, 'No space left on device')
+    assert target.read_text(encoding='utf-8') == '新内容'
+    assert [p.name for p in out.iterdir()] == ['备份.zip'], '失败时临时文件要删掉'
 
 
 def test_a_zip_that_cannot_be_opened_keeps_the_old_file(api, tmp_path, monkeypatch):

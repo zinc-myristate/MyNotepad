@@ -15,11 +15,13 @@ import 里，第三方 UMD 库（Quill / KaTeX）仍是带重试的经典脚本�
 本文件锁死这四条，另外钉住一条：加载设置不能撞上 pywebview 注入的空档。"""
 import json
 import os
+import re
 import threading
 import time
 
 import pytest
 from conftest import PROJECT_ROOT, load_app_partial, wait_for_js
+from test_csp import _inline_scripts, _sha256
 
 pytestmark = pytest.mark.e2e
 
@@ -76,6 +78,11 @@ def _make_variant(name, fail_first=0, max_retry=None, break_entry=False):
     if break_entry:
         assert ENTRY_LITERAL in html, '入口模块路径变了，请同步本测试'
         html = html.replace(ENTRY_LITERAL, "'./js/app/__does_not_exist__.js'", 1)
+    # CSP 只按哈希放行内联脚本（2026-11-22 起）：副本多了一段拦截脚本，break_entry 时加载器也改了，
+    # 按副本里的内联脚本重算哈希，不然它们被拦下、故障注入根本没发生。策略本身仍然生效
+    hashes = ' '.join(_sha256(body) for body in _inline_scripts(html))
+    html, n = re.subn(r"script-src 'self'[^;]*;", "script-src 'self' %s;" % hashes, html, count=1)
+    assert n == 1, 'index.html 的 CSP 里找不到 script-src，请同步本测试'
     path = os.path.join(RENDERER, name)
     with open(path, 'w', encoding='utf-8') as f:
         f.write(html)

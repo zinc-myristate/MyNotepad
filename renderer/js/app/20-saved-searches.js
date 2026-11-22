@@ -205,5 +205,5 @@ export function initSavedSearches() {
   // 命令面板里也能保存视图；标签、笔记本改名后也走这个事件（带着旧名和新名）
   window.addEventListener('saved-searches-changed', onSavedSearchesChanged);
   box.addEventListener('scroll', () => closeMenu());    // 矮窗口下视图是横向滚动的窄条
-  loadSavedSearches();
+  return loadSavedSearches();       // 启动时不等它；09-boot 等它落定才记「启动完成」（e2e 等的就是那一步）
 }
